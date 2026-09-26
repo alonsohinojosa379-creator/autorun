@@ -18,6 +18,7 @@ fixture = r'''
 #include <string.h>
 #include "wine/rbtree.h"
 typedef uint64_t u64;
+typedef int64_t s64;
 typedef uint32_t u32, Handle, Result;
 typedef int32_t s32;
 typedef void (*ThreadFunc)(void*);
@@ -29,6 +30,9 @@ typedef struct { u64 addr, size; u32 type; } MemoryInfo;
 #define KernelError_OutOfMemory 104
 #define MAKERESULT(module, code) ((module) | ((code) << 9))
 #define MemType_ThreadLocal 12
+#define InfoType_ResourceLimit 9
+#define INVALID_HANDLE 0
+#define LimitableResource_Threads 1
 #define SECTION_HOLE 2
 struct horizon_mapping {
   void *addr;
@@ -46,7 +50,28 @@ static struct { char *start, *end; } anchor_regions[2];
 static unsigned int anchor_region_count;
 static pthread_mutex_t mapping_mutex = PTHREAD_MUTEX_INITIALIZER;
 static unsigned creates, closes, live, collisions, query_error, create_error, close_error;
+static unsigned resource_info, resource_closes;
 static u64 collision_address = 0x2ddf000, tls_address;
+static Result svcGetInfo(u64 *value, int type, Handle handle, u64 id) {
+  assert(type == InfoType_ResourceLimit && handle == INVALID_HANDLE && id == 0);
+  if (!resource_info) return 1;
+  *value = 0xf000;
+  return 0;
+}
+static Result svcGetResourceLimitCurrentValue(s64 *value, Handle handle, int resource) {
+  assert(handle == 0xf000 && resource == LimitableResource_Threads);
+  *value = 96;
+  return 0;
+}
+static Result svcGetResourceLimitLimitValue(s64 *value, Handle handle, int resource) {
+  assert(handle == 0xf000 && resource == LimitableResource_Threads);
+  *value = 96;
+  return 0;
+}
+static void wine_nx_runtime_trace(const char *message) {
+  assert(strstr(message, "[THREAD] create failed"));
+  if (resource_info) assert(strstr(message, "threads=96/96"));
+}
 static void check_locked(void) { assert(pthread_mutex_trylock(&mapping_mutex) == EBUSY); }
 static void entry(void *arg) { (void)arg; assert(0); }
 Result __real_svcCreateThread(Handle *handle, ThreadFunc fn, void *arg, void *stack, s32 priority, s32 core) {
@@ -60,6 +85,12 @@ Result __real_svcCreateThread(Handle *handle, ThreadFunc fn, void *arg, void *st
   return 0;
 }
 static Result svcCloseHandle(Handle handle) {
+  if (handle == 0xf000) {
+    assert(!pthread_mutex_trylock(&mapping_mutex));
+    pthread_mutex_unlock(&mapping_mutex);
+    ++resource_closes;
+    return 0;
+  }
   check_locked();
   assert(handle && live);
   if (close_error) return close_error;
@@ -150,6 +181,9 @@ int main(void) {
   handle = 0xfeed;
   create_error = 88;
   assert(create(&handle) == 88 && handle == 0xfeed && !live);
+  resource_info = 1;
+  assert(create(&handle) == 88 && handle == 0xfeed && !live && resource_closes == 1);
+  resource_info = 0;
   create_error = 0;
   for (query_error = 1; query_error <= 5; ++query_error) {
     assert(create(&handle) == (query_error == 1 ? 77 : MAKERESULT(Module_Kernel, KernelError_InvalidMemoryState)));
@@ -160,7 +194,7 @@ int main(void) {
   collisions = 256;
   before = creates;
   assert(create(&handle) == MAKERESULT(Module_Kernel, KernelError_OutOfMemory));
-  assert(creates == before + 256 && !live && creates == closes + 1 && handle == 0xfeed);
+  assert(creates == before + 256 && !live && creates == closes + 2 && handle == 0xfeed);
   close_error = 99;
   collisions = 1;
   before = creates;

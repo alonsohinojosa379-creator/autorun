@@ -19344,6 +19344,22 @@ Result __wrap_svcCreateThread( Handle *handle, ThreadFunc entry, void *arg, void
         }
     }
     pthread_mutex_unlock( &mapping_mutex );
+    if (R_FAILED(rc))
+    {
+        u64 resource = 0;
+        s64 used = -1, limit = -1;
+        char message[160];
+
+        if (R_SUCCEEDED(svcGetInfo( &resource, InfoType_ResourceLimit, INVALID_HANDLE, 0 )))
+        {
+            svcGetResourceLimitCurrentValue( &used, resource, LimitableResource_Threads );
+            svcGetResourceLimitLimitValue( &limit, resource, LimitableResource_Threads );
+            svcCloseHandle( resource );
+        }
+        snprintf( message, sizeof(message), "[THREAD] create failed rc=%#x threads=%lld/%lld tls_retries=%u",
+                  rc, (long long)used, (long long)limit, retries );
+        wine_nx_runtime_trace( message );
+    }
     return rc;
 }
 

@@ -92,9 +92,9 @@ u32 __nx_exception_ignoredebug = 1;
 #define CONFIG_FILE CONFIG_DIR "/settings.json"
 #define DEFAULT_TARGET WINE_DRIVE_C "/curl/curl.exe"
 #ifdef WINE_NX_SWAP_POC
-#define WINE_NX_RUNTIME_BUILD "nx-amd64-fex-2639"
+#define WINE_NX_RUNTIME_BUILD "nx-amd64-fex-2640"
 #elif defined(WINE_NX_FEX)
-#define WINE_NX_RUNTIME_BUILD "nx-amd64-fex-2639"
+#define WINE_NX_RUNTIME_BUILD "nx-amd64-fex-2640"
 #elif defined(WINE_NX_AMD64)
 #define WINE_NX_RUNTIME_BUILD "nx-amd64-box64-3"
 #elif defined(WINE_NX_BOX64_DYNAREC)
@@ -4306,7 +4306,8 @@ int main( int argc, char **argv )
 
     /* With the image mapped, so no thread-local page can be put where it has
      * to go, and before the program runs or makes a thread of its own. */
-    hold_thread_local_pages();
+    if (!low_window_available) hold_thread_local_pages();
+    else log_line( "[TLS] kernel TLS stays above 4 GiB; placeholder threads not needed" );
     {
         params = runtime_create_process_params( target, &main_nt_name, dos_path, sizeof(dos_path) );
         if (!params)
