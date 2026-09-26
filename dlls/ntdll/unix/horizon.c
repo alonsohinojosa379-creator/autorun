@@ -16452,7 +16452,10 @@ void __libnx_exception_handler( ThreadExceptionDump *ctx )
     rec.ExceptionInformation[1] = (ULONG_PTR)ctx->far.x;
 
 #if defined(__aarch64__)
-    if (horizon_fex_exception( ctx ))
+    struct thread_data *data = get_thread_data();
+
+    /* Native workers also use these exception stacks, but have no Wine TEB. */
+    if (horizon_fex_exception( ctx ) && data && data->teb)
     {
         CONTEXT context;
         unsigned int exception_class = esr >> 26;
@@ -16480,20 +16483,20 @@ void __libnx_exception_handler( ThreadExceptionDump *ctx )
         }
         if (rec.ExceptionCode != STATUS_ACCESS_VIOLATION) rec.NumberParameters = 0;
         status = rec.ExceptionCode == STATUS_ACCESS_VIOLATION ?
-                 virtual_handle_fault( get_thread_data(), &rec, (void *)ctx->sp.x ) : rec.ExceptionCode;
+                 virtual_handle_fault( data, &rec, (void *)ctx->sp.x ) : rec.ExceptionCode;
         if (!status) horizon_resume_exception( ctx );
-        if (get_thread_data() && get_thread_data()->jmp_buf &&
+        if (data->jmp_buf &&
             !(rec.NumberParameters == 3 && rec.ExceptionInformation[2] == STATUS_EXECUTABLE_MEMORY_WRITE))
         {
-            ctx->cpu_gprs[0].x = (ULONG_PTR)get_thread_data()->jmp_buf;
+            ctx->cpu_gprs[0].x = (ULONG_PTR)data->jmp_buf;
             ctx->cpu_gprs[1].x = 1;
             ctx->pc.x = (ULONG_PTR)longjmp;
-            get_thread_data()->jmp_buf = NULL;
+            data->jmp_buf = NULL;
             horizon_resume_exception( ctx );
         }
         rec.ExceptionCode = status;
         horizon_exception_context( ctx, &context );
-        status = call_user_exception_dispatcher( get_thread_data(), &rec, &context );
+        status = call_user_exception_dispatcher( data, &rec, &context );
         snprintf( buf, sizeof(buf),
                   "[EXC] FEX delivery failed status=0x%08x code=0x%08x pc=0x%llx far=0x%llx sp=0x%llx",
                   (unsigned)status, (unsigned)rec.ExceptionCode, (unsigned long long)ctx->pc.x,

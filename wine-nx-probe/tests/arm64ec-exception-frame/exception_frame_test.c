@@ -59,6 +59,8 @@ typedef struct _EXCEPTION_RECORD
 
 struct test_peb { void *EcCodeBitMap; };
 static struct { struct { void *StackBase, *StackLimit; } Tib; } test_teb;
+struct thread_data { typeof(test_teb) *teb; };
+static struct thread_data test_thread = { &test_teb };
 struct test_peb test_peb;
 struct test_peb *peb = &test_peb;
 void *pKiUserEmulationDispatcher;
@@ -281,7 +283,7 @@ static void test_exception_frame(void)
     reset_mocks();
     arm64ec = 1;
     set_ec( (uintptr_t)pKiUserExceptionDispatcher, 1 );
-    report( "exception-frame-dispatch", call_user_exception_dispatcher( &record, &context ) == STATUS_UNSUCCESSFUL &&
+    report( "exception-frame-dispatch", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_UNSUCCESSFUL &&
             write_count == 1 && writes[0].address == (void *)frame && writes[0].size == 0x470 &&
             continue_count == 1 && continued.Pc == (uintptr_t)pKiUserExceptionDispatcher &&
             continued.Sp == frame && continued.X18 == (uintptr_t)NtCurrentTeb() );
@@ -311,16 +313,16 @@ static void test_exception_errors_and_guest_route(void)
     reset_mocks();
     fail_write_call = 1;
     fail_write_status = injected;
-    report( "exception-frame-write-error", call_user_exception_dispatcher( &record, &context ) == injected &&
+    report( "exception-frame-write-error", call_user_exception_dispatcher( &test_thread, &record, &context ) == injected &&
             write_count == 1 && !continue_count );
 
     reset_mocks();
     partial_write_call = 1;
-    report( "exception-frame-write-partial", call_user_exception_dispatcher( &record, &context ) == STATUS_PARTIAL_COPY &&
+    report( "exception-frame-write-partial", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_PARTIAL_COPY &&
             write_count == 1 && !continue_count );
 
     reset_mocks();
-    report( "exception-guest-dispatch-route", call_user_exception_dispatcher( &record, &context ) == STATUS_UNSUCCESSFUL &&
+    report( "exception-guest-dispatch-route", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_UNSUCCESSFUL &&
             write_count == 2 && writes[0].address == (void *)frame &&
             writes[1].address == (void *)guest_context && continue_count == 1 &&
             continued.Pc == (uintptr_t)pKiUserEmulationDispatcher && continued.Sp == guest_context &&
@@ -330,7 +332,7 @@ static void test_exception_errors_and_guest_route(void)
     reset_mocks();
     fail_write_call = 2;
     fail_write_status = injected;
-    report( "exception-guest-context-write-error", call_user_exception_dispatcher( &record, &context ) == injected &&
+    report( "exception-guest-context-write-error", call_user_exception_dispatcher( &test_thread, &record, &context ) == injected &&
             write_count == 2 && !continue_count );
 }
 
@@ -349,7 +351,7 @@ static void test_exception_on_user_stack(void)
         reset_mocks();
         set_ec( (uintptr_t)pKiUserExceptionDispatcher, 1 );
         expect_local_frame = 1;
-        report( "exception-user-stack-dispatch", call_user_exception_dispatcher( &record, &context ) == STATUS_UNSUCCESSFUL &&
+        report( "exception-user-stack-dispatch", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_UNSUCCESSFUL &&
                 !write_count && continue_count == 1 && continued.Sp && !(continued.Sp & 15) &&
                 continued.Sp + sizeof(dispatched_frame) <= context.Sp &&
                 continued.Pc == (uintptr_t)pKiUserExceptionDispatcher );
@@ -374,17 +376,22 @@ static void test_exception_validation_and_bounds(void)
 
     init_exception( &record );
     reset_mocks();
-    report( "exception-null-record", call_user_exception_dispatcher( NULL, &context ) == STATUS_INVALID_PARAMETER );
-    report( "exception-null-context", call_user_exception_dispatcher( &record, NULL ) == STATUS_INVALID_PARAMETER );
+    report( "exception-null-thread", call_user_exception_dispatcher( NULL, &record, &context ) == STATUS_INVALID_PARAMETER );
+    test_thread.teb = NULL;
+    report( "exception-native-worker", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_INVALID_PARAMETER &&
+            !write_count && !continue_count );
+    test_thread.teb = &test_teb;
+    report( "exception-null-record", call_user_exception_dispatcher( &test_thread, NULL, &context ) == STATUS_INVALID_PARAMETER );
+    report( "exception-null-context", call_user_exception_dispatcher( &test_thread, &record, NULL ) == STATUS_INVALID_PARAMETER );
     context.ContextFlags = 0;
-    report( "exception-context-flags", call_user_exception_dispatcher( &record, &context ) == STATUS_INVALID_PARAMETER );
+    report( "exception-context-flags", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_INVALID_PARAMETER );
     context = make_context( 0x25000, 0x400 );
-    report( "exception-low-stack", call_user_exception_dispatcher( &record, &context ) == STATUS_INVALID_ADDRESS );
+    report( "exception-low-stack", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_INVALID_ADDRESS );
 
     context = make_context( 0x25000, (uintptr_t)(stack + sizeof(stack)) );
     pKiUserExceptionDispatcher = (void *)(1ull << 39);
     reset_mocks();
-    report( "exception-dispatcher-39bit-bound", call_user_exception_dispatcher( &record, &context ) == STATUS_INVALID_ADDRESS &&
+    report( "exception-dispatcher-39bit-bound", call_user_exception_dispatcher( &test_thread, &record, &context ) == STATUS_INVALID_ADDRESS &&
             write_count == 1 && !continue_count && !is_ec_count );
     pKiUserExceptionDispatcher = (void *)0x24000;
 }

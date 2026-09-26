@@ -205,7 +205,7 @@ NTSTATUS call_user_exception_dispatcher( struct thread_data *data, EXCEPTION_REC
 
     C_ASSERT( offsetof(typeof(frame), rec) == 0x3b0 );
     C_ASSERT( sizeof(frame) == 0x470 );
-    if (!rec || !context || !pKiUserExceptionDispatcher ||
+    if (!data || !data->teb || !rec || !context || !pKiUserExceptionDispatcher ||
         (context->ContextFlags & CONTEXT_ARM64_FULL) != CONTEXT_ARM64_FULL)
         return STATUS_INVALID_PARAMETER;
     if (context->Sp < sizeof(frame) + 16) return STATUS_INVALID_ADDRESS;
@@ -221,9 +221,9 @@ NTSTATUS call_user_exception_dispatcher( struct thread_data *data, EXCEPTION_REC
     frame.context_ex.All.Offset = -(LONG)sizeof(CONTEXT);
     resume = *context;
     /* Horizon syscalls share the user stack; keep their live call frames intact. */
-    if ((ULONG_PTR)&frame >= (ULONG_PTR)NtCurrentTeb()->Tib.StackLimit &&
+    if ((ULONG_PTR)&frame >= (ULONG_PTR)data->teb->Tib.StackLimit &&
         (ULONG_PTR)(&frame + 1) <= context->Sp &&
-        context->Sp <= (ULONG_PTR)NtCurrentTeb()->Tib.StackBase)
+        context->Sp <= (ULONG_PTR)data->teb->Tib.StackBase)
         stack = (ULONG_PTR)&frame;
     else
     {
@@ -233,7 +233,7 @@ NTSTATUS call_user_exception_dispatcher( struct thread_data *data, EXCEPTION_REC
     }
     resume.Sp = stack;
     resume.Pc = (ULONG_PTR)pKiUserExceptionDispatcher;
-    resume.X18 = (ULONG_PTR)NtCurrentTeb();
+    resume.X18 = (ULONG_PTR)data->teb;
     return signal_set_full_context( &resume );
 }
 

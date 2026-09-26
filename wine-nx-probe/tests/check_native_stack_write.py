@@ -39,7 +39,7 @@ fixture = r'''
 #define ROUND_ADDR(addr,mask) ((void *)((uintptr_t)(addr) & ~(uintptr_t)(mask)))
 #define ROUND_SIZE(addr,size,mask) (((size) + ((uintptr_t)(addr) & (mask)) + (mask)) & ~(size_t)(mask))
 typedef struct { void *stack_mirror; size_t stack_sz; } Thread;
-struct thread_data {};
+struct thread_data { TEB *teb; };
 static struct thread_data thread_data;
 static Thread native_thread, *current_thread = &native_thread;
 static Thread *threadGetSelf(void) { return current_thread; }
@@ -93,8 +93,6 @@ NTSTATUS WINAPI NtWriteVirtualMemory(HANDLE process, void *addr, const void *buf
 }
 '''
 dispatcher = extract('dlls/ntdll/unix/signal_arm64.c', 'NTSTATUS call_user_exception_dispatcher(')
-dispatcher = dispatcher.replace('struct thread_data *data,',
-                                'struct thread_data *data __attribute__((unused)),', 1)
 tests = r'''
 int main(void) {
     unsigned char *stack = aligned_alloc(4096, 8192);
@@ -158,6 +156,10 @@ int main(void) {
     exception.ExceptionAddress = (void *)context.Pc;
     exception.NumberParameters = 2;
     exception.ExceptionInformation[1] = 0x7ac0fd00;
+    assert(call_user_exception_dispatcher(NULL, &exception, &context) == STATUS_INVALID_PARAMETER);
+    assert(call_user_exception_dispatcher(&thread_data, &exception, &context) == STATUS_INVALID_PARAMETER);
+    assert(!continued.Sp);
+    thread_data.teb = &teb;
     assert(call_user_exception_dispatcher(&thread_data, &exception, &context) == STATUS_UNSUCCESSFUL);
     assert(continued.Sp == context.Sp - 0x470 && continued.Pc == (ULONG_PTR)pKiUserExceptionDispatcher);
     assert(continued.X18 == (ULONG_PTR)&teb);
