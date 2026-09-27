@@ -58,6 +58,9 @@ extern HRESULT hid_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTAN
 extern HRESULT hid_joystick_create_device( struct dinput *dinput, const GUID *guid, IDirectInputDevice8W **out );
 extern HRESULT hid_joystick_refresh_devices(void);
 extern void hid_joystick_cleanup_devices(void);
+extern BOOL nx_joystick_enabled(void);
+extern HRESULT nx_joystick_enum_device( DWORD flags, DIDEVICEINSTANCEW *instance, DWORD version, int index );
+extern HRESULT nx_joystick_create_device( struct dinput *dinput, const GUID *guid, IDirectInputDevice8W **out );
 
 struct DevicePlayer {
     GUID instance_guid;

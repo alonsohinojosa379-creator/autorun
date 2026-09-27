@@ -966,6 +966,8 @@ static const struct
     { "winenxaudio.drv", wine_nx_audio_unix_funcs },
     { "xinput1_3.dll", wine_nx_xinput_unix_funcs },
     { "xinput1_4.dll", wine_nx_xinput_unix_funcs },
+    { "dinput.dll", wine_nx_xinput_unix_funcs },
+    { "dinput8.dll", wine_nx_xinput_unix_funcs },
 #ifdef WINE_NX_MESA_SWITCH
     { "winevulkan.dll", wine_nx_winevulkan_unix_funcs },
 #endif
@@ -1005,6 +1007,8 @@ static const struct
     { "xinput1_2.dll", wine_nx_xinput_wow64_unix_funcs, &wine_nx_xinput_wow64_unix_count },
     { "xinput1_3.dll", wine_nx_xinput_wow64_unix_funcs, &wine_nx_xinput_wow64_unix_count },
     { "xinput1_4.dll", wine_nx_xinput_wow64_unix_funcs, &wine_nx_xinput_wow64_unix_count },
+    { "dinput.dll", wine_nx_xinput_wow64_unix_funcs, &wine_nx_xinput_wow64_unix_count },
+    { "dinput8.dll", wine_nx_xinput_wow64_unix_funcs, &wine_nx_xinput_wow64_unix_count },
 #ifdef WINE_NX_MESA_SWITCH
     /* runtimes linked with mesa-switch: Vulkan through its NVK */
     { "winevulkan.dll", wine_nx_winevulkan_wow64_unix_funcs, &wine_nx_winevulkan_wow64_unix_count },
