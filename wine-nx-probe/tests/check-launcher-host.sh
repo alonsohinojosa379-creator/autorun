@@ -6,6 +6,9 @@
 # Needs Homebrew's sdl2 (sdl2-compat), sdl3, sdl2_ttf and libpng.
 set -eu
 export SDL_AUDIODRIVER=dummy
+# Homebrew's SDL2 is sdl2-compat, which opens SDL3 by name: somewhere the
+# loader looks without being told, which /opt/homebrew/lib is not.
+[ -d /opt/homebrew/lib ] && export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 probe="$root/wine-nx-probe"
 # Two programs to stand in for games, out of whichever stage the card was last
@@ -13,9 +16,12 @@ probe="$root/wine-nx-probe"
 drive_c=""
 for stage in full-sd-card notepad-sd-card openttd-sd-card audio-sd-card opengl-sd-card d3d9-sd-card war3-sd-card; do
     candidate="$probe/build-switch-wow64-dynarec/$stage/switch/wine/drive_c"
-    [ -f "$candidate/notepad.exe" ] && { drive_c="$candidate"; break; }
+    [ -f "$candidate/7zr.exe" ] && { drive_c="$candidate"; break; }
 done
-[ -n "$drive_c" ] || { echo "no staged drive_c with notepad.exe: run tools/package-wow64-full.py" >&2; exit 1; }
+[ -n "$drive_c" ] || { echo "no staged drive_c with 7zr.exe: run tools/package-wow64-full.py" >&2; exit 1; }
+# Wine's Notepad, the program that stands in for the games, is the DLL repository's.
+notepad="$root/horizon-dlls/switch/wine/drive_c/windows/syswow64/notepad.exe"
+[ -f "$notepad" ] || { echo "no $notepad: check out horizon-dlls" >&2; exit 1; }
 build="$(mktemp -d "${TMPDIR:-/tmp}/wine-nx-launcher.XXXXXX")"
 trap 'rm -rf "$build"' EXIT HUP INT TERM
 font="${LAUNCHER_FONT:-/System/Library/Fonts/Supplemental/Arial.ttf}"
@@ -62,15 +68,14 @@ clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-
 
 python3 "$probe/tools/make-embed.py" "$build/forwarder-icon.c" wine_nx_icon_any "$probe/assets/autorun.jpg"
 clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-    -I "$probe/source" $(sdl2-config --cflags) -I/opt/homebrew/include \
+    -I "$probe/source" $(sdl2-config --cflags) -I/opt/homebrew/include -I/opt/homebrew/opt/openssl/include \
     "$probe/tests/launcher_host.c" "$probe/source/launcher.c" "$probe/source/launcher_catalog.c" "$probe/source/launcher_ui.c" "$probe/source/launcher_audio.c" \
     "$probe/source/launcher_graphics.c" "$probe/source/launcher_forwarder.c" "$probe/source/launcher_image.c" \
     "$probe/source/launcher_setup.c" "$probe/source/setup_boot.c" \
-    "$root/libs/tomcrypt/src/hashes/sha2/sha256.c" \
     "$probe/source/steamgriddb.c" \
     "$probe/source/launcher_svg.c" \
     "$build/forwarder-icon.c" \
-    $(sdl2-config --libs) -L/opt/homebrew/lib -lSDL2_ttf -lpng -lturbojpeg -lcurl -lcrypto -lm -o "$build/launcher_host"
+    $(sdl2-config --libs) -L/opt/homebrew/lib -lSDL2_ttf -lpng -lturbojpeg -lcurl -L/opt/homebrew/opt/openssl/lib -lcrypto -lm -o "$build/launcher_host"
 # sdl2-compat looks for SDL3 next to the program, not in Homebrew's lib folder.
 ln -s /opt/homebrew/lib/libSDL3.0.dylib "$build/libSDL3.dylib"
 
@@ -83,9 +88,9 @@ clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-
 
 card="$build/card/sdmc:"
 mkdir -p "$card/switch/wine/drive_c/openttd" "$card/games/deep/er/still"
-ln -s "$drive_c/notepad.exe" "$drive_c/7zr.exe" "$card/switch/wine/drive_c/"
-ln -s "$drive_c/notepad.exe" "$card/switch/wine/drive_c/openttd/openttd.exe"
-ln -s "$drive_c/notepad.exe" "$card/games/deep/er/still/Deep.exe"
+ln -s "$notepad" "$drive_c/7zr.exe" "$card/switch/wine/drive_c/"
+ln -s "$notepad" "$card/switch/wine/drive_c/openttd/openttd.exe"
+ln -s "$notepad" "$card/games/deep/er/still/Deep.exe"
 
 # + -> Run a program once: the browser's pick starts at once and stays out of
 # the library.
@@ -236,7 +241,7 @@ echo "launcher host run: Home history row, taps, swipes, boundaries, header focu
 # fails here rather than looking right in a screenshot nobody opens.
 big="$build/big/sdmc:"
 mkdir -p "$big/switch/wine"
-python3 "$probe/tests/launcher_shot.py" stage "$big" "$drive_c/notepad.exe" 120
+python3 "$probe/tests/launcher_shot.py" stage "$big" "$notepad" 120
 
 cat > "$build/scroll-script.txt" <<SCRIPT
 wait 60
