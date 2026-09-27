@@ -18,6 +18,8 @@ fi
 if [ -n "${WINE_NX_LLVM_MINGW:-}" ]; then
     export PATH="$WINE_NX_LLVM_MINGW/bin:$PATH"
 fi
+# Wine's configure wants a newer bison than macOS has.
+[ -d /opt/homebrew/opt/bison/bin ] && export PATH="/opt/homebrew/opt/bison/bin:$PATH"
 for tool in arm64ec-w64-mingw32-clang aarch64-w64-mingw32-clang i686-w64-mingw32-clang x86_64-w64-mingw32-clang x86_64-w64-mingw32-windres llvm-readobj; do
     command -v "$tool" >/dev/null || { echo "Missing $tool; set WINE_NX_LLVM_MINGW." >&2; exit 1; }
 done
@@ -50,9 +52,6 @@ sh "$root/wine-nx-probe/tools/bootstrap-libusbhsfs.sh"
 if [ -n "${WINE_NX_MESA_SWITCH_DIR:-}" ]; then
     sh "$root/wine-nx-probe/tools/bootstrap-lsfg-vk.sh"
 fi
-if [ "$fex" = ON ]; then
-    sh "$root/wine-nx-probe/build-fex.sh"
-fi
 docker run --rm --network none --platform linux/arm64 -v "$root:/work" -w /work \
     -e NX_PE="/work/${pe#"$root/"}" -e NX_BUILD="/work/${build#"$root/"}" \
     -e NX_JOBS="$jobs" -e NX_DYNAREC="${WINE_NX_BOX64_DYNAREC:-ON}" \
@@ -66,17 +65,12 @@ docker run --rm --network none --platform linux/arm64 -v "$root:/work" -w /work 
         -DWINE_NX_BOOT_BUNDLE="$NX_BOOT_BUNDLE" -DCMAKE_BUILD_TYPE=Release
     cmake --build "$NX_BUILD" --target wine-nx-runtime-nro -j "$NX_JOBS"
     '
-set -- --pe "$pe" --build "$build" --jobs "$jobs"
-if [ "$fex" = ON ]; then
-    set -- "$@" --fex "${WINE_NX_FEX_BUILD_DIR:-$root/wine-nx-probe/toolchains/build-fex-2609-horizon}/payload"
-fi
+# The Windows modules this runtime runs -- system32, syswow64, FEX's CPU modules,
+# DXVK and VKD3D-Proton -- are the DLL repository's: horizon-dlls/tools/build-dlls.py
+# builds them in $pe. These say what the NRO was built to run.
+set -- --build "$build"
+if [ "$fex" = ON ]; then set -- "$@" --fex; fi
 if [ -n "${WINE_NX_MESA_SWITCH_DIR:-}" ]; then set -- "$@" --vulkan; fi
-if [ "${WINE_NX_DXVK:-0}" = 1 ] || [ "${WINE_NX_VKD3D:-0}" = 1 ]; then
-    python3 "$root/wine-nx-probe/tools/build-dxvk.py" --jobs "$jobs"
-    set -- "$@" --dxvk "$root/wine-nx-probe/build-dxvk-amd64/payload"
-fi
-if [ "${WINE_NX_VKD3D:-0}" = 1 ]; then
-    python3 "$root/wine-nx-probe/tools/build-vkd3d.py" --jobs "$jobs"
-    set -- "$@" --vkd3d "$root/wine-nx-probe/build-vkd3d-amd64/payload"
-fi
+if [ "${WINE_NX_DXVK:-0}" = 1 ] || [ "${WINE_NX_VKD3D:-0}" = 1 ]; then set -- "$@" --dxvk; fi
+if [ "${WINE_NX_VKD3D:-0}" = 1 ]; then set -- "$@" --vkd3d; fi
 python3 "$root/wine-nx-probe/tools/package-amd64.py" "$@"

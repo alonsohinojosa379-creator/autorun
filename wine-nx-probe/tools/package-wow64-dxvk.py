@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Stage the DXVK checkpoint as an overlay for a card that holds a full
-package: the runtime linked with mesa-switch (build-switch-wow64-mesa-switch),
-Wine's i386 vulkan-1.dll and winevulkan.dll, and DXVK's d3d9.dll built for i386
-from WINE_NX_DXVK_DIR (default ~/dxvk) next to C:\\dxvk\\pe32-d3d9.exe.
+package: the runtime linked with mesa-switch (build-switch-wow64-mesa-switch)
+and the Direct3D 9 and Vulkan tests in C:\\dxvk. Wine's Vulkan and DXVK's
+d3d9.dll there are the DLL repository's (horizon-dlls).
 
 A program's own folder comes first in its DLL search, and the card has no
 builtin d3d9 under lib/wine for Wine's load order to prefer, so only programs
@@ -11,8 +11,8 @@ from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 import argparse
 import functools
+import json
 import os
-import struct
 import re
 import subprocess
 
@@ -21,15 +21,16 @@ pe = probe / 'build-wine-wow64-pe'
 build = probe / 'build-switch-wow64-dynarec'
 nro = probe / 'build-switch-wow64-mesa-switch/wine-nx-runtime.nro'
 base = build / 'full-sd-card/switch/wine'
-dxvk = Path(os.environ.get('WINE_NX_DXVK_DIR', Path.home() / 'dxvk'))
-dxvk_build = probe / 'build-dxvk-i386'
 tools = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
 env = dict(os.environ, PATH=f'{tools}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
 marker = re.search(r'nx-wow64-dynarec-(\d+)', (probe / 'source/runtime.c').read_text()).group(1)
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument('--name', default='dxvk', help='label in the zip name, new for each rebuild')
+parser.add_argument('--dlls', type=Path, default=probe.parent / 'horizon-dlls/switch/wine',
+                    help="the DLL repository's card tree")
 args = parser.parse_args()
+dlls = args.dlls.resolve()
 
 assert b'a Vulkan surface has the screen' in nro.read_bytes(), \
     f'{nro} has no Vulkan display driver; configure it with -DWINE_NX_MESA_SWITCH_DIR'
@@ -37,90 +38,18 @@ assert f'nx-wow64-dynarec-{marker}'.encode() + b'\0' in nro.read_bytes(), \
     f'{nro} is stale; rebuild the runtime for build {marker}'
 assert b'winemem\0' in nro.read_bytes(), \
     f'{nro} predates sections with no file, which DXVK\'s 32-bit d3d9 needs; rebuild the runtime'
-assert (base / 'drive_c/windows/syswow64').is_dir(), f'{base} is not a full package; run package-wow64-full.py first'
-assert (base / 'drive_c/windows/system32/apisetschema.dll').is_file(), \
-    f'{base} has no API set schema, which DXVK\'s api-ms-win-crt imports need'
-assert (dxvk / 'VP_DXVK_requirements.json').is_file(), f'{dxvk} is not a DXVK tree; set WINE_NX_DXVK_DIR'
+assert (base / 'wine-nx-runtime.nro').is_file(), f'{base} is not a full package; run package-wow64-full.py first'
+assert (dlls / 'drive_c/windows/system32/apisetschema.dll').is_file(), \
+    f'{dlls} has no API set schema, which DXVK\'s api-ms-win-crt imports need'
+d3d9 = dlls / 'drive_c/dxvk/d3d9.dll'
+assert d3d9.is_file(), f'{dlls} has no DXVK d3d9.dll; build the DLL repository first'
+dxvk_version = json.loads((dlls / 'horizon-dlls/manifest.json').read_text())
+dxvk_version = next(f['source'].get('pin', '') for f in dxvk_version['files']
+                    if f['path'] == 'drive_c/dxvk' and f['name'] == 'd3d9.dll')
 
-# DXVK's d3d9 alone. DXVK links its C++ runtime statically, and llvm-mingw's
-# UCRT imports resolve to ucrtbase.dll through the API set schema.
-if not (dxvk_build / 'build.ninja').is_file():
-    dxvk_build.mkdir(parents=True, exist_ok=True)
-    cross = dxvk_build / 'llvm-mingw-i386.txt'
-    cross.write_text(f'''[binaries]
-c = '{tools}/i686-w64-mingw32-clang'
-cpp = '{tools}/i686-w64-mingw32-clang++'
-ar = '{tools}/i686-w64-mingw32-ar'
-strip = '{tools}/i686-w64-mingw32-strip'
-windres = '{tools}/i686-w64-mingw32-windres'
-
-[properties]
-needs_exe_wrapper = true
-
-[host_machine]
-system = 'windows'
-cpu_family = 'x86'
-cpu = 'x86'
-endian = 'little'
-''')
-    subprocess.run(['meson', 'setup', str(dxvk_build), '--cross-file', str(cross), '--buildtype', 'release',
-                    '--strip', '-Denable_d3d9=true', '-Denable_d3d8=false', '-Denable_d3d10=false',
-                    '-Denable_d3d11=false', '-Denable_dxgi=false'], cwd=dxvk, env=env, check=True)
-subprocess.run(['ninja', '-C', str(dxvk_build), 'src/d3d9/d3d9.dll'], env=env, check=True)
-d3d9 = dxvk_build / 'src/d3d9/d3d9.dll'
-
-
-def say_directx9(path):
-    """Make d3d9.dll report the version a Direct3D 9 runtime has.
-
-    DXVK's version resource says 10.0.17763.1, the Windows 10 system DLL it
-    stands in for. A game from the Direct3D 9 years reads that resource to
-    decide whether DirectX 9 is installed, and reads the major and minor of a
-    version it was written before: Halo takes 10.0 for something older than
-    9.0b and refuses to start. Wine's own d3d9.dll says 5.3.1.904, which is
-    what the DirectX 9.0c file says, so this says the same. Patched in the
-    built DLL rather than in the DXVK tree, which is not ours.
-    """
-    data = bytearray(path.read_bytes())
-    version = (5, 3, 1, 904)
-    ms, ls = (version[0] << 16) | version[1], (version[2] << 16) | version[3]
-    fixed = b'\xbd\x04\xef\xfe'
-    patched = 0
-    at = data.find(fixed)
-    while at >= 0:
-        # signature, struct version, then file and product version, MS before LS
-        struct.pack_into('<IIII', data, at + 8, ms, ls, ms, ls)
-        patched += 1
-        at = data.find(fixed, at + 4)
-    assert patched, f'{path} has no version resource to correct'
-
-    # The strings beside it, kept the same length so the block does not move.
-    text = '%d.%d.%d.%d' % version
-    for old_text in ('10.0.17763.1 (WinBuild.160101.0800)', '10.0.17763.1'):
-        new_text = text + ' ' * (len(old_text) - len(text))
-        assert len(new_text) == len(old_text)
-        data = bytearray(data.replace(old_text.encode('utf-16-le'), new_text.encode('utf-16-le')))
-    path.write_bytes(data)
-
-    # Read back what a game would: the fixed information, which is what
-    # GetFileVersionInfo hands to VerQueryValue for the root.
-    check = path.read_bytes()
-    at = check.find(fixed)
-    got = struct.unpack_from('<IIII', check, at + 8)
-    assert got == (ms, ls, ms, ls), f'{path} still reports {got}'
-    print(f'{path.name}: version resource says %d.%d.%d.%d' % version)
-
-
-say_directx9(d3d9)
-dxvk_version = subprocess.run(['git', '-C', str(dxvk), 'describe', '--tags', '--always', '--dirty'],
-                              capture_output=True, text=True).stdout.strip() or 'unknown'
-
-dlls = {}
-for name in ('vulkan-1.dll', 'winevulkan.dll'):
-    target = f'dlls/{name.removesuffix(".dll")}/i386-windows/{name}'
-    subprocess.run(['make', '-C', str(pe), '-j8', target, 'dlls/vulkan-1/i386-windows/libvulkan-1.a'],
-                   env=env, check=True)
-    dlls[name] = pe / target
+# The import library the Vulkan test links against; Wine's i386 vulkan-1.dll
+# itself is the DLL repository's.
+subprocess.run(['make', '-C', str(pe), '-j8', 'dlls/vulkan-1/i386-windows/libvulkan-1.a'], env=env, check=True)
 
 exe = pe / 'pe32-d3d9.exe'
 subprocess.run([str(tools / 'i686-w64-mingw32-clang'), '-Os', '-Wall', '-Wextra', '-Werror', '-fno-builtin',
@@ -153,10 +82,10 @@ def readobj(option, path):
     return subprocess.check_output([str(tools / 'llvm-readobj'), option, str(path)], text=True)
 
 apisets = dict(re.findall(r'^apiset (\S+) = (\S+)$', (probe.parent / 'dlls/apisetschema/apisetschema.spec').read_text(), re.M))
-syswow64 = base / 'drive_c/windows/syswow64'
+syswow64 = dlls / 'drive_c/windows/syswow64'
 # Where each import resolves on the card: the program's folder first (d3d9.dll
-# beside pe32-d3d9.exe), then syswow64 with this overlay's DLLs over it.
-resolved = {p.name.lower(): p for p in syswow64.iterdir()} | dlls | {'d3d9.dll': d3d9}
+# beside pe32-d3d9.exe, from C:\\dxvk), then syswow64.
+resolved = {p.name.lower(): p for p in syswow64.iterdir()} | {'d3d9.dll': d3d9}
 
 @functools.lru_cache(maxsize=None)
 def exports_of(path):
@@ -164,7 +93,7 @@ def exports_of(path):
 
 # Every imported function, not only every DLL, so a missing export shows here
 # rather than as a load failure on the Switch.
-for path in (exe, exe_800, section_exe, vulkan_exe, d3d9, *dlls.values()):
+for path in (exe, exe_800, section_exe, vulkan_exe, d3d9):
     assert 'Arch: i386\n' in readobj('--file-headers', path), f'{path.name} is not i386'
     for block in re.findall(r'^Import \{\n(.*?)^\}', readobj('--coff-imports', path), re.M | re.S):
         name = re.search(r'Name: (.+)', block).group(1).lower()
@@ -177,9 +106,9 @@ for path in (exe, exe_800, section_exe, vulkan_exe, d3d9, *dlls.values()):
 
 readme = f'''Wine-NX build {marker}: the DXVK checkpoint, as an overlay for a card that
 holds a full package. It replaces the runtime NRO with the one linked with
-Mesa 26 (mesa-switch: OpenGL through nvc0, Vulkan through NVK), adds Wine's
-Vulkan (vulkan-1.dll and winevulkan.dll), and adds the folder C:\\dxvk with
-DXVK {dxvk_version}'s d3d9.dll and the Direct3D 9 test.
+Mesa 26 (mesa-switch: OpenGL through nvc0, Vulkan through NVK) and adds the
+Direct3D 9 and Vulkan tests to C:\\dxvk. Wine's Vulkan and DXVK's d3d9.dll there
+come from the DLL repository (horizon-dlls, build {dxvk_version}).
 
 Keep your current switch/wine/wine-nx-runtime.nro somewhere else to go back,
 then copy the switch folder to the SD card, merging folders.
@@ -205,9 +134,6 @@ space.
 archive = build / f'wine-nx-{args.name}-overlay-dynarec-{marker}.zip'
 with ZipFile(archive, 'w', ZIP_DEFLATED) as z:
     z.write(nro, 'switch/wine/wine-nx-runtime.nro')
-    for name, path in dlls.items():
-        z.write(path, f'switch/wine/drive_c/windows/syswow64/{name}')
-    z.write(d3d9, 'switch/wine/drive_c/dxvk/d3d9.dll')
     z.write(exe, 'switch/wine/drive_c/dxvk/pe32-d3d9.exe')
     z.write(exe_800, 'switch/wine/drive_c/dxvk/pe32-d3d9-800.exe')
     z.writestr('switch/wine/drive_c/dxvk/pe32-d3d9-800.args.txt', '\n')

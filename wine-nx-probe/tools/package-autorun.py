@@ -2,7 +2,9 @@
 """Build one SD-card archive with the x86 and AMD64 graphics runtimes.
 
 The archive is autorun-NNN.zip, NNN the x86 runtime's build. --no-amd64 leaves
-the AMD64 half out, for a card that only runs 32-bit programs."""
+the AMD64 half out, for a card that only runs 32-bit programs. It holds no
+Windows modules: those are the DLL repository's (horizon-dlls), which the
+package is checked against."""
 from pathlib import Path
 from pathlib import PurePosixPath
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -20,11 +22,16 @@ build = probe / 'build-switch-wow64-dynarec'
 stage_root = build / 'full-sd-card'
 stage = stage_root / 'switch/wine'
 marker = re.search(r'nx-wow64-dynarec-(\d+)', (probe / 'source/runtime.c').read_text()).group(1)
-default_amd64 = probe / 'build-switch-amd64/wine-nx-amd64-box64-mesa-dxvk-vkd3d.zip'
+# The FEX build when there is one, as build-amd64-components.sh names it.
+default_amd64 = next((path for path in (probe / f'build-switch-amd64/wine-nx-amd64-box64{kind}-mesa-dxvk-vkd3d.zip'
+                                        for kind in ('-fex', '')) if path.is_file()),
+                     probe / 'build-switch-amd64/wine-nx-amd64-box64-mesa-dxvk-vkd3d.zip')
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument('--amd64', type=Path,
                     default=Path(os.environ.get('WINE_NX_AMD64_PACKAGE', default_amd64)))
 parser.add_argument('--no-amd64', action='store_true', help='leave the AMD64 runtime out')
+parser.add_argument('--dlls', type=Path, default=probe.parent / 'horizon-dlls/switch/wine',
+                    help="the DLL repository's card tree, to check the package against")
 args = parser.parse_args()
 
 
@@ -37,9 +44,6 @@ def merge_amd64(archive, root):
     required = {
         'switch/wine/build-manifest.json',
         'switch/wine/wine-nx-runtime.nro',
-        'switch/wine/drive_c/windows/system32/winebox64ec.dll',
-        'switch/wine/drive_c/dxvk64/dxgi.dll',
-        'switch/wine/drive_c/vkd3d64/d3d12.dll',
     }
     with ZipFile(archive) as z:
         assert z.testzip() is None, f'{archive} is damaged'
@@ -56,10 +60,6 @@ def merge_amd64(archive, root):
         features = manifest.get('features', {})
         for feature in ('amd64', 'dynarec', 'vulkan', 'dxvk', 'vkd3d', 'lsfg'):
             assert features.get(feature) is True, f'{archive} has no {feature} support'
-        if features.get('fex'):
-            for dll in ('libarm64ecfex.dll', 'libwow64fex.dll'):
-                assert f'switch/wine/drive_c/windows/system32/{dll}' in names, \
-                    f'{archive} has no FEX CPU module: {dll}'
         nro = z.read('switch/wine/wine-nx-runtime.nro')
         match = re.search(rb'nx-amd64-(?:box64-(\d+)|(fex-\d+))\0', nro)
         assert match, f'{archive} does not contain the AMD64 runtime'
@@ -95,7 +95,8 @@ if not args.no_amd64:
     assert args.amd64.is_file(), f'{args.amd64} is missing; build the AMD64 DXVK/VKD3D package first, ' \
                                  'or pass --no-amd64'
     print(f'AMD64 runtime build {merge_amd64(args.amd64, stage_root)} merged')
-subprocess.run([sys.executable, str(tools / 'verify-wow64-package.py'), str(stage)], check=True)
+subprocess.run([sys.executable, str(tools / 'verify-wow64-package.py'), str(stage), '--dlls', str(args.dlls)],
+               check=True)
 
 archive = build / f'autorun-{marker}.zip'
 with ZipFile(archive, 'w', ZIP_DEFLATED) as z:

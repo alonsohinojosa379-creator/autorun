@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build i386 Wine Notepad and stage its import closure with the dynarec NRO."""
+"""Stage the dynarec NRO with Wine's Notepad, which the DLL repository carries in
+syswow64, as the program to start."""
 from pathlib import Path
 import os
 import re
@@ -17,7 +18,6 @@ toolchain = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
 env = dict(os.environ, PATH=f'{toolchain}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
 verify = probe / 'tools/verify-wow64-package.py'
 subprocess.run([sys.executable, str(verify), str(baseline)], check=True)
-subprocess.run(['make', '-C', str(pe), '-j8', 'programs/notepad/i386-windows/notepad.exe'], env=env, check=True)
 video_res = pe / 'pe32-video-startup.res.o'
 video_exe = pe / 'pe32-video-startup.exe'
 subprocess.run([str(toolchain / 'i686-w64-mingw32-windres'), '-I', str(root),
@@ -26,49 +26,18 @@ subprocess.run([str(toolchain / 'i686-w64-mingw32-clang'), '-Os', '-Wall', '-Wex
                 '-fno-builtin', '-nostdlib', '-Wl,--entry,_start@0', '-Wl,--image-base,0x10000000',
                 '-Wl,--dynamicbase', '-o', str(video_exe), str(probe / 'tests/pe32_video_startup.c'),
                 str(video_res), '-luser32', '-lkernel32', '-lntdll'], env=env, check=True)
-shutil.copytree(baseline, stage, dirs_exist_ok=True, ignore=shutil.ignore_patterns('*.log', '.DS_Store'))
+shutil.rmtree(stage.parent.parent, ignore_errors=True)
+shutil.copytree(baseline, stage, ignore=shutil.ignore_patterns('*.log', '.DS_Store'))
 shutil.copy2(build / 'wine-nx-runtime.nro', stage / 'wine-nx-runtime.nro')
-for module in ('ntdll', 'wow64', 'wow64win', 'winebox64', 'win32u'):
-    shutil.copy2(pe / f'dlls/{module}/aarch64-windows/{module}.dll',
-                 stage / 'drive_c/windows/system32' / f'{module}.dll')
-# The API set schema the runtime maps at startup (load_apiset_dll): without it
-# no api-ms-win-* import resolves, as in a UCRT-linked DLL.
-schema = 'dlls/apisetschema/aarch64-windows/apisetschema.dll'
-subprocess.run(['make', '-C', str(pe), '-j8', schema], env=env, check=True)
-shutil.copy2(pe / schema, stage / 'drive_c/windows/system32/apisetschema.dll')
-exe = pe / 'programs/notepad/i386-windows/notepad.exe'
-shutil.copy2(exe, stage / 'drive_c/notepad.exe')
 shutil.copy2(video_exe, stage / 'drive_c/pe32-video-startup.exe')
-queue = [exe]
-seen = set()
-# Explicit process-attach dependencies used by the existing GUI path.
-extra = ['imm32.dll']
-while queue or extra:
-    names = extra
-    extra = []
-    if queue:
-        info = subprocess.check_output([str(toolchain / 'llvm-readobj'), '--coff-imports', str(queue.pop())], text=True)
-        names += re.findall(r'^Import \{\n  Name: (.+)$', info, re.M)
-    for name in names:
-        name = name.lower()
-        if name in seen:
-            continue
-        seen.add(name)
-        module = name.removesuffix('.dll')
-        assert re.fullmatch(r'[a-z0-9_-]+', module), name
-        target = f'dlls/{module}/i386-windows/{name}'
-        subprocess.run(['make', '-C', str(pe), '-j8', target], env=env, check=True)
-        dll = pe / target
-        shutil.copy2(dll, stage / 'drive_c/windows/syswow64' / name)
-        queue.append(dll)
 fonts = list((root / 'fonts').glob('*.ttf'))
 assert fonts, 'The existing GUI path needs Wine fonts'
 for folder in ['drive_c/windows/fonts', 'share/wine/fonts']:
     (stage / folder).mkdir(parents=True, exist_ok=True)
     for font in fonts:
         shutil.copy2(font, stage / folder / font.name)
-(stage / 'target.txt').write_text('sdmc:/switch/wine/drive_c/notepad.exe\n')
-(stage / 'args.txt').write_text('C:\\notepad.exe C:\\notepad-test.txt\n')
+(stage / 'target.txt').write_text('sdmc:/switch/wine/drive_c/windows/syswow64/notepad.exe\n')
+(stage / 'args.txt').write_text('C:\\windows\\syswow64\\notepad.exe C:\\notepad-test.txt\n')
 (stage / 'drive_c/notepad-test.txt').write_bytes(b'Wine-NX x86 Notepad through the ARM64 dynarec.\r\n\r\nMove the cursor with the right stick. A is the left mouse button, B the right.\r\nOpen a menu, select text by holding A, right-click with B, and try Save As.\r\n')
 (stage / 'README.txt').write_text('''Wine-NX x86 programs on the nx-wow64-dynarec-33 runtime.
 Build 33 hides the Switch arrow while a program hides the mouse cursor or draws its own
@@ -88,7 +57,7 @@ movement. It now only reads the controller and redraws the cursor; the program's
 own thread sends the input, including clicks made while it was busy.
 Build 27 gates BOX64RUN, DYNAREC and input diagnostics behind verbose mode.
 Build 24 implements ARM64 ntdll's direct NULL-frame longjmp for WoW64 callback returns.
-Update both system32/ntdll.dll and system32/wow64.dll along with the NRO.
+The Windows modules (system32, syswow64) come from the DLL repository, horizon-dlls.
 Positioned file reads/writes preserve the file cursor, including Wine's device-header probe.
 Verbose mode logs bounded native file-read counts and header words for OpenTTD language diagnosis.
 
@@ -98,7 +67,7 @@ sdmc:/switch/wine/drive_c and its folders, marked x86 or ARM64:
   Y turns verbose logs on or off (for bug reports).
 The menu opens on the last program started. A program's own arguments go in a file
 next to it (openttd.exe reads openttd.args.txt). Otherwise args.txt is used when its
-first word names the chosen program: it holds C:\\notepad.exe C:\\notepad-test.txt,
+first word names the chosen program: it holds C:\\windows\\syswow64\\notepad.exe C:\\notepad-test.txt,
 so Notepad opens its test document and other programs start without arguments.
 To pick another program, close Wine-NX from HOME and start it again.
 

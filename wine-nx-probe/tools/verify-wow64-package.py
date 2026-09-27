@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Check architecture and direct dependency closure of the WoW64 test package."""
+"""Check a package with the DLLs it runs with: the programs it stages, the
+runtime and launch files, and what they need from the DLL repository.
+
+    verify-wow64-package.py [STAGE] [--dlls DIR]
+
+Autorun ships no Windows modules; horizon-dlls does, laid out as on the card
+(DIR, default horizon-dlls/switch/wine). A file is looked for in the stage
+first and then there, which is how the two meet on a card."""
 from pathlib import Path
+import argparse
 import hashlib
 import re
 import subprocess
@@ -8,34 +16,39 @@ import json
 import sys
 
 root = Path(__file__).resolve().parents[2]
-stage = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root / "wine-nx-probe/build-switch-wow64/sd-card/switch/wine"
+parser = argparse.ArgumentParser()
+parser.add_argument("stage", nargs="?", type=Path, default=root / "wine-nx-probe/build-switch-wow64/sd-card/switch/wine")
+parser.add_argument("--dlls", type=Path, default=root / "horizon-dlls/switch/wine")
+args = parser.parse_args()
+stage, dlls = args.stage.resolve(), args.dlls.resolve()
 readobj = root / "wine-nx-probe/toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin/llvm-readobj"
 
 def inspect(path, option):
     return subprocess.check_output([str(readobj), option, str(path)], text=True)
 
-for directory, arch in (("system32", "aarch64"), ("syswow64", "i386")):
-    path = stage / "drive_c/windows" / directory
-    modules = {p.name.lower(): p for p in path.iterdir() if p.suffix.lower() in (".dll", ".drv")}
-    assert modules, f"No modules in {path}"
-    for name, module in modules.items():
-        info = inspect(module, "--coff-imports")
-        assert f"Arch: {arch}\n" in info, f"Wrong architecture: {module}"
-        # Load-time imports only; delay-loaded DLLs are resolved on first use.
-        deps = re.findall(r"^Import \{\n  Name: (.+)$", info, re.M)
-        missing = [dep for dep in deps if dep.lower() not in modules]
-        assert not missing, f"Missing load-time dependency for {module}: {missing}"
+def card(path):
+    """Where a file the card needs comes from: the stage, else the DLL repository."""
+    return stage / path if (stage / path).exists() else dlls / path
 
-wow64 = stage / "drive_c/windows/system32/wow64.dll"
-assert "Name: __wine_switch_cpu_backend" in inspect(wow64, "--coff-exports"), "Missing Switch CPU selection export"
-ntdll_exports = inspect(stage / "drive_c/windows/system32/ntdll.dll", "--coff-exports")
-for hook in ("pWow64SuspendLocalThread", "pWow64PrepareForException"):
-    # The bootstrap bypasses init_wow64() and fills these in the PE ntdll.
+assert (dlls / "horizon-dlls/manifest.json").is_file(), f"{dlls} is not the DLL repository's card tree"
+# The Windows modules are the DLL repository's; the package brings none of its own.
+for folder in ("drive_c/windows/system32", "drive_c/windows/syswow64", "drive_c/dxvk", "drive_c/dxvk64",
+               "drive_c/vkd3d64"):
+    if (stage / folder).is_dir():
+        own = [p.name for p in (stage / folder).iterdir()
+               if p.suffix.lower() in (".dll", ".drv", ".acm", ".ax", ".ocx", ".sys", ".cpl", ".tlb")]
+        assert not own, f"{folder} in the package holds modules the DLL repository provides: {own[:8]}"
+
+wow64 = card("drive_c/windows/system32/wow64.dll")
+assert "Name: __wine_switch_cpu_dll" in inspect(wow64, "--coff-exports"), "Missing Switch CPU selection export"
+ntdll_exports = inspect(card("drive_c/windows/system32/ntdll.dll"), "--coff-exports")
+for hook in ("pWow64PrepareForException",):
+    # The bootstrap bypasses init_wow64() and fills this in the PE ntdll.
     assert f"Name: {hook}\n" in ntdll_exports, f"ntdll.dll lacks the WoW64 bootstrap hook {hook}"
-schema = stage / "drive_c/windows/system32/apisetschema.dll"
+schema = card("drive_c/windows/system32/apisetschema.dll")
 # The runtime maps it at startup; without it no api-ms-win-* import resolves.
 assert schema.exists() and "Name: .apiset " in inspect(schema, "--sections"), f"Missing API set schema: {schema}"
-cpu = stage / "drive_c/windows/system32/winebox64.dll"
+cpu = card("drive_c/windows/system32/winebox64.dll")
 exports = set(re.findall(r"^  Name: (.+)$", inspect(cpu, "--coff-exports"), re.M))
 required = {"BTCpuProcessInit", "BTCpuThreadInit", "BTCpuGetBopCode", "BTCpuSimulate",
             "BTCpuGetContext", "BTCpuSetContext", "BTCpuResetToConsistentState",
@@ -87,7 +100,7 @@ sevenzip = stage / "drive_c/7zr.exe"
 info = inspect(sevenzip, "--coff-imports")
 assert "Arch: i386\n" in info and "Type: HIGHLOW" in inspect(sevenzip, "--coff-basereloc"), "7zr must be relocatable"
 deps = re.findall(r"^Import \{\n  Name: (.+)$", info, re.M)
-syswow64 = {p.name.lower() for p in (stage / "drive_c/windows/syswow64").glob("*.dll")}
+syswow64 = {p.name.lower() for p in (dlls / "drive_c/windows/syswow64").iterdir()}
 # The components setup the runtime runs before the first program on a card.
 components = stage / "drive_c/windows/autorun-setup.exe"
 if components.is_file():
@@ -97,15 +110,15 @@ if components.is_file():
         assert f"Symbol: {symbol} " in info, f"Missing components setup import: {symbol}"
     deps = re.findall(r"^Import \{\n  Name: (.+)$", info, re.M)
     assert deps and all(dep.lower() in syswow64 for dep in deps), deps
-assert all(dep.lower() in syswow64 for dep in deps), f"7zr load-time imports not staged: {deps}"
+assert all(dep.lower() in syswow64 for dep in deps), f"7zr load-time imports not in the DLL repository: {deps}"
 assert (stage / "wine-nx-runtime.nro").read_bytes()[16:20] == b"NRO0"
 target = (stage / "target.txt").read_text().strip()
-if target == "sdmc:/switch/wine/drive_c/notepad.exe":
-    info = inspect(stage / "drive_c/notepad.exe", "--coff-imports")
+if target == "sdmc:/switch/wine/drive_c/windows/syswow64/notepad.exe":
+    info = inspect(card("drive_c/windows/syswow64/notepad.exe"), "--coff-imports")
     assert "Arch: i386\n" in info
     deps = re.findall(r"^Import \{\n  Name: (.+)$", info, re.M)
     assert deps and all(dep.lower() in syswow64 for dep in deps), deps
-    assert (stage / "args.txt").read_text().strip() == "C:\\notepad.exe C:\\notepad-test.txt"
+    assert (stage / "args.txt").read_text().strip() == "C:\\windows\\syswow64\\notepad.exe C:\\notepad-test.txt"
     assert (stage / "drive_c/notepad-test.txt").is_file()
     for folder in ("drive_c/windows/fonts", "share/wine/fonts"):
         assert list((stage / folder).glob("*.ttf")), folder
@@ -118,7 +131,7 @@ elif target == "sdmc:/switch/wine/drive_c/pe32-audio.exe":
     deps = re.findall(r"^Import \{\n  Name: (.+)$", info, re.M)
     assert all(dep.lower() in syswow64 for dep in deps), deps
     assert {"winmm.dll", "mmdevapi.dll", "avrt.dll"} <= syswow64
-    driver = stage / "drive_c/windows/syswow64/winenxaudio.drv"
+    driver = card("drive_c/windows/syswow64/winenxaudio.drv")
     assert "Name: WineNXAudioDriver" in inspect(driver, "--coff-exports")
     assert b"winenxaudio.drv\0" in driver.read_bytes(), "Static unixlib lookup requires the module name"
 elif target == "sdmc:/switch/wine/drive_c/pe32-opengl.exe":
@@ -169,7 +182,7 @@ elif target == "sdmc:/switch/wine/drive_c/WarCraft III Setup/war3-setup.exe":
     # full package), and what WarCraft III's movies load through it.
     assert {"quartz.dll", "devenum.dll", "msacm32.dll", "ddraw.dll", "dsound.dll", "d3d9.dll"} <= syswow64
     for name in ("l3codeca.acm", "msacm32.drv"):
-        assert (stage / "drive_c/windows/syswow64" / name).is_file(), f"{name} not staged"
+        assert card(f"drive_c/windows/syswow64/{name}").is_file(), f"{name} is not in the DLL repository"
     assert (stage / "drive_c/WarCraft III").is_dir()
 else:
     assert target == "sdmc:/switch/wine/drive_c/7zr.exe"
@@ -205,4 +218,4 @@ if (stage / "config/settings.json").exists():
 else:
     assert (stage / "run-entry.txt").read_text().strip() == "1"
 assert (stage / "share/wine/nls/locale.nls").exists()
-print("WoW64 package: architectures, dependency closure, CPU exports, relocatable PE32, NRO and launch files passed")
+print("WoW64 package: no modules of its own, imports and CPU exports against the DLL repository, relocatable PE32, NRO and launch files passed")

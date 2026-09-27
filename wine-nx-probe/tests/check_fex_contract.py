@@ -7,7 +7,8 @@ import subprocess
 import sys
 
 probe = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(probe / 'tools'))
+# FEX is built by the DLL repository, horizon-dlls; its ABI stays here.
+sys.path.insert(0, str(probe.parent / 'horizon-dlls/tools'))
 from fex_payload import required_exports, validate_image
 
 parser = argparse.ArgumentParser(description=__doc__)

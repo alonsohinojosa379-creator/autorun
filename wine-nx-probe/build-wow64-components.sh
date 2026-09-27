@@ -9,21 +9,9 @@ if [ ! -f "$pe/Makefile" ]; then
     echo "Configure build-wine-wow64-pe with --enable-archs=aarch64,i386 --enable-winebox64=aarch64 first." >&2
     exit 1
 fi
-# i386 guest modules: the load-time closure of the staged programs, including
-# 7-Zip's 7zr.exe (regular imports only; delay-loaded DLLs wait for first use),
-# plus imm32, which user32 loads during its process attach.
-i386_modules="ntdll kernel32 kernelbase msvcrt ucrtbase advapi32 sechost user32 win32u gdi32
-    oleaut32 ole32 combase coml2 rpcrt4 imm32"
-i386_targets=""
-for module in $i386_modules; do i386_targets="$i386_targets dlls/$module/i386-windows/$module.dll"; done
-make -C "$pe" -j8 include/all \
-    dlls/winebox64/aarch64-windows/winebox64.dll \
-    dlls/wow64/aarch64-windows/wow64.dll \
-    dlls/wow64win/aarch64-windows/wow64win.dll \
-    dlls/ntdll/aarch64-windows/ntdll.dll \
-    dlls/win32u/aarch64-windows/win32u.dll \
-    dlls/apisetschema/aarch64-windows/apisetschema.dll \
-    $i386_targets
+# The headers the runtime compiles against. The Windows modules it runs are the
+# DLL repository's (horizon-dlls/tools/build-dlls.py); none are built here.
+make -C "$pe" -j8 include/all
 i686-w64-mingw32-clang -Os -nostdlib -Wl,--entry,_start@0 \
     -Wl,--image-base,0x10000000 -Wl,--dynamicbase \
     -o "$pe/pe32-smoke.exe" "$root/wine-nx-probe/tests/pe32_smoke.c" -lntdll
@@ -58,16 +46,9 @@ docker run --rm --platform linux/arm64 -v "$root:/work" -w /work \
     cmake --build wine-nx-probe/build-switch-wow64 --target wine-nx-runtime-nro -j 8
     '
 stage="$root/wine-nx-probe/build-switch-wow64/sd-card/switch/wine"
-mkdir -p "$stage/drive_c/windows/system32" "$stage/drive_c/windows/syswow64" "$stage/share/wine/nls"
-for module in winebox64 wow64 wow64win win32u ntdll; do
-    cp "$pe/dlls/$module/aarch64-windows/$module.dll" "$stage/drive_c/windows/system32/"
-done
-# The API set schema the runtime maps at startup (load_apiset_dll); the package
-# check requires it, and the packagers built on this stage start from here.
-cp "$pe/dlls/apisetschema/aarch64-windows/apisetschema.dll" "$stage/drive_c/windows/system32/"
-for module in $i386_modules; do
-    cp "$pe/dlls/$module/i386-windows/$module.dll" "$stage/drive_c/windows/syswow64/"
-done
+mkdir -p "$stage/share/wine/nls"
+# A stage from before the DLL repository still holds the modules it staged.
+rm -rf "$stage/drive_c/windows/system32" "$stage/drive_c/windows/syswow64"
 cp "$pe/pe32-smoke.exe" "$pe/pe32-functional.exe" "$pe/pe32-threads.exe" "$pe/pe32-lifecycle.exe" "$pe/pe32-timers.exe" "$pe/pe32-messages.exe" "$pe/pe32-video-startup.exe" \
     "$root/wine-nx-probe/samples/7zr-x86/7zr.exe" "$root/wine-nx-probe/samples/7zr-x86/7zr-sample.7z" \
     "$root/wine-nx-probe/samples/7zr-x86/7zr-tree.7z" \

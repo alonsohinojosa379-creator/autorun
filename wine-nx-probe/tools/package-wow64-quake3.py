@@ -61,38 +61,12 @@ if key_file.is_file():
     (game / 'baseq3').mkdir(parents=True, exist_ok=True)
     shutil.copy2(key_file, game / 'baseq3/q3key')
 
-syswow64 = stage / 'drive_c/windows/syswow64'
-queue, staged = [exe], {p.name.lower() for p in syswow64.glob('*.dll')}
+# What the engine imports, and the opengl32 and dsound it loads itself, are the
+# DLL repository's.
+syswow64 = probe.parent / 'horizon-dlls/switch/wine/drive_c/windows/syswow64'
 
 def readobj(option, path):
     return subprocess.check_output([str(tools / 'llvm-readobj'), option, str(path)], text=True)
-
-@functools.lru_cache(maxsize=None)
-def forwards_of(path):
-    return dict(re.findall(r'^  Name: (\S+)\n  ForwardedTo: ([^.\s]+)\.', readobj('--coff-exports', path), re.M))
-
-def stage_dll(name):
-    target = f'dlls/{name.removesuffix(".dll")}/i386-windows/{name}'
-    if name not in staged:
-        assert re.fullmatch(r'[a-z0-9_-]+\.dll', name), name
-        subprocess.run(['make', '-C', str(pe), '-j8', target], env=env, check=True)
-        shutil.copy2(pe / target, syswow64 / name)
-        staged.add(name)
-        queue.append(pe / target)
-    return pe / target
-
-# What the engine imports, what those import, and where forwarded exports lead.
-# It loads opengl32 itself, and the sound driver when sound is turned back on.
-for name in ('opengl32.dll', 'dsound.dll'):
-    stage_dll(name)
-while queue:
-    path = queue.pop()
-    for block in re.findall(r'^Import \{\n(.*?)^\}', readobj('--coff-imports', path), re.M | re.S):
-        module = re.search(r'Name: (.+)', block).group(1).lower()
-        symbols = set(re.findall(r'Symbol: (\S+) \(', block))
-        mapping = forwards_of(stage_dll(module))
-        for symbol in sorted(symbols & mapping.keys()):
-            stage_dll(mapping[symbol].lower() + '.dll')
 
 (stage / 'target.txt').write_text('sdmc:/switch/wine/drive_c/quake3/quake3e.exe\n')
 (stage / 'run-entry.txt').write_text('1\n')
@@ -129,7 +103,7 @@ info = readobj('--coff-imports', exe)
 assert 'Arch: i386\n' in info
 imports = {n.lower() for n in re.findall(r'^  Name: (.+)$', info, re.M)}
 present = {p.name.lower() for p in syswow64.glob('*.dll')}
-assert imports <= present, f'Quake3e imports not staged: {imports - present}'
+assert imports <= present, f'Quake3e imports what the DLL repository lacks: {imports - present}'
 assert 'opengl32.dll' in present, 'the engine loads opengl32 at run time'
 
 archive = build / f'wine-nx-quake3-dynarec-{marker}.zip'

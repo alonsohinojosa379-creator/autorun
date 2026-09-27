@@ -7,7 +7,7 @@ probe = Path(__file__).resolve().parents[1]
 header = (probe / 'source/dxvk_requirements.h').read_text().replace('\\\n', '')
 source = probe / 'vendor/dxvk/src/dxvk/dxvk_device_info.cpp'
 if not source.is_file():
-    raise SystemExit('Fetch the pinned source with tools/build-dxvk.py before this check')
+    raise SystemExit('Fetch the pinned source with horizon-dlls/tools/build-dxvk.py before this check')
 features = source.read_text()
 for version, prefix in (('10', 'core.features'), ('11', 'vk11'), ('12', 'vk12'), ('13', 'vk13')):
     required = set(re.findall(r'ENABLE_FEATURE\(' + re.escape(prefix) + r', (\w+), true\)', features))

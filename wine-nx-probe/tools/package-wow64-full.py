@@ -6,17 +6,15 @@ preselected in the launcher.
 
 Each checkpoint packager runs over the previous one's stage, so the result holds
 every program they stage; the build number comes from the runtime's marker.
-The Need for Speed games' DLLs are staged on top, with what they import."""
+The Windows modules are not here: the DLL repository (horizon-dlls) holds all
+of them, and the card gets them from there."""
 from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
-import functools
 import os
 import re
 import shutil
 import subprocess
 import sys
-
-from legacy_runtime import LEGACY_RUNTIME_DLLS
 
 probe = Path(__file__).resolve().parents[1]
 build = probe / 'build-switch-wow64-dynarec'
@@ -59,95 +57,10 @@ shutil.copytree(build / 'war3-sd-card/switch/wine', stage,
                 ignore=shutil.ignore_patterns('*.log', '.DS_Store', 'BUILD-*-README.txt'))
 shutil.copy2(mesa_nro, stage / 'wine-nx-runtime.nro')
 
-# What the Need for Speed games import that no checkpoint stages: NFSU2's
-# SPEED2.EXE, and the XtendedInput dinput8.dll in its folder (which loads the
-# real dinput8.dll from syswow64), and Most Wanted's speed.exe, which adds
-# d3dx9_26, with the scripts\NFS_XtendedInput.asi its ASI loader loads, which
-# adds msvcp140, which loads concrt140 when it starts, and Carbon's NFSC.exe,
-# which adds d3dx9_30. quartz delay-loads ddraw too. Their imports, and the DLLs
-# that exports they use forward to, come along.
-NFS_DLLS = 'ddraw dinput dinput8 netapi32 shfolder tapi32 dbghelp vcruntime140 msvcp140 concrt140 xinput1_4 d3dx9_26 d3dx9_30'.split()
-# Fallout New Vegas (GOG) imports xinput1_3 and d3dx9_38, and its Galaxy.dll and
-# GalaxyWrp.dll import the 2012 runtimes. d3dx9 loads images through
-# windowscodecs, which it delay-imports, so no import walk reaches it.
-FALLOUT_DLLS = 'xinput1_3 msvcp110 msvcr110 d3dx9_38 windowscodecs'.split()
-# Left 4 Dead 2's launcher loads bin\\valve_avi.dll as one of the app systems the
-# engine cannot start without, and that imports AVIFIL32. msvfw32, which it
-# needs in turn, is already staged for WarCraft III's movies.
-SOURCE_DLLS = ['avifil32']
-# Halo's keystone.dll is what checks that its own files are whole, and it
-# imports WINSPOOL.DRV. Without it keystone does not load, the check cannot
-# run, and Halo stops with "one of the Halo PC files is missing or corrupted".
-HALO_DLLS = ['winspool.drv']
-# The Sims 2 loads Activation.dll, which draws with GDI+; everything else it and
-# the game import is staged already. Its own VP6 codec is the release's to
-# supply, being nobody else's to give away.
-SIMS2_DLLS = ['gdiplus']
-# The runtime staged here is the one linked with Mesa, so the card can run
-# Vulkan; the DXVK overlay adds DXVK's d3d9 in C:\\dxvk, which needs Wine's
-# 32-bit loader in syswow64. vulkan-1 loads winevulkan by hand and imports
-# nothing else of it, so no import walk reaches either: name both.
-VULKAN_DLLS = 'vulkan-1 winevulkan'.split()
-# F.E.A.R. (Platinum Collection) imports d3dx9_27, from the April 2005 DirectX
-# redistributable its installer would have run. Without it FEAR.exe stops in
-# the loader with STATUS_DLL_NOT_FOUND. What d3dx9_27 imports is staged already.
-FEAR_DLLS = ['d3dx9_27']
-# Guitar Hero III imports d3dx9_35 and the 2005 runtimes, which its fmodex.dll
-# imports too, and its IntelLaptopGaming.dll imports POWRPROF and pdh. Without
-# them GH3.exe stops in the loader with STATUS_DLL_NOT_FOUND. It then creates
-# an MSXML 6 DOM document, or a 3.0 one if that fails, and throws when neither
-# is registered, which ends it in abort(); both come from the DLLs' own
-# registration scripts in classes.reg. It asks for Vista's Game Explorer too,
-# which gameux serves.
-GH3_DLLS = 'd3dx9_35 msvcr80 msvcp80 powrprof pdh msxml3 msxml6 gameux'.split()
-GAME_DLLS = (NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS
-             + FEAR_DLLS + GH3_DLLS + list(LEGACY_RUNTIME_DLLS))
-pe = probe / 'build-wine-wow64-pe'
 toolchain = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
-env = dict(os.environ, PATH=f'{toolchain}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
-syswow64 = stage / 'drive_c/windows/syswow64'
-staged = {p.name.lower() for p in syswow64.iterdir()}
-queue = []
 
 def readobj(option, path):
     return subprocess.check_output([str(toolchain / 'llvm-readobj'), option, str(path)], text=True)
-
-def dll_name(name):
-    name = name.lower()
-    return name if name.endswith(('.dll', '.drv')) else name + '.dll'
-
-@functools.lru_cache(maxsize=None)
-def built(name):
-    assert re.fullmatch(r'[a-z0-9_-]+\.(dll|drv)', name), name
-    target = f'dlls/{name.removesuffix(".dll")}/i386-windows/{name}'
-    subprocess.run(['make', '-C', str(pe), '-j8', target], env=env, check=True)
-    return pe / target
-
-@functools.lru_cache(maxsize=None)
-def forwards_of(name):
-    return dict(re.findall(r'^  Name: (\S+)\n  ForwardedTo: ([^.\s]+)\.', readobj('--coff-exports', built(name)), re.M))
-
-def need(name):
-    # api-ms-win-* and ext-ms-* are API sets, which ntdll resolves; no file backs them.
-    if name.startswith(('api-ms-', 'ext-ms-')) or name in staged:
-        return
-    shutil.copy2(built(name), syswow64 / name)
-    staged.add(name)
-    queue.append(name)
-
-for name in GAME_DLLS:
-    need(dll_name(name))
-while queue:
-    for block in re.findall(r'^Import \{\n(.*?)^\}', readobj('--coff-imports', syswow64 / queue.pop()), re.M | re.S):
-        module = dll_name(re.search(r'Name: (.+)', block).group(1))
-        if module.startswith(('api-ms-', 'ext-ms-')):
-            continue
-        need(module)
-        symbols = set(re.findall(r'Symbol: (\S+) \(', block))
-        for symbol in sorted(symbols & forwards_of(module).keys()):
-            need(dll_name(forwards_of(module)[symbol]))
-for name in GAME_DLLS:
-    assert 'Arch: i386\n' in readobj('--file-headers', syswow64 / dll_name(name)), name
 
 # A program of our own that does what a game does, for the times a game says
 # only that something went wrong. The launcher lists it beside the games.
@@ -276,10 +189,6 @@ fallout.mkdir(parents=True, exist_ok=True)
     'iMultiSample=0',
     '')).encode())
 
-# The classes those DLLs serve, which on Windows their own DllRegisterServer
-# would have written when they were installed.
-subprocess.run([sys.executable, str(tools / 'make-classes-reg.py'), str(stage)], check=True)
-
 # The launcher lists every program in drive_c; target.txt only preselects one.
 (stage / 'target.txt').write_text('sdmc:/switch/wine/drive_c/WarCraft III Setup/war3-setup.exe\n')
 # Everything a person sets, in one file, where a dozen loose toggles were.
@@ -347,7 +256,9 @@ for gone in ('run-entry.txt', 'verbose.txt', 'profile.txt', 'framebuffer.txt', '
 ''')
 (stage / f'BUILD-{marker}-README.txt').write_text(f'''Wine-NX build {marker}: the whole SD-card payload.
 Copy the switch folder to the SD card, merging folders; it replaces the runtime
-NRO and the Wine payload of any earlier build.
+NRO and the Wine payload of any earlier build. The Windows modules -- system32,
+syswow64 and the bundled DXVK -- are the DLL repository's (autorun-horizon-dlls):
+copy its switch folder too, the same way, if the launcher has not fetched them.
 
 The launcher lists the programs in drive_c. The WarCraft III setup is
 preselected; WARCRAFT-III-README.txt says how to add the game and run it.
@@ -356,22 +267,17 @@ C:\\\\openttd\\\\openttd.exe draws with OpenGL on the Switch GPU (Mesa), plays s
 effects through the win32 driver, and reads openttd.args.txt next to it; putting
 -v win32:no_threads there goes back to GDI drawing.
 Also staged: C:\\\\pe32-opengl.exe (red, green and blue frames, then PASS and
-exit_code=0x0000002a), C:\\\\pe32-audio.exe (audout playback), C:\\\\notepad.exe and
-the 7zr benchmark.
+exit_code=0x0000002a), C:\\\\pe32-audio.exe (audout playback), Notepad and the
+7zr benchmark.
 
-Need for Speed Underground 2 and Most Wanted: the DLLs SPEED2.EXE and speed.exe
-import are staged (ddraw, dinput8, netapi32, shfolder, tapi32, d3dx9_26 and what
-they import), with dbghelp, msvcp140, vcruntime140 and xinput1_4 for XtendedInput:
-NFSU2's dinput8.dll and Most Wanted's NFS_XtendedInput.asi. Neither executable
-can be moved in memory, so start them through a forwarder set to a 32-bit
-address space.
+Every DLL a game imports from Windows -- the D3DX versions, the Visual C++
+runtimes, XInput, DirectPlay and the rest -- is in the DLL repository, whatever
+installer the game would have run on a PC.
 
-F.E.A.R. (Platinum Collection): d3dx9_27, which FEAR.exe imports and the game's
-DirectX installer would otherwise supply.
+Need for Speed Underground 2 and Most Wanted: neither executable can be moved in
+memory, so start them through a forwarder set to a 32-bit address space.
 
-Fallout New Vegas (GOG): xinput1_3, d3dx9_38 and the windowscodecs that loads its
-textures are staged, with msvcp110 and msvcr110 for Galaxy.dll and GalaxyWrp.dll.
-Its executable relocates, so it needs no forwarder. Started with no settings of
+Fallout New Vegas (GOG): its executable relocates, so it needs no forwarder. Started with no settings of
 its own the game hands itself to FalloutNVLauncher.exe and closes, because the
 display it is told to use is not one it recognises, so the payload brings the
 settings file it would have written:
@@ -382,14 +288,12 @@ It names the Switch's GPU as DXVK reports it, at 1280x720. The game rewrites
 that file once its own options are used; if it already holds settings worth
 keeping, keep the [Display] sD3DDevice line and merge the rest.
 
-The Sims 2 Ultimate Collection: everything Sims2EP9.exe imports is already
-staged, and gdiplus for the Activation.dll it loads. The release comes installed, so nothing has to be unpacked; what is
-missing is the registry the game reads to find each pack, which its own batch
+The Sims 2 Ultimate Collection: the release comes installed, so nothing has to
+be unpacked; what is missing is the registry the game reads to find each pack, which its own batch
 file writes with the paths of the computer it was unpacked on. C:\\The Sims 2
 Setup\\sims2-setup.exe writes the same with the card's, and its README says how.
 
-Halo: Combat Evolved: winspool.drv is staged, which is what Halo checks its own
-files with. Delete the ._ files a Mac leaves beside every file on the card if
+Halo: Combat Evolved: delete the ._ files a Mac leaves beside every file on the card if
 the game was copied from one: Halo loads every DLL in its Controls folder and
 one of those is not a DLL. Halo walks with w, a, s and d and works its menus
 with the arrows, so the left stick takes one set and the d-pad the other. Put
@@ -416,10 +320,7 @@ stick turns the view and the touchscreen drags it like a trackpad. Holding +
 and - together leaves the game whatever the keys say. Everything else is in
 Halo's own Settings, Controls, which the mouse can now reach.
 
-Left 4 Dead 2: the engine will not start without bin\\valve_avi.dll, which is one
-of the app systems its launcher creates, and that imports AVIFIL32, so avifil32
-is staged; msvfw32, which avifil32 needs, was already there for WarCraft III's
-movies. left4dead2.exe relocates, so it needs no forwarder either. Steam's
+Left 4 Dead 2: left4dead2.exe relocates, so it needs no forwarder either. Steam's
 GameOverlayRenderer.dll not loading is expected and harmless.
 
 The screen: windows are now shown through OpenGL on the GPU, each in its own

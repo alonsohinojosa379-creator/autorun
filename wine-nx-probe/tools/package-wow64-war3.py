@@ -25,19 +25,7 @@ tools = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
 env = dict(os.environ, PATH=f'{tools}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
 marker = re.search(r'nx-wow64-dynarec-(\d+)', (probe / 'source/runtime.c').read_text()).group(1)
 
-# What War3.exe, Game.dll, Storm.dll and blizzard.ax import from Windows (the
-# game ships mss32, storm, ijl15 and msvcr80 itself), and what it and its
-# movies load at run time: Direct3D, DirectShow and its decoders, sound, and
-# the DLLs that earlier runs on the card reported missing.
-WAR3_DLLS = '''
-    advapi32 comctl32 comdlg32 gdi32 imm32 kernel32 msvcrt ole32 oleaut32 opengl32 shell32
-    user32 version wininet winmm wsock32
-    d3d8 d3d9 ddraw dsound mswsock wintrust wldap32 psapi uxtheme crypt32 bcrypt mpr
-    quartz devenum atl100 avicap32 msdmo msvfw32 msacm32 msacm32.drv midimap
-    l3codeca.acm
-'''.split()
-
-assert (base / 'drive_c/notepad.exe').is_file(), f'{base} is not a Wine package; run package-wow64-full.py first'
+assert (base / 'drive_c/notepad-test.txt').is_file(), f'{base} is not a Wine package; run package-wow64-full.py first'
 
 setup = pe / 'war3-setup.exe'
 subprocess.run([str(tools / 'i686-w64-mingw32-clang'), '-Os', '-Wall', '-Wextra', '-Werror', '-fno-builtin',
@@ -51,49 +39,6 @@ setup_dir = stage / 'drive_c/WarCraft III Setup'
 setup_dir.mkdir(parents=True)
 shutil.copy2(setup, setup_dir / 'war3-setup.exe')
 (stage / 'drive_c/WarCraft III').mkdir(exist_ok=True)
-
-syswow64 = stage / 'drive_c/windows/syswow64'
-queue, staged = [setup], {p.name.lower() for p in syswow64.iterdir()}
-rebuilt = set()
-
-def readobj(option, path):
-    return subprocess.check_output([str(tools / 'llvm-readobj'), option, str(path)], text=True)
-
-def file_name(name):
-    name = name.lower()
-    return name if name.endswith(('.dll', '.drv', '.acm')) else name + '.dll'
-
-@functools.lru_cache(maxsize=None)
-def forwards_of(path):
-    return dict(re.findall(r'^  Name: (\S+)\n  ForwardedTo: ([^.\s]+)\.', readobj('--coff-exports', path), re.M))
-
-def stage_dll(name):
-    """Build the module and stage it. Even one the base already holds is built
-    and copied again, so a module changed since the base was staged (quartz) is
-    current here."""
-    name = file_name(name)
-    assert re.fullmatch(r'[a-z0-9_-]+\.(dll|drv|acm)', name), name
-    target = f'dlls/{name.removesuffix(".dll")}/i386-windows/{name}'
-    if name not in rebuilt:
-        subprocess.run(['make', '-C', str(pe), '-j8', target], env=env, check=True)
-        shutil.copy2(pe / target, syswow64 / name)
-        rebuilt.add(name)
-        staged.add(name)
-        queue.append(pe / target)
-    return pe / target
-
-for name in WAR3_DLLS:
-    stage_dll(name)
-while queue:
-    path = queue.pop()
-    for block in re.findall(r'^Import \{\n(.*?)^\}', readobj('--coff-imports', path), re.M | re.S):
-        module = file_name(re.search(r'Name: (.+)', block).group(1))
-        if module.startswith(('api-ms-', 'ext-ms-')):
-            continue
-        symbols = set(re.findall(r'Symbol: (\S+) \(', block))
-        mapping = forwards_of(stage_dll(module))
-        for symbol in sorted(symbols & mapping.keys()):
-            stage_dll(mapping[symbol])
 
 (stage / 'target.txt').write_text('sdmc:/switch/wine/drive_c/WarCraft III Setup/war3-setup.exe\n')
 (stage / 'run-entry.txt').write_text('1\n')
@@ -152,12 +97,4 @@ audio tests, Notepad and 7-Zip.
 ''')
 
 subprocess.run([sys.executable, str(probe / 'tools/verify-wow64-package.py'), str(stage)], check=True)
-present = {p.name.lower() for p in syswow64.iterdir()}
-for exe in (setup, pe / 'dlls/quartz/i386-windows/quartz.dll', pe / 'dlls/l3codeca.acm/i386-windows/l3codeca.acm'):
-    info = readobj('--coff-imports', exe)
-    assert 'Arch: i386\n' in info, exe
-    imports = {file_name(n) for n in re.findall(r'^  Name: (.+)$', info, re.M)} - {'ntdll.dll'}
-    imports = {n for n in imports if not n.startswith(('api-ms-', 'ext-ms-'))}
-    assert imports <= present, f'{exe.name} imports not staged: {imports - present}'
-assert (syswow64 / 'quartz.dll').read_bytes() == (pe / 'dlls/quartz/i386-windows/quartz.dll').read_bytes()
 print(stage_root)

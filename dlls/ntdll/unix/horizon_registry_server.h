@@ -315,14 +315,14 @@ static unsigned int horizon_registry_init(void)
             return HORIZON_REG_NO_MEMORY;
         }
     }
-    /* The classes the staged DLLs serve, which on Windows are written by each
-     * DLL's own DllRegisterServer when it is installed. Nothing here installs
-     * anything, so they are written out beside the runtime instead and read
-     * before a program asks: a game that creates a filter graph or a text
-     * service gets one rather than a null pointer it does not check. Loaded
-     * before system.reg, so anything a program has written for itself since
-     * still wins. */
-    horizon_registry_load_hive( machine, "config/classes.reg" );
+    /* The classes the DLLs serve, which on Windows are written by each DLL's
+     * own DllRegisterServer when it is installed. Nothing here installs
+     * anything, so the DLL repository writes them out beside its manifest and
+     * they are read before a program asks: a game that creates a filter graph
+     * or a text service gets one rather than a null pointer it does not check.
+     * Loaded before system.reg, so anything a program has written for itself
+     * since still wins. */
+    horizon_registry_load_hive( machine, "horizon-dlls/classes.reg" );
     horizon_registry_move_hives( HORIZON_REGISTRY_DIR );
     horizon_registry_load_hive( machine, HORIZON_REGISTRY_SUBDIR "system.reg" );
     horizon_registry_load_hive( user, HORIZON_REGISTRY_SUBDIR "user.reg" );

@@ -12,7 +12,9 @@ build = probe / 'build-switch-wow64-dynarec'
 stage = build / 'sd-card/switch/wine'
 verify = probe / 'tools/verify-wow64-package.py'
 subprocess.run([sys.executable, str(verify), str(baseline)], check=True)
-shutil.copytree(baseline, stage, dirs_exist_ok=True, ignore=shutil.ignore_patterns('.DS_Store', '*.log'))
+# Its own earlier output, which may hold what the stage no longer does.
+shutil.rmtree(stage.parent.parent, ignore_errors=True)
+shutil.copytree(baseline, stage, ignore=shutil.ignore_patterns('.DS_Store', '*.log'))
 shutil.copy2(build / 'wine-nx-runtime.nro', stage / 'wine-nx-runtime.nro')
 (stage / 'README.txt').write_text('''Experimental dynarec build nx-wow64-dynarec-1.
 Uses the same 7zr.exe b 1 -mmt2 -md18 benchmark as the interpreter package.
