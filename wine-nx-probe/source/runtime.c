@@ -75,7 +75,7 @@ u32 __nx_exception_ignoredebug = 1;
 #ifdef WINE_NX_AMD64
 #define WINE_NX_RUNTIME_BUILD "nx-amd64-box64-3"
 #elif defined(WINE_NX_BOX64_DYNAREC)
-#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-254"
+#define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-258"
 #else
 #define WINE_NX_RUNTIME_BUILD "nx-wow64-console-11"
 #endif
@@ -3984,12 +3984,6 @@ int main( int argc, char **argv )
     log_line( "[INIT] verbose traces %s (verbose.txt)", wine_nx_runtime_verbose ? "on" : "off" );
     log_line( "[INIT] profiler %s (profile.txt)", runtime_profile ? "on" : "off" );
     log_line( "[INIT] windows shown by %s", wine_nx_compositor_mode ? "the OpenGL compositor" : "the framebuffer" );
-    /* After the launcher, where X may have turned it on or off. */
-    if (runtime_profile)
-    {
-        extern void wine_nx_profile_start( void );
-        wine_nx_profile_start();
-    }
     log_line( "[TARGET] %s", target );
 
     status = runtime_target_machine( target, &target_machine );
@@ -4016,6 +4010,16 @@ int main( int argc, char **argv )
     log_line( "[INIT] Wine paths/unix bridge ready" );
     virtual_init();
     log_line( "[INIT] virtual memory ready" );
+    /* After the launcher, where X may have turned it on or off, and after the
+     * guest's reservations: libnx puts the sampler's stack at random in its
+     * stack region, which on the 32-bit forwarder is where images go. Started
+     * before them, a native mapping made before the image took 0x2762000,
+     * inside the 0x400000-0x28f1000 Guitar Hero III cannot be moved from. */
+    if (runtime_profile)
+    {
+        extern void wine_nx_profile_start( void );
+        wine_nx_profile_start();
+    }
 
     /* TEMPORARY: verify __libnx_exception_handler wiring. Set to 0 to disable. */
 #define WINE_NX_TEST_FAULT 0
