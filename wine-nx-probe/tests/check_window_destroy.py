@@ -28,7 +28,7 @@ struct horizon_user_window {
     void *text, *win_region;
     struct horizon_user_window *next;
 };
-struct horizon_input_shm { unsigned int caret; };
+struct horizon_input_shm { unsigned int active, focus, capture, menu_owner, move_size, caret; };
 static struct horizon_user_window *horizon_windows;
 static struct horizon_input_shm input;
 static pthread_mutex_t horizon_server_objects_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -46,11 +46,13 @@ static void horizon_win_timers_drop(int *timers, unsigned int tid, unsigned int 
 static int horizon_clip_window_destroyed(int *clipboard, unsigned int handle)
 { (void)clipboard; (void)handle; return 0; }
 static void horizon_server_clipboard_notify_locked(void) {}
-static struct horizon_input_shm *horizon_server_input_shared_locked(void) { return &input; }
+static struct horizon_input_shm *horizon_server_input_shared_locked(unsigned int tid)
+{ (void)tid; return &input; }
 static void horizon_server_set_caret_window_locked(struct horizon_input_shm *shm,
                                                   unsigned int handle, int w, int h)
 { (void)w; (void)h; shm->caret = handle; }
-static void horizon_server_flush_input_locked(void) { flushed++; }
+static void horizon_server_flush_input_locked(struct horizon_input_shm *shm)
+{ (void)shm; flushed++; }
 static void horizon_server_refresh_queues_locked(void) { refreshed++; }
 static int horizon_server_write_status(int fd, unsigned int status) { (void)fd; return status; }
 '''

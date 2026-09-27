@@ -3452,7 +3452,16 @@ static struct horizon_atom_entry *horizon_atoms;
 static struct horizon_user_class *horizon_classes;
 static struct horizon_user_window *horizon_windows;
 static struct horizon_session_view *horizon_session_views;
-static struct horizon_obj_locator horizon_input_locator;
+struct horizon_thread_input
+{
+    unsigned int tid;
+    struct horizon_obj_locator locator;
+    struct horizon_input_shm *shared;
+    int caret_hide, caret_state;
+    unsigned char desktop_keystate[256];
+    struct horizon_thread_input *next;
+};
+static struct horizon_thread_input *horizon_thread_inputs, *horizon_foreground_input;
 static struct horizon_input_message *horizon_input_messages;
 static struct horizon_input_message **horizon_input_messages_tail = &horizon_input_messages;
 /* update_rawinput_devices: the registrations of the one process that runs. */
@@ -5731,55 +5740,87 @@ static struct horizon_shared_object *horizon_server_shared_object_locked( struct
     return (struct horizon_shared_object *)(horizon_session_data + locator.offset);
 }
 
-static unsigned int horizon_server_ensure_input_locked(void)
+static unsigned int horizon_server_flush_input_locked( struct horizon_input_shm *input )
 {
-    struct horizon_shared_object *shared;
-    unsigned int status;
-
-    if (horizon_input_locator.id) return HORIZON_STATUS_SUCCESS;
-    if ((status = horizon_server_alloc_shared_object_locked( sizeof(struct horizon_input_shm),
-                                                             &horizon_input_locator )))
-        return status;
-    shared = horizon_server_shared_object_locked( horizon_input_locator );
-    shared->shm.input.foreground = 1;
-    shared->shm.input.cursor_count = 0;
     return horizon_server_flush_session_range_locked(
-        horizon_input_locator.offset,
+        (unsigned char *)input - horizon_session_data - offsetof( struct horizon_shared_object, shm ),
         offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_input_shm) );
 }
 
-static struct horizon_input_shm *horizon_server_input_shared_locked(void)
+static struct horizon_thread_input *horizon_server_thread_input_locked( unsigned int tid, int create )
 {
+    struct horizon_thread_input *input, *free_input = NULL;
     struct horizon_shared_object *shared;
 
-    if (horizon_server_ensure_input_locked()) return NULL;
-    shared = horizon_server_shared_object_locked( horizon_input_locator );
-    return shared ? &shared->shm.input : NULL;
+    if (!tid) return horizon_foreground_input;
+    for (input = horizon_thread_inputs; input; input = input->next)
+    {
+        if (input->tid == tid) return input;
+        if (!input->tid) free_input = input;
+    }
+    if (!create) return NULL;
+    if (!(input = free_input))
+    {
+        if (!(input = calloc( 1, sizeof(*input) ))) return NULL;
+        if (horizon_server_alloc_shared_object_locked( sizeof(struct horizon_input_shm), &input->locator ))
+        {
+            free( input );
+            return NULL;
+        }
+        input->shared = &horizon_server_shared_object_locked( input->locator )->shm.input;
+        input->next = horizon_thread_inputs;
+        horizon_thread_inputs = input;
+    }
+    else
+    {
+        shared = horizon_server_shared_object_locked( input->locator );
+        shared->id = input->locator.id = ++horizon_session_next_id;
+    }
+    input->tid = tid;
+    horizon_server_flush_input_locked( input->shared );
+    return input;
 }
 
-static unsigned int horizon_server_flush_input_locked(void)
+static struct horizon_input_shm *horizon_server_input_shared_locked( unsigned int tid )
 {
-    if (!horizon_input_locator.id) return HORIZON_STATUS_INVALID_HANDLE;
-    return horizon_server_flush_session_range_locked(
-        horizon_input_locator.offset,
-        offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_input_shm) );
+    struct horizon_thread_input *input = horizon_server_thread_input_locked( tid, !!tid );
+    return input ? input->shared : NULL;
 }
 
-/* The caret window and rectangle are shared input data. Its hide count and
- * on/off state stay in the server, as in server/queue.c. */
-static int horizon_caret_hide;
-static int horizon_caret_state;
+static struct horizon_thread_input *horizon_server_input_state_locked( const struct horizon_input_shm *shared )
+{
+    struct horizon_thread_input *input;
+
+    for (input = horizon_thread_inputs; input; input = input->next)
+        if (input->shared == shared) return input;
+    return NULL;
+}
+
+static void horizon_server_release_input_locked( unsigned int tid )
+{
+    struct horizon_thread_input *input;
+
+    if (!tid || !(input = horizon_server_thread_input_locked( tid, 0 ))) return;
+    if (horizon_foreground_input == input) horizon_foreground_input = NULL;
+    memset( input->shared, 0, sizeof(*input->shared) );
+    memset( input->desktop_keystate, 0, sizeof(input->desktop_keystate) );
+    input->tid = input->caret_hide = input->caret_state = 0;
+    horizon_server_shared_object_locked( input->locator )->id = 0;
+    horizon_server_flush_input_locked( input->shared );
+}
 
 /* CreateCaret and DestroyCaret: a new caret window starts at 0,0, hidden. */
 static void horizon_server_set_caret_window_locked( struct horizon_input_shm *input, unsigned int win,
                                                     int width, int height )
 {
+    struct horizon_thread_input *owner = horizon_server_input_state_locked( input );
+
     if (!win || win != input->caret) memset( &input->caret_rect, 0, sizeof(input->caret_rect) );
     input->caret = win;
     input->caret_rect.right = input->caret_rect.left + width;
     input->caret_rect.bottom = input->caret_rect.top + height;
-    horizon_caret_hide = 1;
-    horizon_caret_state = 0;
+    owner->caret_hide = 1;
+    owner->caret_state = 0;
 }
 
 /* SetCaretPos, ShowCaret, HideCaret and the blink timer. The caller reports
@@ -5788,6 +5829,7 @@ static unsigned int horizon_server_set_caret_info_locked( struct horizon_input_s
                                                           unsigned int handle, int x, int y, int hide,
                                                           int state )
 {
+    struct horizon_thread_input *owner = horizon_server_input_state_locked( input );
     struct horizon_rectangle old = input->caret_rect;
 
     if (handle && handle != input->caret) return HORIZON_STATUS_ACCESS_DENIED;
@@ -5800,18 +5842,18 @@ static unsigned int horizon_server_set_caret_info_locked( struct horizon_input_s
     }
     if (flags & HORIZON_SET_CARET_HIDE)
     {
-        horizon_caret_hide += hide;
-        if (horizon_caret_hide < 0) horizon_caret_hide = 0;
+        owner->caret_hide += hide;
+        if (owner->caret_hide < 0) owner->caret_hide = 0;
     }
     if (flags & HORIZON_SET_CARET_STATE)
     {
         switch (state)
         {
-        case HORIZON_CARET_STATE_OFF: horizon_caret_state = 0; break;
-        case HORIZON_CARET_STATE_ON: horizon_caret_state = 1; break;
-        case HORIZON_CARET_STATE_TOGGLE: horizon_caret_state = !horizon_caret_state; break;
+        case HORIZON_CARET_STATE_OFF: owner->caret_state = 0; break;
+        case HORIZON_CARET_STATE_ON: owner->caret_state = 1; break;
+        case HORIZON_CARET_STATE_TOGGLE: owner->caret_state = !owner->caret_state; break;
         case HORIZON_CARET_STATE_ON_IF_MOVED:
-            if (x != old.left || y != old.top) horizon_caret_state = 1;
+            if (x != old.left || y != old.top) owner->caret_state = 1;
             break;
         }
     }
@@ -5944,6 +5986,7 @@ static void horizon_server_destroy_queue_locked( unsigned int tid )
     struct horizon_msgq *queue = horizon_msgq_find( &horizon_msg_queues, tid );
     struct horizon_server_object *sync;
 
+    horizon_server_release_input_locked( tid );
     if (!queue) return;
     sync = queue->sync;
     if (horizon_free_queue_shm_count < ARRAY_SIZE(horizon_free_queue_shm))
@@ -7545,10 +7588,18 @@ static int horizon_server_handle_destroy_window( struct horizon_server_connectio
         horizon_message_queue_drop( &horizon_posted_messages, window->tid, window->handle );
         horizon_win_timers_drop( &horizon_timers, window->tid, window->handle );
         if (horizon_clip_window_destroyed( &horizon_clipboard, window->handle )) horizon_server_clipboard_notify_locked();
-        if ((input = horizon_server_input_shared_locked()) && input->caret == window->handle)
+        if ((input = horizon_server_input_shared_locked( window->tid )) &&
+            (input->active == window->handle || input->focus == window->handle ||
+             input->capture == window->handle || input->menu_owner == window->handle ||
+             input->move_size == window->handle || input->caret == window->handle))
         {
-            horizon_server_set_caret_window_locked( input, 0, 0, 0 );
-            horizon_server_flush_input_locked();
+            if (input->active == window->handle) input->active = 0;
+            if (input->focus == window->handle) input->focus = 0;
+            if (input->capture == window->handle) input->capture = 0;
+            if (input->menu_owner == window->handle) input->menu_owner = 0;
+            if (input->move_size == window->handle) input->move_size = 0;
+            if (input->caret == window->handle) horizon_server_set_caret_window_locked( input, 0, 0, 0 );
+            horizon_server_flush_input_locked( input );
         }
         while ((property = window->properties))
         {
@@ -8544,12 +8595,12 @@ static unsigned int horizon_server_queue_raw_mouse_locked( struct horizon_user_w
  * thread's key state then follows those messages, and is not brought up to
  * the desktop's: server/queue.c locks it while hardware messages are being
  * processed. */
-static int horizon_server_key_messages_pending_locked( void )
+static int horizon_server_key_messages_pending_locked( unsigned int tid )
 {
     struct horizon_input_message *queued;
 
     for (queued = horizon_input_messages; queued; queued = queued->next)
-        if (queued->device == HORIZON_IMDT_KEYBOARD && !queued->raw_keyboard &&
+        if (queued->tid == tid && queued->device == HORIZON_IMDT_KEYBOARD && !queued->raw_keyboard &&
             queued->msg >= HORIZON_KBD_WM_KEYDOWN && queued->msg <= HORIZON_KBD_WM_SYSKEYUP)
             return 1;
     return 0;
@@ -8558,18 +8609,17 @@ static int horizon_server_key_messages_pending_locked( void )
 /* server/queue.c: sync_input_keystate. The thread's state takes the keys
  * that changed on the desktop since it last did, keeping what the thread set
  * for itself (SetKeyboardState) for the others. */
-static unsigned char horizon_input_desktop_keystate[256];
-
 static void horizon_server_sync_keystate_locked( struct horizon_input_shm *input,
                                                  const struct horizon_desktop_shm *desktop )
 {
+    struct horizon_thread_input *owner = horizon_server_input_state_locked( input );
     unsigned int i;
 
-    if (horizon_server_key_messages_pending_locked()) return;
+    if (horizon_server_key_messages_pending_locked( owner->tid )) return;
     for (i = 0; i < 256; i++)
     {
-        if (horizon_input_desktop_keystate[i] == desktop->keystate[i]) continue;
-        input->keystate[i] = horizon_input_desktop_keystate[i] = desktop->keystate[i];
+        if (owner->desktop_keystate[i] == desktop->keystate[i]) continue;
+        input->keystate[i] = owner->desktop_keystate[i] = desktop->keystate[i];
     }
     input->keystate_serial = desktop->keystate_serial;
 }
@@ -8648,8 +8698,8 @@ static int horizon_server_handle_send_keyboard( struct horizon_server_connection
     memset( &reply, 0, sizeof(reply) );
     memset( &event, 0, sizeof(event) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (!(input = horizon_server_input_shared_locked()) ||
-        !(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
+    input = horizon_server_input_shared_locked( 0 );
+    if (!(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
         status = HORIZON_STATUS_INVALID_HANDLE;
     else
     {
@@ -8657,8 +8707,9 @@ static int horizon_server_handle_send_keyboard( struct horizon_server_connection
         horizon_keyboard_event( desktop->keystate, &horizon_alt_pressed, kbd->vkey, kbd->scan, kbd->flags,
                                 (unsigned int)kbd->info, &event );
         if (request->win) focus = horizon_server_find_window_locked( request->win );
-        if (!focus && input->focus) focus = horizon_server_find_window_locked( input->focus );
-        if (!focus && input->active) focus = horizon_server_find_window_locked( input->active );
+        if (!focus && input && input->focus) focus = horizon_server_find_window_locked( input->focus );
+        if (!focus && input && input->active) focus = horizon_server_find_window_locked( input->active );
+        if (focus) input = horizon_server_input_shared_locked( focus->tid );
 
         if ((raw_device = horizon_rawinput_find( horizon_rawinput_devices, horizon_rawinput_device_count,
                                                  HORIZON_RAWINPUT_USAGE_KEYBOARD )))
@@ -8680,7 +8731,7 @@ static int horizon_server_handle_send_keyboard( struct horizon_server_connection
          * down when TranslateMessage makes a character of the A. */
         horizon_keyboard_update_state( desktop->keystate, event.message, event.vkey, 0xc0 );
         desktop->keystate_serial++;
-        horizon_server_sync_keystate_locked( input, desktop );
+        if (input) horizon_server_sync_keystate_locked( input, desktop );
 
         if (raw_target)
         {
@@ -8699,7 +8750,7 @@ static int horizon_server_handle_send_keyboard( struct horizon_server_connection
         horizon_server_refresh_queues_locked();
         reply.prev_x = reply.new_x = desktop->cursor.x;
         reply.prev_y = reply.new_y = desktop->cursor.y;
-        horizon_server_flush_input_locked();
+        if (input) horizon_server_flush_input_locked( input );
         horizon_server_flush_session_range_locked(
             desktop_locator.offset,
             offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_desktop_shm) );
@@ -8732,10 +8783,10 @@ static int horizon_server_handle_send_hardware_message( struct horizon_server_co
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
+    input = horizon_server_input_shared_locked( 0 );
     if (request->input.type != HORIZON_INPUT_MOUSE)
         status = HORIZON_STATUS_NOT_IMPLEMENTED;
-    else if (!(input = horizon_server_input_shared_locked()) ||
-             !(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
+    else if (!(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
         status = HORIZON_STATUS_INVALID_HANDLE;
     else
     {
@@ -8800,11 +8851,12 @@ static int horizon_server_handle_send_hardware_message( struct horizon_server_co
         time = mouse->time ? mouse->time : horizon_server_input_time();
         desktop->cursor.last_change = time;
 
-        if (input->capture) target = horizon_server_find_window_locked( input->capture );
+        if (input && input->capture) target = horizon_server_find_window_locked( input->capture );
         if (!target && request->win) target = horizon_server_find_window_locked( request->win );
         if (!target) target = horizon_server_shallow_window_from_point_locked( x, y );
         if (target) target_handle = target->handle;
-        horizon_server_log_mouse_target_locked( target, x, y, input->capture );
+        horizon_server_log_mouse_target_locked( target, x, y, input ? input->capture : 0 );
+        if (target) input = horizon_server_input_shared_locked( target->tid );
 
         if (raw_device)
         {
@@ -8825,7 +8877,7 @@ static int horizon_server_handle_send_hardware_message( struct horizon_server_co
             if (!(flags & event->flag)) continue;
             if (event->down) horizon_mouse_buttons |= event->mk;
             else horizon_mouse_buttons &= ~event->mk;
-            input->keystate[event->vk] = event->down ? 0x80 : 0;
+            if (input) input->keystate[event->vk] = event->down ? 0x80 : 0;
             desktop->keystate[event->vk] = event->down ? 0x80 : 0;
             if (!legacy) continue;
             if ((status = horizon_server_queue_mouse_locked( target, event->msg,
@@ -8833,7 +8885,7 @@ static int horizon_server_handle_send_hardware_message( struct horizon_server_co
                                                              mouse->info )))
                 goto done;
         }
-        input->keystate_serial++;
+        if (input) input->keystate_serial++;
         desktop->keystate_serial++;
 done:
         if (raw_target)
@@ -8856,7 +8908,7 @@ done:
         if (target || raw_target) horizon_server_refresh_queues_locked();
         reply.new_x = desktop->cursor.x;
         reply.new_y = desktop->cursor.y;
-        horizon_server_flush_input_locked();
+        if (input) horizon_server_flush_input_locked( input );
         horizon_server_flush_session_range_locked(
             desktop_locator.offset,
             offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_desktop_shm) );
@@ -8913,7 +8965,7 @@ static int horizon_server_handle_accept_hardware_message( struct horizon_server_
         if (queued->device == HORIZON_IMDT_KEYBOARD && !queued->raw_keyboard &&
             queued->msg >= HORIZON_KBD_WM_KEYDOWN && queued->msg <= HORIZON_KBD_WM_SYSKEYUP)
         {
-            struct horizon_input_shm *input = horizon_server_input_shared_locked();
+            struct horizon_input_shm *input = horizon_server_input_shared_locked( queued->tid );
             struct horizon_obj_locator desktop_locator;
             struct horizon_desktop_shm *desktop = horizon_server_desktop_shared_locked( &desktop_locator );
 
@@ -8924,7 +8976,7 @@ static int horizon_server_handle_accept_hardware_message( struct horizon_server_
                 horizon_keyboard_update_state( input->keystate, queued->msg, (unsigned int)queued->wparam, 0x80 );
                 input->keystate_serial++;
                 if (desktop) horizon_server_sync_keystate_locked( input, desktop );
-                horizon_server_flush_input_locked();
+                horizon_server_flush_input_locked( input );
             }
             free( queued );
             break;
@@ -8953,7 +9005,7 @@ static int horizon_server_handle_get_key_state( struct horizon_server_connection
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (!(input = horizon_server_input_shared_locked()) ||
+    if (!(input = horizon_server_input_shared_locked( connection->tid )) ||
         !(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
         reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
     else if (request->async)
@@ -8969,20 +9021,23 @@ static int horizon_server_handle_get_key_state( struct horizon_server_connection
     {
         horizon_server_sync_keystate_locked( input, desktop );
         reply.state = input->keystate[request->key & 0xff];
-        horizon_server_flush_input_locked();
+        horizon_server_flush_input_locked( input );
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
 
-static int horizon_server_handle_get_thread_input( struct horizon_server_connection *connection )
+static int horizon_server_handle_get_thread_input( struct horizon_server_connection *connection,
+                                                  const unsigned char *message )
 {
+    const struct horizon_get_thread_input_request *request = (const void *)message;
     struct horizon_get_thread_input_reply reply;
+    struct horizon_thread_input *input;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    reply.header.error = horizon_server_ensure_input_locked();
-    if (!reply.header.error) reply.locator = horizon_input_locator;
+    input = horizon_server_thread_input_locked( request->tid, request->tid == connection->tid );
+    if (input) reply.locator = input->locator;
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
@@ -8992,19 +9047,29 @@ static int horizon_server_handle_set_foreground_window( struct horizon_server_co
 {
     const struct horizon_set_foreground_window_request *request = (const void *)message;
     struct horizon_set_foreground_window_reply reply;
-    struct horizon_input_shm *input;
+    struct horizon_thread_input *input, *previous;
+    struct horizon_user_window *window;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (request->handle && !horizon_server_find_window_locked( request->handle ))
+    if (!(window = horizon_server_find_window_locked( request->handle )) || !window->tid)
         reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
-    else if (!(input = horizon_server_input_shared_locked()))
-        reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+    else if (!(input = horizon_server_thread_input_locked( window->tid, 1 )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
-        reply.previous = input->active;
-        input->foreground = 1;
-        horizon_server_flush_input_locked();
+        previous = horizon_foreground_input;
+        reply.previous = previous ? previous->shared->active : 0;
+        reply.send_msg_old = reply.previous && previous->tid != connection->tid;
+        reply.send_msg_new = input->tid != connection->tid;
+        if (previous && previous != input)
+        {
+            previous->shared->foreground = 0;
+            horizon_server_flush_input_locked( previous->shared );
+        }
+        horizon_foreground_input = input;
+        input->shared->foreground = 1;
+        horizon_server_flush_input_locked( input->shared );
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
@@ -9016,20 +9081,23 @@ static int horizon_server_handle_set_input_window( struct horizon_server_connect
     const struct horizon_input_window_request *request = (const void *)message;
     struct horizon_input_window_reply reply;
     struct horizon_input_shm *input;
+    struct horizon_user_window *window;
     unsigned int *slot;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (request->handle && !horizon_server_find_window_locked( request->handle ))
+    if (request->handle && !(window = horizon_server_find_window_locked( request->handle )))
         reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
-    else if (!(input = horizon_server_input_shared_locked()))
-        reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+    else if (request->handle && window->tid != connection->tid)
+        reply.header.error = HORIZON_STATUS_ACCESS_DENIED;
+    else if (!(input = horizon_server_input_shared_locked( connection->tid )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
         slot = which == HORIZON_REQ_SET_FOCUS_WINDOW ? &input->focus : &input->active;
         reply.previous = *slot;
         *slot = request->handle;
-        horizon_server_flush_input_locked();
+        horizon_server_flush_input_locked( input );
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
@@ -9041,13 +9109,16 @@ static int horizon_server_handle_set_capture_window( struct horizon_server_conne
     const struct horizon_set_capture_window_request *request = (const void *)message;
     struct horizon_set_capture_window_reply reply;
     struct horizon_input_shm *input;
+    struct horizon_user_window *window;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (request->handle && !horizon_server_find_window_locked( request->handle ))
+    if (request->handle && !(window = horizon_server_find_window_locked( request->handle )))
         reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
-    else if (!(input = horizon_server_input_shared_locked()))
-        reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+    else if (request->handle && window->tid != connection->tid)
+        reply.header.error = HORIZON_STATUS_ACCESS_DENIED;
+    else if (!(input = horizon_server_input_shared_locked( connection->tid )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
         reply.previous = input->capture;
@@ -9055,7 +9126,7 @@ static int horizon_server_handle_set_capture_window( struct horizon_server_conne
         input->menu_owner = (request->flags & HORIZON_CAPTURE_MENU) ? request->handle : 0;
         input->move_size = (request->flags & HORIZON_CAPTURE_MOVESIZE) ? request->handle : 0;
         reply.full_handle = input->capture;
-        horizon_server_flush_input_locked();
+        horizon_server_flush_input_locked( input );
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
@@ -9067,21 +9138,26 @@ static int horizon_server_handle_set_caret_window( struct horizon_server_connect
     const struct horizon_set_caret_window_request *request = (const void *)message;
     struct horizon_set_caret_window_reply reply;
     struct horizon_input_shm *input;
+    struct horizon_thread_input *owner;
+    struct horizon_user_window *window;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (request->handle && !horizon_server_find_window_locked( request->handle ))
+    if (request->handle && !(window = horizon_server_find_window_locked( request->handle )))
         reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
-    else if (!(input = horizon_server_input_shared_locked()))
-        reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+    else if (request->handle && window->tid != connection->tid)
+        reply.header.error = HORIZON_STATUS_ACCESS_DENIED;
+    else if (!(owner = horizon_server_thread_input_locked( connection->tid, 1 )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
+        input = owner->shared;
         reply.previous = input->caret;
         reply.old_rect = input->caret_rect;
-        reply.old_hide = horizon_caret_hide;
-        reply.old_state = horizon_caret_state;
+        reply.old_hide = owner->caret_hide;
+        reply.old_state = owner->caret_state;
         horizon_server_set_caret_window_locked( input, request->handle, request->width, request->height );
-        horizon_server_flush_input_locked();
+        horizon_server_flush_input_locked( input );
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
 
@@ -9096,27 +9172,29 @@ static int horizon_server_handle_set_caret_info( struct horizon_server_connectio
     const struct horizon_set_caret_info_request *request = (const void *)message;
     struct horizon_set_caret_info_reply reply;
     struct horizon_input_shm *input;
+    struct horizon_thread_input *owner;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (!(input = horizon_server_input_shared_locked()))
-        reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+    if (!(owner = horizon_server_thread_input_locked( connection->tid, 1 )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
+        input = owner->shared;
         reply.full_handle = input->caret;
         reply.old_rect = input->caret_rect;
-        reply.old_hide = horizon_caret_hide;
-        reply.old_state = horizon_caret_state;
+        reply.old_hide = owner->caret_hide;
+        reply.old_state = owner->caret_state;
         reply.header.error = horizon_server_set_caret_info_locked( input, request->flags, request->handle,
                                                                    request->x, request->y, request->hide,
                                                                    request->state );
-        if (!reply.header.error && (request->flags & HORIZON_SET_CARET_POS)) horizon_server_flush_input_locked();
+        if (!reply.header.error && (request->flags & HORIZON_SET_CARET_POS)) horizon_server_flush_input_locked( input );
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
 
     horizon_trace( "[HZCARET] info flags=%x hwnd=%08x pos=%d,%d hide=%d state=%d -> caret=%08x "
                    "hide=%d state=%d err=%08x\n", request->flags, request->handle, request->x, request->y,
-                   request->hide, request->state, reply.full_handle, horizon_caret_hide, horizon_caret_state,
+                   request->hide, request->state, reply.full_handle, reply.old_hide, reply.old_state,
                    reply.header.error );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
@@ -9132,7 +9210,7 @@ static int horizon_server_handle_set_cursor( struct horizon_server_connection *c
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (!(input = horizon_server_input_shared_locked()) ||
+    if (!(input = horizon_server_input_shared_locked( connection->tid )) ||
         !(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
         reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
     else
@@ -9160,7 +9238,7 @@ static int horizon_server_handle_set_cursor( struct horizon_server_connection *c
         reply.new_y = desktop->cursor.y;
         reply.new_clip = desktop->cursor.clip;
         reply.last_change = desktop->cursor.last_change;
-        horizon_server_flush_input_locked();
+        horizon_server_flush_input_locked( input );
         horizon_server_flush_session_range_locked(
             desktop_locator.offset,
             offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_desktop_shm) );
@@ -16221,7 +16299,7 @@ static void *horizon_server_thread( void *param )
             status = horizon_server_handle_set_user_object_info( connection, message );
             break;
         case HORIZON_REQ_GET_THREAD_INPUT:
-            status = horizon_server_handle_get_thread_input( connection );
+            status = horizon_server_handle_get_thread_input( connection, message );
             break;
         case HORIZON_REQ_SET_FOREGROUND_WINDOW:
             status = horizon_server_handle_set_foreground_window( connection, message );

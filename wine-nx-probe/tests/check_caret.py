@@ -27,8 +27,12 @@ fixture = r'''
 #define HORIZON_STATUS_ACCESS_DENIED 0xc0000022u
 struct horizon_rectangle { int left, top, right, bottom; };
 struct horizon_input_shm { unsigned int caret; struct horizon_rectangle caret_rect; };
-static int horizon_caret_hide;
-static int horizon_caret_state;
+struct horizon_thread_input { int caret_hide, caret_state; };
+static struct horizon_thread_input owner;
+#define horizon_caret_hide owner.caret_hide
+#define horizon_caret_state owner.caret_state
+static struct horizon_thread_input *horizon_server_input_state_locked(struct horizon_input_shm *input)
+{ (void)input; return &owner; }
 '''
 tests = r'''
 enum { EDIT = 0x10042, OTHER = 0x10050, W = 64, H = 32 };
