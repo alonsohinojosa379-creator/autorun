@@ -57,6 +57,11 @@ run - try it, and if it stops, the log tells what it was missing.
 2. Unzip it to the **root** of your SD card. Everything goes into
    `switch/wine`.
 3. Start **Autorun** from the Homebrew Menu.
+4. Let it download the Windows DLLs games run on, when it asks: they come from
+   [autorun-horizon-dlls](https://github.com/autorunhq/autorun-horizon-dlls),
+   not with the package. **Settings -> System -> Windows DLLs** updates and
+   verifies them later. Without a network, download that repository (Code,
+   Download ZIP) and unzip its `switch` folder to the root of the SD card too.
 
 Games need a lot of memory. Open the Homebrew Menu from a game (hold **R**
 while starting it) rather than from the Album, or put Autorun on the HOME menu

@@ -104,6 +104,22 @@ Everything lives in `sdmc:/switch/wine`: the runtime `wine-nx-runtime.nro`,
 Wine's files, and `drive_c` with the programs. C: is `drive_c`, Z: is the
 card's root, and mounted USB volumes are D: through H:.
 
+The Windows modules -- `drive_c/windows/system32` and `syswow64`, and the
+bundled DXVK and VKD3D-Proton in `drive_c/dxvk`, `dxvk64` and `vkd3d64` -- come
+from the DLL repository, not from a release. The launcher reads the
+repository's manifest when it starts, and Settings > System > Windows DLLs
+downloads what is new or changed (`source/launcher_dlls.c`, over
+`source/horizon_dlls.c`): each file into a `.part` beside where it goes, checked
+against the manifest's size and SHA-256, then put in place. Starting a game on
+a card without them offers them first. The card keeps the manifest it
+installed from in `horizon-dlls/manifest.json`, and `horizon-dlls/classes.reg`,
+the COM classes its DLLs serve, which the registry loads before `system.reg`. A
+file the runtime cannot run (a feature it does not report,
+`tools/runtime_features.py`) is left as it is, and one the repository dropped
+is removed unless it was changed since. A copy of the repository's `switch`
+folder made by hand is an installation like any other. Verify reads every file
+on the card and downloads again any that differs.
+
 Runtime settings are one JSON object in `config/settings.json`. The launcher
 writes most of them; the rest are for testing. Earlier builds kept each as a
 file of its own in the `wine` folder, and those are moved into the JSON file
@@ -263,6 +279,7 @@ sh wine-nx-probe/check-wow64-box64-unix.sh     # the native side of the CPU DLL
 sh wine-nx-probe/check-amd64.sh                # AMD64, ARM64EC and both Box64 CPU modes
 sh wine-nx-probe/check-audio.sh                # the audio driver
 sh wine-nx-probe/tests/check-launcher-host.sh  # the launcher, headless, with scripted input (Homebrew's sdl2, sdl3, sdl2_ttf, libpng)
+sh wine-nx-probe/tests/check-horizon-dlls.sh   # the DLL manager against the horizon-dlls checkout: install, resume, verify, update
 for t in wine-nx-probe/tests/check_*.py; do python3 "$t"; done  # server pieces run against real host sockets and files
 ```
 

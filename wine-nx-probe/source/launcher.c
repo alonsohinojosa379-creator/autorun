@@ -43,6 +43,7 @@
 #include "launcher_forwarder.h"
 #include "launcher_image.h"
 #include "launcher_update.h"
+#include "launcher_dlls.h"
 #include "launcher_setup.h"
 #include "setup_boot.h"
 #include "launcher_graphics.h"
@@ -156,6 +157,7 @@ struct launcher
     struct wine_nx_launcher_options *options;
     struct ui ui;
     struct launcher_update *update;
+    struct launcher_dlls *dlls;
     struct launcher_graphics *graphics;
 
     struct program programs[LAUNCHER_MAX_ENTRIES];
@@ -1871,6 +1873,8 @@ static int start_program( struct launcher *l, struct program *p, char *target, s
                     : "This game requires the Atmosphere low-address patch. Restart with the patched loader and Mesosphere." );
         return 0;
     }
+    /* Autorun ships no Windows DLLs: a card without them is offered them here. */
+    if (!launcher_dlls_ready( l->dlls )) return 0;
     if (p->settings.dxvk && !prepare_program_graphics( l, p )) return 0;
     p->missing = 0;
     p->launched_order = l->catalog.next_order++;
@@ -2823,7 +2827,7 @@ enum settings_row
 {
     SET_HIDDEN, SET_HIDE_MISSING, SET_DXVK_ON_ADD, SET_VERBOSE, SET_PROFILE, SET_WINDOWS, SET_SWKBD,
     SET_CONTROLS, SET_STEAMGRIDDB,
-    SET_UPDATE, SET_SETUP, SET_REOPEN, SET_MAKE_MAIN,
+    SET_DLLS, SET_UPDATE, SET_SETUP, SET_REOPEN, SET_MAKE_MAIN,
 #ifdef WINE_NX_SWAP_POC
     SET_SWAP_SIZE,
 #endif
@@ -3279,6 +3283,7 @@ static void settings_menu( struct launcher *l )
             [SET_SWKBD] = SET_SECTION_DEFAULTS,
             [SET_STEAMGRIDDB] = SET_SECTION_ARTWORK,
             [SET_REOPEN] = SET_SECTION_SYSTEM,
+            [SET_DLLS] = SET_SECTION_SYSTEM,
             [SET_UPDATE] = SET_SECTION_SYSTEM,
             [SET_SETUP] = SET_SECTION_SYSTEM,
             [SET_MAKE_MAIN] = SET_SECTION_SYSTEM,
@@ -3338,6 +3343,19 @@ static void settings_menu( struct launcher *l )
                   launcher_kv_get( &l->look, "steamgriddb-key", path, sizeof(path) ) && path[0] ? "Configured" : "Not set" );
         rows[SET_STEAMGRIDDB].help = "Used to automatically download the community's highest-rated square, portrait and hero artwork.";
         rows[SET_STEAMGRIDDB].adjustable = 0;
+        {
+            int tone;
+
+            snprintf( rows[SET_DLLS].label, sizeof(rows[0].label), "Windows DLLs" );
+            snprintf( rows[SET_DLLS].value, sizeof(rows[0].value), "%s",
+                      launcher_dlls_status( l->dlls, path, sizeof(path), &tone ) );
+            rows[SET_DLLS].value_tone = tone;
+            rows[SET_DLLS].kind = UI_ROW_ACTION;
+            rows[SET_DLLS].adjustable = 0;
+            rows[SET_DLLS].disabled = !l->dlls;
+            rows[SET_DLLS].help = "The Windows files games run on, from Autorun's DLL repository: download, "
+                                  "update and verify them.";
+        }
         snprintf( rows[SET_UPDATE].label, sizeof(rows[0].label), "Check for update" );
         rows[SET_UPDATE].kind = UI_ROW_ACTION;
         rows[SET_UPDATE].adjustable = 0;
@@ -3407,6 +3425,10 @@ static void settings_menu( struct launcher *l )
         case SET_WINDOWS: l->options->framebuffer = !l->options->framebuffer; break;
         case SET_DXVK_ON_ADD: l->options->dxvk_on_add = !l->options->dxvk_on_add; break;
         case SET_REOPEN: l->options->reopen_launcher = !l->options->reopen_launcher; break;
+        case SET_DLLS:
+            if (action == UI_ACTION_CHOOSE) launcher_dlls_open( l->dlls );
+            ui_start_screen( ui );
+            break;
         case SET_UPDATE:
             if (action == UI_ACTION_CHOOSE) launcher_update_open( l->update );
             ui_start_screen( ui );
@@ -4247,6 +4269,15 @@ static int run_library( struct launcher *l, char *target, size_t size )
     return 0;
 }
 
+/* What runs between frames: the release check and the DLL check. */
+static void background_tick( void *data )
+{
+    struct launcher *l = data;
+
+    launcher_update_tick( l->update );
+    launcher_dlls_tick( l->dlls );
+}
+
 int wine_nx_launcher_run( struct wine_nx_launcher_options *options, char *target, size_t target_size )
 {
     struct launcher *l = &launcher;
@@ -4347,15 +4378,18 @@ int wine_nx_launcher_run( struct wine_nx_launcher_options *options, char *target
     if (!autorun_install_finish( options->runtime_dir ))
         ui_toast( &l->ui, "The update recovery files could not be cleared.", 5000 );
     l->update = launcher_update_create( &l->ui, options->runtime_dir, options->schedule_restart );
+    l->dlls = launcher_dlls_create( &l->ui, options->runtime_dir );
     l->graphics = launcher_graphics_create( &l->ui, options->runtime_dir );
-    l->ui.background_tick = launcher_update_tick;
-    l->ui.background_data = l->update;
+    l->ui.background_tick = background_tick;
+    l->ui.background_data = l;
     offer_quick_setup( l );
     if (options->launch_error) ui_message( &l->ui, "Game unavailable", options->launch_error );
     ret = l->ui.running ? run_library( l, target, target_size ) : 0;
     l->ui.background_tick = NULL;
     launcher_update_destroy( l->update );
     l->update = NULL;
+    launcher_dlls_destroy( l->dlls );
+    l->dlls = NULL;
     launcher_graphics_destroy( l->graphics );
     l->graphics = NULL;
     for (i = 0, added = 0, missing = 0; i < l->program_count; i++)

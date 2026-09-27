@@ -30,6 +30,7 @@
 #include "launcher_catalog.h"
 #include "launcher_ui.h"
 #include "launcher_update.h"
+#include "launcher_dlls.h"
 #include "forwarder.h"
 #include "launcher_image.h"
 #include "dxvk_releases.h"
@@ -50,6 +51,17 @@ void launcher_update_tick( void *update ) { (void)update; }
 void launcher_update_open( struct launcher_update *update ) { (void)update; }
 void launcher_update_destroy( struct launcher_update *update ) { (void)update; }
 int autorun_install_finish( const char *root ) { (void)root; return 1; }
+/* The DLL manager has its own test (check-horizon-dlls.sh); here the card has them. */
+struct launcher_dlls *launcher_dlls_create( struct ui *ui, const char *root ) { (void)ui; (void)root; return NULL; }
+void launcher_dlls_tick( struct launcher_dlls *dlls ) { (void)dlls; }
+void launcher_dlls_open( struct launcher_dlls *dlls ) { (void)dlls; }
+int launcher_dlls_ready( struct launcher_dlls *dlls ) { (void)dlls; return 1; }
+const char *launcher_dlls_status( struct launcher_dlls *dlls, char *buffer, size_t size, int *tone )
+{
+    (void)dlls; (void)buffer; (void)size; *tone = 0;
+    return "Up to date";
+}
+void launcher_dlls_destroy( struct launcher_dlls *dlls ) { (void)dlls; }
 
 int launcher_platform_font( const void **data, size_t *size )
 {

@@ -1,0 +1,290 @@
+/* The DLL repository's files onto a card and kept up to date (source/horizon_dlls.c),
+ * with a folder standing in for GitHub.
+ *
+ *     horizon_dlls PHASE REPO SERVED FEATURES CARD
+ *
+ * PHASE is install (onto an empty card), update (SERVED changed one file and
+ * dropped two, one of which the card changed since) or damaged (SERVED names
+ * a hash its file does not have).
+ * REPO is the DLL repository's checkout; SERVED is a folder laid out the same
+ * that serves what the test changes (the manifest, a changed file) over it;
+ * FEATURES lists what the runtime reports, one to a line; CARD is an empty
+ * folder that stands for switch/wine on the card. */
+#include "horizon_dlls.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static const char *repo, *served, *card;
+static const char *features[64];
+static size_t feature_count;
+static int cancel_after = -1, fetches;
+
+#define CHECK( cond ) do { if (!(cond)) { fprintf( stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond ); exit( 1 ); } } while (0)
+
+/* A URL of the repository's main branch, from SERVED if it has the file and
+ * from REPO otherwise. */
+static enum horizon_dlls_result fetch( void *opaque, const char *url, horizon_dlls_sink sink, void *context,
+                                       horizon_dlls_progress progress, void *progress_opaque )
+{
+    static const char prefix[] = HORIZON_DLLS_RAW "main/";
+    char path[1024], buffer[65536];
+    unsigned long long done = 0;
+    struct stat st;
+    size_t got;
+    FILE *file;
+
+    (void)opaque;
+    fetches++;
+    if (strncmp( url, prefix, sizeof(prefix) - 1 )) return HORIZON_DLLS_NOT_FOUND;
+    snprintf( path, sizeof(path), "%s/%s", served, url + sizeof(prefix) - 1 );
+    if (stat( path, &st )) snprintf( path, sizeof(path), "%s/%s", repo, url + sizeof(prefix) - 1 );
+    if (!(file = fopen( path, "rb" ))) return HORIZON_DLLS_NOT_FOUND;
+    while ((got = fread( buffer, 1, sizeof(buffer), file )) > 0)
+    {
+        if (!sink( context, buffer, got )) { fclose( file ); return HORIZON_DLLS_IO; }
+        done += got;
+        if (progress && progress( progress_opaque, url, done, 0 )) { fclose( file ); return HORIZON_DLLS_CANCELLED; }
+    }
+    fclose( file );
+    return HORIZON_DLLS_OK;
+}
+
+static const struct horizon_dlls_transport transport = { fetch, NULL };
+
+static int count_files( void *opaque, const char *what, unsigned long long current, unsigned long long total )
+{
+    static char last[128];
+
+    (void)opaque; (void)current; (void)total;
+    /* Stop when the given number of files have been done, as the next starts. */
+    if (!strstr( what, " of " ) || !strcmp( what, last )) return 0;
+    snprintf( last, sizeof(last), "%s", what );
+    return cancel_after >= 0 && !cancel_after--;
+}
+
+static struct horizon_dll_manifest remote, local;
+static struct horizon_dlls_plan plan;
+
+static enum horizon_dlls_result check( int verify )
+{
+    enum horizon_dlls_result result;
+
+    horizon_dlls_free( &remote );
+    horizon_dlls_free( &local );
+    result = horizon_dlls_fetch_manifest( &transport, HORIZON_DLLS_MANIFEST_URL, features, feature_count,
+                                          &remote, NULL, NULL );
+    if (result) return result;
+    result = horizon_dlls_load( card, features, feature_count, &local );
+    CHECK( result == HORIZON_DLLS_OK || result == HORIZON_DLLS_NOT_FOUND );
+    return horizon_dlls_plan( card, &remote, result ? NULL : &local, verify, NULL, NULL, &plan );
+}
+
+static enum horizon_dlls_result update( void )
+{
+    return horizon_dlls_apply( card, &remote, local.count || local.schema ? &local : NULL, &transport,
+                               count_files, NULL );
+}
+
+static const struct horizon_dll_file *named( const char *name )
+{
+    unsigned int i;
+
+    for (i = 0; i < remote.count; i++) if (!strcmp( remote.files[i].name, name )) return &remote.files[i];
+    return NULL;
+}
+
+static char *read_all( const char *path, size_t *size )
+{
+    FILE *file = fopen( path, "rb" );
+    char *data;
+    long length;
+
+    if (!file) return NULL;
+    fseek( file, 0, SEEK_END );
+    length = ftell( file );
+    fseek( file, 0, SEEK_SET );
+    data = malloc( length + 1 );
+    CHECK( data && fread( data, 1, length, file ) == (size_t)length );
+    fclose( file );
+    data[length] = 0;
+    if (size) *size = length;
+    return data;
+}
+
+static void card_path( char *out, size_t size, const struct horizon_dll_file *f )
+{
+    snprintf( out, size, "%s/%s/%s", card, horizon_dlls_folders[f->folder], f->name );
+}
+
+static int same_as_repo( const struct horizon_dll_file *f )
+{
+    char a[1024], b[1024];
+    size_t sa, sb;
+    char *da, *db;
+    int same;
+
+    card_path( a, sizeof(a), f );
+    snprintf( b, sizeof(b), "%s/switch/wine/%s/%s", repo, horizon_dlls_folders[f->folder], f->name );
+    da = read_all( a, &sa );
+    db = read_all( b, &sb );
+    same = da && db && sa == sb && !memcmp( da, db, sa );
+    free( da );
+    free( db );
+    return same;
+}
+
+static void rejects( const char *manifest )
+{
+    struct horizon_dll_manifest m;
+
+    CHECK( horizon_dlls_parse( manifest, strlen( manifest ), features, feature_count, &m ) == HORIZON_DLLS_INVALID );
+}
+
+/* The repository changed d3d9.dll, and no longer has dsound.dll or
+ * xinput1_3.dll, the last of which the player replaced with their own. */
+static int phase_update( void )
+{
+    char path[1024];
+    struct stat st;
+
+    CHECK( check( 0 ) == HORIZON_DLLS_OK );
+    CHECK( plan.pending == 1 && named( "d3d9.dll" )->state == HORIZON_DLL_CHANGED && plan.removed == 2 );
+    CHECK( update() == HORIZON_DLLS_OK );
+    card_path( path, sizeof(path), named( "d3d9.dll" ) );
+    CHECK( !stat( path, &st ) && (unsigned long long)st.st_size == named( "d3d9.dll" )->size );
+    snprintf( path, sizeof(path), "%s/drive_c/windows/syswow64/dsound.dll", card );
+    CHECK( stat( path, &st ) && errno == ENOENT );
+    snprintf( path, sizeof(path), "%s/drive_c/windows/syswow64/xinput1_3.dll", card );
+    CHECK( !stat( path, &st ) );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && plan.removed == 0 );
+    printf( "update: the changed d3d9.dll replaced, dsound.dll removed, the player's own xinput1_3.dll kept\n" );
+    return 0;
+}
+
+/* A download whose hash is not the manifest's is not put in place. */
+static int phase_damaged( void )
+{
+    char path[1024], *before, *after;
+    size_t size_before, size_after;
+
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 1 );
+    card_path( path, sizeof(path), named( "quartz.dll" ) );
+    before = read_all( path, &size_before );
+    CHECK( update() == HORIZON_DLLS_HASH );
+    after = read_all( path, &size_after );
+    CHECK( before && after && size_before == size_after && !memcmp( before, after, size_before ) );
+    strcat( path, ".part" );
+    CHECK( access( path, F_OK ) );
+    printf( "damaged: a download that fails its SHA-256 leaves the card's file and no .part behind\n" );
+    return 0;
+}
+
+int main( int argc, char **argv )
+{
+    char path[1024], line[256];
+    const struct horizon_dll_file *f;
+    unsigned int i, total;
+    char *text;
+    FILE *list;
+
+    CHECK( argc == 6 );
+    repo = argv[2]; served = argv[3]; card = argv[5];
+    CHECK( (list = fopen( argv[4], "r" )) );
+    while (fgets( line, sizeof(line), list ) && feature_count < 64)
+    {
+        line[strcspn( line, "\r\n" )] = 0;
+        if (line[0]) features[feature_count++] = strdup( line );
+    }
+    fclose( list );
+    if (!strcmp( argv[1], "update" )) return phase_update();
+    if (!strcmp( argv[1], "damaged" )) return phase_damaged();
+    CHECK( !strcmp( argv[1], "install" ) );
+
+    /* A card with nothing: every file is new, and a program cannot start yet. */
+    CHECK( !horizon_dlls_installed( card ) );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK );
+    total = remote.count;
+    CHECK( total > 20 && plan.pending == total && plan.current == 0 && !plan.unsupported );
+    CHECK( !strcmp( remote.flavor, HORIZON_DLLS_FLAVOR ) && remote.category_count > 5 );
+    printf( "fresh card: %u files, %.1f MB to download in %u categories\n", total,
+            plan.pending_bytes / 1048576.0, remote.category_count );
+
+    /* Stopped after two files: those two are kept and recorded, the rest wait. */
+    cancel_after = 2;
+    CHECK( update() == HORIZON_DLLS_CANCELLED );
+    cancel_after = -1;
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.current == 2 && plan.pending == total - 2 );
+    printf( "cancelled after two files: %u installed and recorded, %u waiting\n", plan.current, plan.pending );
+
+    /* The rest, and the card has everything, byte for byte. */
+    CHECK( update() == HORIZON_DLLS_OK );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && plan.current == total );
+    for (i = 0; i < remote.count; i++) CHECK( same_as_repo( &remote.files[i] ) );
+    CHECK( horizon_dlls_installed( card ) );
+    snprintf( path, sizeof(path), "%s/%s", card, HORIZON_DLLS_CLASSES );
+    CHECK( (text = read_all( path, NULL )) );
+    CHECK( !strncmp( text, "WINE REGISTRY Version 2\n", 24 ) );
+    CHECK( strstr( text, "[Software\\\\Classes\\\\CLSID\\\\{e436ebb3-524f-11ce-9f53-0020af0ba770}\\\\InprocServer32]\n"
+                         "@=\"quartz.dll\"\n\"ThreadingModel\"=\"Both\"" ) );
+    free( text );
+    printf( "installed: all %u files match the repository; classes.reg has quartz's filter graph\n", total );
+
+    /* Checking again downloads nothing and reads nothing it has a record of. */
+    fetches = 0;
+    CHECK( update() == HORIZON_DLLS_OK && fetches == 0 );
+
+    /* A file changed on the card: the record is trusted until Verify reads it. */
+    f = named( "quartz.dll" );
+    card_path( path, sizeof(path), f );
+    text = read_all( path, NULL );
+    text[100] ^= 0xff;
+    CHECK( (list = fopen( path, "wb" )) && fwrite( text, 1, f->size, list ) == f->size && !fclose( list ) );
+    free( text );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 );
+    CHECK( check( 1 ) == HORIZON_DLLS_OK && plan.pending == 1 && named( "quartz.dll" )->state == HORIZON_DLL_CHANGED );
+    CHECK( update() == HORIZON_DLLS_OK && same_as_repo( named( "quartz.dll" ) ) );
+    printf( "verify: a damaged quartz.dll is found only by reading it, and replaced\n" );
+
+    /* A copy of the repository made by hand is an installation: its manifest
+     * is the record, so nothing is read or fetched. */
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 );
+
+    /* A file on the card with no record, as an earlier release left them: the
+     * same bytes are kept, other bytes replaced. */
+    snprintf( path, sizeof(path), "%s/%s", card, HORIZON_DLLS_MANIFEST );
+    CHECK( !remove( path ) );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && plan.current == total );
+    fetches = 0;
+    CHECK( update() == HORIZON_DLLS_OK && fetches == 0 );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && local.count == total );
+    printf( "no record: the files already there are read, kept and recorded\n" );
+
+    /* What the runtime cannot run is left alone. */
+    horizon_dlls_free( &remote );
+    CHECK( horizon_dlls_fetch_manifest( &transport, HORIZON_DLLS_MANIFEST_URL, features, 0, &remote, NULL, NULL )
+           == HORIZON_DLLS_OK );
+    horizon_dlls_free( &local );
+    CHECK( horizon_dlls_load( card, features, 0, &local ) == HORIZON_DLLS_OK );
+    for (i = 0; i < remote.count; i++) if (!remote.files[i].satisfied) break;
+    CHECK( i < remote.count && remote.files[i].missing[0] );
+    printf( "unsupported: %s needs %s, which this runtime does not report\n", remote.files[i].name,
+            remote.files[i].missing );
+
+    /* Refused: files outside the known folders, names with paths, URLs from elsewhere. */
+    rejects( "{\"schema\":2,\"flavor\":\"arm64x\",\"files\":[{\"name\":\"x.dll\",\"path\":\"drive_c/windows/../../..\","
+             "\"size\":1,\"sha256\":\"" "0000000000000000000000000000000000000000000000000000000000000000" "\","
+             "\"url\":\"" HORIZON_DLLS_RAW "main/switch/wine/drive_c/windows/../../../x.dll\"}]}" );
+    rejects( "{\"schema\":2,\"flavor\":\"arm64x\",\"files\":[{\"name\":\"../x.dll\",\"path\":\"drive_c/windows/system32\","
+             "\"size\":1,\"sha256\":\"" "0000000000000000000000000000000000000000000000000000000000000000" "\","
+             "\"url\":\"" HORIZON_DLLS_RAW "main/switch/wine/drive_c/windows/system32/../x.dll\"}]}" );
+    rejects( "{\"schema\":2,\"flavor\":\"arm64x\",\"files\":[{\"name\":\"x.dll\",\"path\":\"drive_c/windows/system32\","
+             "\"size\":1,\"sha256\":\"" "0000000000000000000000000000000000000000000000000000000000000000" "\","
+             "\"url\":\"https://example.com/switch/wine/drive_c/windows/system32/x.dll\"}]}" );
+    printf( "refused: a path out of the known folders, a name with a path, a URL from elsewhere\n" );
+    return 0;
+}
