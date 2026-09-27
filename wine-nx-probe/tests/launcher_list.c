@@ -44,6 +44,14 @@ static void test_program_args(void)
     assert( !strcmp( line, "C:\\openttd\\openttd.exe -s null -m null" ) );
     assert( launcher_command_line( "C:\\Program Files\\a.exe", "-x", line, sizeof(line) ) );
     assert( !strcmp( line, "\"C:\\Program Files\\a.exe\" -x" ) );
+    assert( launcher_command_line( "C:\\Saints Row 2\\SR2_pc.exe", "", line, sizeof(line) ) );
+    assert( !strcmp( line, "\"C:\\Saints Row 2\\SR2_pc.exe\"" ) );
+    assert( launcher_command_line( "C:\\app.exe", "", line, sizeof(line) ) );
+    assert( !strcmp( line, "C:\\app.exe" ) );
+    assert( launcher_command_line( "C:\\a\tb\\app.exe", "", line, sizeof(line) ) );
+    assert( !strcmp( line, "\"C:\\a\tb\\app.exe\"" ) );
+    assert( !launcher_command_line( "C:\\Saints Row 2\\SR2_pc.exe", "", line, 10 ) );
+    assert( !strcmp( line, "\"C:\\a\tb\\app.exe\"" ) );
     assert( !launcher_command_line( "C:\\openttd\\openttd.exe", "-v win32:no_threads -s null -m null -r 1280x720", line, 40 ) );
 }
 

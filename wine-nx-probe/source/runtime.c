@@ -1992,7 +1992,7 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     /* Read args.txt next to the target NRO (sdmc:/switch/wine/args.txt).
      * Format expected: "<argv[0]> <args...>" — a full Win32 command line.
      * If present, use it verbatim as CommandLine so curl etc. see args via
-     * GetCommandLineA/W. Otherwise fall back to the dos_path alone. */
+     * GetCommandLineA/W. Otherwise use the quoted executable path. */
     /* A program's own controls, over the shared ones: SPEED2.EXE reads
      * SPEED2.keys.txt, unless its settings say to use Autorun's alone. The
      * file is left where it is either way, so turning it back on brings back
@@ -2022,7 +2022,8 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
             launcher_sibling_path( target, ".box64.txt", wine_nx_box64_options_path, 512 );
     }
 
-    cmdline_str = dos_path;
+    if (!launcher_command_line( dos_path, "", cmdline, sizeof(cmdline) )) return NULL;
+    cmdline_str = cmdline;
     if (target[1] != ':' && launcher_args_path( target, args_path, sizeof(args_path) ) &&
         read_first_line( args_path, args_buf, sizeof(args_buf) ) &&
         launcher_command_line( dos_path, args_buf, cmdline, sizeof(cmdline) ))

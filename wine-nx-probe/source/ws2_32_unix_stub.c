@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -69,6 +70,23 @@ struct gethostname_params
     char *name;
     unsigned int size;
 };
+
+struct ws_hostent
+{
+    char *name;
+    char **aliases;
+    short family, length;
+    char **addresses;
+};
+
+struct ws_hostent32
+{
+    ULONG name, aliases;
+    short family, length;
+    ULONG addresses;
+};
+
+static const char local_hostname[] = "wine-nx";
 
 #define WS_AF_INET 2
 #define WS_ERROR_INSUFFICIENT_BUFFER 122
@@ -216,11 +234,107 @@ static NTSTATUS wine_nx_getaddrinfo( void *args )
 static NTSTATUS wine_nx_gethostname( void *args )
 {
     struct gethostname_params *params = args;
-    static const char name[] = "wine-nx";
 
-    if (params->size < sizeof(name)) return WS_ERROR_INSUFFICIENT_BUFFER;
-    memcpy( params->name, name, sizeof(name) );
+    if (params->size < sizeof(local_hostname)) return WS_ERROR_INSUFFICIENT_BUFFER;
+    memcpy( params->name, local_hostname, sizeof(local_hostname) );
     return 0;
+}
+
+static NTSTATUS get_host_by_name( const char *name, void *buffer, unsigned int *size, BOOL wow64 )
+{
+    struct sockaddr_in local_address = { .sin_family = AF_INET };
+    struct addrinfo local = { .ai_family = AF_INET, .ai_addr = (void *)&local_address };
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM, .ai_flags = AI_CANONNAME };
+    struct addrinfo *info, *src;
+    const char *canonical = name;
+    unsigned int count = 0, i = 0, pointer_size = wow64 ? 4 : sizeof(void *), needed;
+    char *aliases, *addresses, *data;
+    int ret;
+
+    if (!name || !*name || !strcasecmp( name, local_hostname ))
+    {
+        canonical = local_hostname;
+        local_address.sin_addr.s_addr = gethostid();
+        /* libnx returns host-order INADDR_LOOPBACK when no network is available. */
+        if (local_address.sin_addr.s_addr == INADDR_LOOPBACK || !local_address.sin_addr.s_addr)
+            local_address.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
+        info = &local;
+    }
+    else if ((ret = getaddrinfo( name, NULL, &hints, &info ))) return gai_error_from_unix( ret );
+
+    for (src = info; src; src = src->ai_next)
+    {
+        if (src->ai_family != AF_INET || !src->ai_addr) continue;
+        if (src->ai_canonname) canonical = src->ai_canonname;
+        count++;
+    }
+    if (!count) ret = WSAHOST_NOT_FOUND;
+    else
+    {
+        needed = (wow64 ? sizeof(struct ws_hostent32) : sizeof(struct ws_hostent))
+                 + (count + 2) * pointer_size + count * 4 + strlen(canonical) + 1;
+        if (*size < needed)
+        {
+            *size = needed;
+            ret = WS_ERROR_INSUFFICIENT_BUFFER;
+        }
+        else
+        {
+            memset( buffer, 0, needed );
+            aliases = (char *)buffer + (wow64 ? sizeof(struct ws_hostent32) : sizeof(struct ws_hostent));
+            addresses = aliases + pointer_size;
+            data = addresses + (count + 1) * pointer_size;
+            for (src = info; src; src = src->ai_next)
+            {
+                if (src->ai_family != AF_INET || !src->ai_addr) continue;
+                if (wow64) ((ULONG *)addresses)[i++] = PtrToUlong( data );
+                else ((char **)addresses)[i++] = data;
+                memcpy( data, &((struct sockaddr_in *)src->ai_addr)->sin_addr, 4 );
+                data += 4;
+            }
+            strcpy( data, canonical );
+            if (wow64)
+            {
+                struct ws_hostent32 *host = buffer;
+                host->name = PtrToUlong( data );
+                host->aliases = PtrToUlong( aliases );
+                host->addresses = PtrToUlong( addresses );
+                host->family = WS_AF_INET;
+                host->length = 4;
+            }
+            else
+            {
+                struct ws_hostent *host = buffer;
+                host->name = data;
+                host->aliases = (char **)aliases;
+                host->addresses = (char **)addresses;
+                host->family = WS_AF_INET;
+                host->length = 4;
+            }
+            ret = 0;
+        }
+    }
+    if (info != &local) freeaddrinfo( info );
+    return ret;
+}
+
+static NTSTATUS wine_nx_gethostbyname( void *args )
+{
+    const struct { const char *name; void *host; unsigned int *size; } *params = args;
+    return get_host_by_name( params->name, params->host, params->size, FALSE );
+}
+
+static NTSTATUS wine_nx_wow64_gethostbyname( void *args )
+{
+    const struct { ULONG name, host, size; } *params = args;
+    return get_host_by_name( ULongToPtr(params->name), ULongToPtr(params->host), ULongToPtr(params->size), TRUE );
+}
+
+static NTSTATUS wine_nx_wow64_gethostname( void *args )
+{
+    const struct { ULONG name; unsigned int size; } *params32 = args;
+    struct gethostname_params params = { ULongToPtr(params32->name), params32->size };
+    return wine_nx_gethostname( &params );
 }
 
 /* ws2_32: 5 DNS / hostname helpers. Layout: ws_unix_funcs in
@@ -229,21 +343,17 @@ const unixlib_entry_t wine_nx_ws2_32_unix_funcs[] =
 {
     wine_nx_getaddrinfo,   /* unix_getaddrinfo */
     stub_not_implemented,  /* unix_gethostbyaddr */
-    stub_not_implemented,  /* unix_gethostbyname */
+    wine_nx_gethostbyname,  /* unix_gethostbyname */
     wine_nx_gethostname,   /* unix_gethostname */
     stub_not_implemented,  /* unix_getnameinfo */
 };
 
-/* 32-bit DLLs under WoW64 pass 32-bit argument structures, so the tables
- * above cannot serve them. These let the DLLs load; every call reports the
- * feature as unavailable. Sizes are checked against the Wine enums by
- * tests/check_wow64_unix_tables.py. */
 const unixlib_entry_t wine_nx_ws2_32_wow64_unix_funcs[5] =
 {
     stub_not_implemented,  /* unix_getaddrinfo */
     stub_not_implemented,  /* unix_gethostbyaddr */
-    stub_not_implemented,  /* unix_gethostbyname */
-    stub_not_implemented,  /* unix_gethostname */
+    wine_nx_wow64_gethostbyname, /* unix_gethostbyname */
+    wine_nx_wow64_gethostname,  /* unix_gethostname */
     stub_not_implemented,  /* unix_getnameinfo */
 };
 

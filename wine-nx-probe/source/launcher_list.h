@@ -122,13 +122,15 @@ static inline int launcher_keys_path( const char *exe_path, char *out, size_t si
     return launcher_sibling_path( exe_path, ".keys.txt", out, size );
 }
 
-/* The command line for a program with its own arguments; a path with spaces is quoted. */
+/* Quote argv[0] separately from the optional arguments. */
 static inline int launcher_command_line( const char *dos, const char *args, char *out, size_t size )
 {
-    const char *quote = strchr( dos, ' ' ) ? "\"" : "";
-    int len = snprintf( out, size, "%s%s%s %s", quote, dos, quote, args );
+    const char *quote = strpbrk( dos, " \t" ) ? "\"" : "";
+    int len = snprintf( NULL, 0, "%s%s%s%s%s", quote, dos, quote, *args ? " " : "", args );
 
-    return len > 0 && (size_t)len < size;
+    if (len <= 0 || (size_t)len >= size) return 0;
+    snprintf( out, size, "%s%s%s%s%s", quote, dos, quote, *args ? " " : "", args );
+    return 1;
 }
 
 /* The entry named by target.txt (a path or a C:\ path), or the first. */
