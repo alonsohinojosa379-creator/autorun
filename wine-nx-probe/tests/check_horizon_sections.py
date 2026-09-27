@@ -134,8 +134,9 @@ static void *virtmemFindCodeMemory( size_t size, size_t align )
     void *addr = code_pool + code_pool_used;
 
     (void)align;
+    /* libnx finds nothing when nothing that large is free. */
+    if (code_pool_used + (size + HOST_PAGE - 1) / HOST_PAGE * HOST_PAGE + HOST_PAGE > code_pool_size) return NULL;
     code_pool_used += (size + HOST_PAGE - 1) / HOST_PAGE * HOST_PAGE + HOST_PAGE;
-    assert( code_pool_used <= code_pool_size );
     return addr;
 }
 
@@ -359,6 +360,52 @@ int main(void)
             anchor_region_count = saved_count;
         }
         list_remove_mapping( entry_at( window ) );
+        native_block_count = 0;
+        horizon_native_window_start = horizon_native_window_end = NULL;
+    }
+    /* A window with no full region's run left, only the gaps between the
+     * native blocks libnx scattered through it: Guitar Hero III's 2 MB texture
+     * view found no anchor there and the game died on the NULL. A region the
+     * size of a gap does instead, and anchors after it pack into it. */
+    {
+        const size_t gap = HORIZON_ANCHOR_REGION / 4, anchor = 0x210000;
+        char *window = host_reserve( 4 * HORIZON_ANCHOR_REGION );
+        unsigned int saved_count = anchor_region_count, i;
+        __typeof__(anchor_regions) saved;
+        char *first, *second;
+
+        size_t saved_pool = code_pool_size;
+
+        memcpy( saved, anchor_regions, sizeof(saved) );
+        anchor_region_count = 0;  /* every region full */
+        code_pool_size = code_pool_used;  /* and libnx's random search finds nothing */
+        horizon_native_window_start = window;
+        horizon_native_window_end = window + 4 * HORIZON_ANCHOR_REGION;
+        for (i = 0; i < 4; i++)
+        {
+            native_blocks[i].addr = (unsigned long long)(uintptr_t)(window + i * HORIZON_ANCHOR_REGION + gap);
+            native_blocks[i].size = HORIZON_ANCHOR_REGION - gap;
+        }
+        native_block_count = 4;
+        assert( !find_anchor_region_locked( HORIZON_ANCHOR_REGION ) );
+        first = find_anchor_address_locked( anchor );
+        assert( first == window );
+        assert( anchor_region_count == 1 && anchor_regions[0].end - anchor_regions[0].start == (ptrdiff_t)gap );
+        second = find_anchor_address_locked( anchor );
+        assert( second == first + anchor && anchor_region_count == 1 );
+
+        for (i = anchor_region_count; i--;)
+        {
+            VirtmemReservation *reservation;
+
+            for (reservation = reservations; reservation; reservation = reservation->next)
+                if (reservation->addr == anchor_regions[i].start) break;
+            assert( reservation );
+            virtmemRemoveReservation( reservation );
+        }
+        memcpy( anchor_regions, saved, sizeof(saved) );
+        anchor_region_count = saved_count;
+        code_pool_size = saved_pool;
         native_block_count = 0;
         horizon_native_window_start = horizon_native_window_end = NULL;
     }

@@ -15532,7 +15532,10 @@ static int horizon_query_region( void *context, unsigned long long addr, struct 
 #define WINE_NX_GUEST_LIMIT 0x100000000ull
 
 #define HORIZON_ANCHOR_REGION ((size_t)32 * 1024 * 1024)
-#define HORIZON_ANCHOR_REGIONS 32
+/* Regions shrink to fit the gaps a fragmented window has left (see
+ * find_anchor_address_locked), so there can be many more than the 32 full ones
+ * the window would hold. */
+#define HORIZON_ANCHOR_REGIONS 256
 
 static struct { char *start, *end, *cursor; } anchor_regions[HORIZON_ANCHOR_REGIONS];
 static unsigned int anchor_region_count;
@@ -15636,8 +15639,22 @@ static void *find_anchor_address_locked( size_t size )
     if ((addr = find_anchor_run_locked( size ))) return addr;
     /* Another region rather than one anchor at a time. */
     if (anchor_region_count == HORIZON_ANCHOR_REGIONS) return NULL;
+    /* On a 4 GB address space the window is also where libnx puts every
+     * native thread's stack, at random, and where the dynarec's code goes.
+     * Guitar Hero III had 638 MB of window and 120 MB of anchors in 4 regions
+     * when no 32 MB run was left anywhere, so a 2 MB texture view got no
+     * anchor, DXVK no mapping, and the game a NULL it read through. A smaller
+     * region in a gap that is left does as well: halve down to the anchor. */
     if (!(region = find_anchor_region_locked( region_size )) &&
-        !(region = virtmemFindCodeMemory( region_size, 0x1000 ))) return NULL;
+        !(region = virtmemFindCodeMemory( region_size, 0x1000 )))
+    {
+        while (!region && region_size > size)
+        {
+            region_size = max( (region_size / 2) & ~(size_t)0xfff, size );
+            region = find_anchor_region_locked( region_size );
+        }
+        if (!region) return NULL;
+    }
     if (!virtmemAddReservation( region, region_size )) return NULL;
     horizon_trace( "[HMAP] anchor region %u: 0x%lx bytes at %p",
                    anchor_region_count + 1, (unsigned long)region_size, region );
