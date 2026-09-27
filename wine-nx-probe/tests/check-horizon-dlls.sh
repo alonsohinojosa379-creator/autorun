@@ -28,9 +28,12 @@ wanted = {
                                  'apisetschema.dll', 'kernel32.dll', 'kernelbase.dll'},
     'drive_c/windows/syswow64': {'ntdll.dll', 'kernel32.dll', 'kernelbase.dll', 'msvcrt.dll', 'ucrtbase.dll',
                                  'quartz.dll', 'devenum.dll', 'd3d8.dll', 'd3d9.dll', 'dsound.dll',
-                                 'xinput1_3.dll', 'msxml3.dll', 'xaudio2_7.dll', 'winenxaudio.drv'},
+                                 'xinput1_3.dll', 'msxml3.dll', 'xaudio2_7.dll', 'winenxaudio.drv',
+                                 'physxloader.dll', 'physxdevice.dll', 'cudart32_41_22.dll', 'xlive.dll'},
     'drive_c/dxvk64': {'dxgi.dll', 'dxvk-manifest.json'},
 }
+for sdk in ('2.7.1', '2.7.3', '2.7.4', '2.7.5', '2.7.6', '2.8.0', '2.8.1', '2.8.3'):
+    wanted[f'drive_c/physx/Engine/v{sdk}'] = {'physxcore.dll', 'physxcooking.dll'}
 manifest['files'] = [f for f in manifest['files'] if f['name'] in wanted.get(f['path'], ())]
 assert len(manifest['files']) == sum(map(len, wanted.values())), len(manifest['files'])
 assert all(f.get('compressed') for f in manifest['files']), 'the repository has no compressed copies'

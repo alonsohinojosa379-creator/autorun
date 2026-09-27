@@ -299,6 +299,8 @@ static unsigned int horizon_registry_init(void)
             "[Software\\\\Classes\\\\CLSID\\\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\\\InprocServer32]\n"
             "@=\"mmdevapi.dll\"\n"
             "\"ThreadingModel\"=\"Both\"\n"
+            "[Software\\\\NVIDIA Corporation\\\\PhysX\\\\Runtimes]\n"
+            "\"PhysXCore Path\"=\"C:\\\\physx\\\\Engine\"\n"
             /* What wine.inf writes at wineboot, which never runs here. Aspyr's
              * AWL.dll looks for a drive in it and, finding none, has Guitar Hero
              * III say "Windows Virtual Memory must be enabled". */

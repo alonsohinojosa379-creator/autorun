@@ -203,12 +203,21 @@ static void test_save_and_load(void)
     static const unsigned short test_name[] = u"Test", saved_name[] = u"Saved";
     static const unsigned short memory[] = u"System\\CurrentControlSet\\Control\\Session Manager\\Memory Management";
     static const unsigned short paging_name[] = u"PagingFiles", paging[] = u"C:\\pagefile.sys 27 77";
+    static const unsigned short physx[] = u"Software\\NVIDIA Corporation\\PhysX\\Runtimes";
+    static const unsigned short core_path[] = u"PhysXCore Path", engine[] = u"C:\\physx\\Engine";
+    static const unsigned short custom_engine[] = u"C:\\custom\\Engine";
     unsigned char binary[100], odd_data[3] = {1, 2, 3}, one[4] = {1, 0, 0, 0};
     unsigned int dword = 0x12345678, i;
     struct horizon_reg_key *key, *user;
     char path[512], tmp[512], user_file[512], text_file[8192];
 
     for (i = 0; i < sizeof(binary); i++) binary[i] = i * 7;
+    check_value(machine_key(), physx, sizeof(physx) - 2, core_path, sizeof(core_path) - 2,
+                HORIZON_REG_SZ, engine, sizeof(engine));
+    key = open_key(machine_key(), physx, sizeof(physx) - 2);
+    assert(!horizon_reg_set_value(&horizon_registry, key, core_path, sizeof(core_path) - 2,
+                                  HORIZON_REG_SZ, custom_engine, sizeof(custom_engine)));
+    horizon_reg_release(&horizon_registry, key);
     snprintf(path, sizeof(path), "%sregistry/system.reg", registry_dir);
     snprintf(tmp, sizeof(tmp), "%sregistry/system.reg.tmp", registry_dir);
     snprintf(user_file, sizeof(user_file), "%sregistry/user.reg", registry_dir);
@@ -245,6 +254,8 @@ static void test_save_and_load(void)
     assert(strstr(text_file, "\n[Software\\\\Wine\\\\Drivers] "));
 
     reload();
+    check_value(machine_key(), physx, sizeof(physx) - 2, core_path, sizeof(core_path) - 2,
+                HORIZON_REG_SZ, custom_engine, sizeof(custom_engine));
     check_value(machine_key(), seed, sizeof(seed) - 2, none, 0, HORIZON_REG_SZ, mmdevapi, sizeof(mmdevapi));
     /* wine.inf's paging file, which Aspyr's AWL.dll wants a drive in. */
     check_value(machine_key(), memory, sizeof(memory) - 2, paging_name, sizeof(paging_name) - 2, HORIZON_REG_SZ,
