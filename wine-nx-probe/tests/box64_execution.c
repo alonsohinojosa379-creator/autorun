@@ -546,7 +546,7 @@ int main(void)
     }
 
     puts( "BEGIN CPUID/RDTSC" );
-    /* CPUID reports the conservative feature set; RDTSC is monotonic. */
+    /* CPUID agrees with Wine's feature queries; RDTSC is monotonic. */
     {
         static const unsigned char cpuid_program[] = {
             0x31,0xc0,                          /* xor eax, eax */
@@ -557,6 +557,7 @@ int main(void)
             0xb8,1,0,0,0,                       /* mov eax, 1 */
             0x0f,0xa2,                          /* cpuid */
             0x89,0x15,0x7c,0x30,0,0x10,         /* mov [BASE+0x307c], edx */
+            0x89,0x0d,0x90,0x30,0,0x10,         /* mov [BASE+0x3090], ecx */
             0x0f,0x31,                          /* rdtsc */
             0xa3,0x80,0x30,0,0x10,              /* mov [BASE+0x3080], eax */
             0x89,0x15,0x84,0x30,0,0x10,         /* mov [BASE+0x3084], edx */
@@ -585,6 +586,8 @@ int main(void)
         assert( !memcmp( memory + 0x3070, "GenuineIntel", 12 ) );
         memcpy( &features, memory + 0x307c, 4 );
         assert( (features & 0x07808111) == 0x07808111 ); /* FPU TSC CX8 CMOV MMX FXSR SSE SSE2 */
+        memcpy( &features, memory + 0x3090, 4 );
+        assert( features == 0x00180201 ); /* SSE3, SSSE3, SSE4.1, SSE4.2 */
         memcpy( &first, memory + 0x3080, 8 );
         memcpy( &second, memory + 0x3088, 8 );
         assert( first && second >= first );

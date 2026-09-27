@@ -459,6 +459,7 @@ void my_cpuid( x64emu_t *emu )
     case 1:
         regs[0] = WINEBOX64_CPUID_SIGNATURE;
         regs[1] = (1u << 16) | (8u << 8); /* one logical CPU, 64-byte CLFLUSH line */
+        regs[2] = WINEBOX64_CPUID_ECX;
         regs[3] = WINEBOX64_CPUID_EDX;
         break;
     case 0x80000000:

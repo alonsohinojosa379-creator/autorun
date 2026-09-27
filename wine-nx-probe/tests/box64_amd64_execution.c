@@ -171,6 +171,14 @@ static void test_cpuid_and_stops( struct fixture *fixture )
     assert( run( fixture, &context, 0 ) == STATUS_SUCCESS );
     assert( context.Rip == NATIVE && (context.Rdx & (UINT64_C(1) << 29)) );
 
+    fixture->memory[0x204] = 0;
+#ifdef WINE_NX_BOX64_DYNAREC
+    wine_nx_box64_invalidate( BASE + 0x200, sizeof(cpuid), 0 );
+#endif
+    init_context( &context, BASE + 0x200 );
+    assert( run( fixture, &context, 0 ) == STATUS_SUCCESS );
+    assert( context.Rcx == 0x00180201 );
+
     put_code( fixture, 0x280, jump_completion, sizeof(jump_completion) );
     init_context( &context, BASE + 0x280 );
     assert( run( fixture, &context, BASE + 0x3000 ) == STATUS_SUCCESS );
@@ -226,6 +234,69 @@ static void test_syscall_state( struct fixture *fixture )
     assert( (ULONGLONG)context.FltSave.XmmRegisters[0].High == UINT64_C(0xfedcba9876543210) );
     assert( context.FltSave.XmmRegisters[15].Low == UINT64_C(0x5555555555555555) );
     assert( (ULONGLONG)context.FltSave.XmmRegisters[15].High == UINT64_C(0xaaaaaaaaaaaaaaaa) );
+}
+
+static void test_sse_features( struct fixture *fixture )
+{
+    static const struct
+    {
+        const char *name;
+        unsigned char code[6];
+        unsigned int size;
+        uint32_t left[4], right[4], expected[4];
+    } cases[] =
+    {
+        { "HADDPS", {0xf2,0x0f,0x7c,0xc1}, 4,
+          {0x3f800000,0x40000000,0x40400000,0x40800000},
+          {0x40a00000,0x40c00000,0x40e00000,0x41000000},
+          {0x40400000,0x40e00000,0x41300000,0x41700000} },
+        { "PSHUFB", {0x66,0x0f,0x38,0x00,0xc1}, 5,
+          {0x03020100,0x07060504,0x0b0a0908,0x0f0e0d0c},
+          {0x0c0d0e0f,0x08090a0b,0x04050607,0x80010203},
+          {0x0c0d0e0f,0x08090a0b,0x04050607,0x00010203} },
+        { "PMULLD", {0x66,0x0f,0x38,0x40,0xc1}, 5,
+          {2,0xffffffff,100000,0x80000000}, {3,2,100000,2}, {6,0xfffffffe,1410065408,0} },
+        { "PCMPGTQ", {0x66,0x0f,0x38,0x37,0xc1}, 5,
+          {0,1,0xffffffff,0xffffffff}, {0xffffffff,0,1,0}, {0xffffffff,0xffffffff,0,0} },
+        { "PCMPISTRI", {0x66,0x0f,0x3a,0x63,0xc1,0}, 6,
+          {0x00006361,0,0,0}, {0x637a7978,0x61,0,0}, {0x00006361,0,0,0} },
+    };
+    AMD64_CONTEXT context;
+    unsigned char code[32], *cursor;
+
+    for (unsigned int i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        memcpy( code, cases[i].code, cases[i].size );
+        cursor = code + cases[i].size;
+        jump_native( &cursor );
+        put_code( fixture, 0x1800 + i * 0x40, code, cursor - code );
+        init_context( &context, BASE + 0x1800 + i * 0x40 );
+        memcpy( &context.FltSave.XmmRegisters[0], cases[i].left, 16 );
+        memcpy( &context.FltSave.XmmRegisters[1], cases[i].right, 16 );
+        assert( run( fixture, &context, 0 ) == STATUS_SUCCESS );
+        assert( !memcmp( &context.FltSave.XmmRegisters[0], cases[i].expected, 16 ) );
+        assert( !memcmp( &context.FltSave.XmmRegisters[1], cases[i].right, 16 ) );
+        if (i == 4) assert( context.Rcx == 3 );
+        printf( "PASS %s\n", cases[i].name );
+    }
+    /* CRC32 eax, ecx; leave eax intact when returning to the native gate. */
+    memcpy( code, "\xf2\x0f\x38\xf1\xc1", 5 );
+    cursor = code + 5;
+    mov_imm64( &cursor, 6, NATIVE );
+    emit8( &cursor, 0xff ); emit8( &cursor, 0xe6 );
+    put_code( fixture, 0x1a00, code, cursor - code );
+    for (unsigned int i = 0; i < 128; i++)
+    {
+        uint32_t input = 0x12345678u * (i + 1), expected = 0xabcdef01u ^ input;
+        for (unsigned int bit = 0; bit < 32; bit++)
+            expected = (expected >> 1) ^ (0x82f63b78u & (0u - (expected & 1)));
+        init_context( &context, BASE + 0x1a00 );
+        context.Rax = 0xabcdef01u;
+        context.Rcx = input;
+        assert( run( fixture, &context, 0 ) == STATUS_SUCCESS );
+        assert( context.Rax == expected && context.Rcx == input );
+    }
+    puts( "PASS CRC32" );
 }
 
 static void test_x87_context( struct fixture *fixture )
@@ -426,6 +497,7 @@ int main(void)
     fixture.native[(NATIVE - BASE) >> 12] = TRUE;
     test_registers_gs_sse_call( &fixture );
     test_cpuid_and_stops( &fixture );
+    test_sse_features( &fixture );
     test_syscall_state( &fixture );
     test_x87_context( &fixture );
     test_mmx_context( &fixture );
