@@ -2938,7 +2938,9 @@ static VkResult init_fs_hack_images( struct vulkan_device *device, struct swapch
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = swapchain->fs_hack_images[i].user_image;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = VK_FORMAT_B8G8R8A8_SRGB;
+        viewInfo.format = createinfo->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||
+                          createinfo->imageFormat == VK_FORMAT_R8G8B8A8_SRGB
+                              ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_B8G8R8A8_SRGB;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = 0;
         viewInfo.subresourceRange.levelCount = 1;
@@ -2954,7 +2956,9 @@ static VkResult init_fs_hack_images( struct vulkan_device *device, struct swapch
         if (!swapchain->fsr) continue;
 
         /* The same bytes without the sRGB decode: FSR filters perceptual values. */
-        viewInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+        viewInfo.format = createinfo->imageFormat == VK_FORMAT_R8G8B8A8_UNORM ||
+                          createinfo->imageFormat == VK_FORMAT_R8G8B8A8_SRGB
+                              ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
         if ((res = device->p_vkCreateImageView( device->host.device, &viewInfo, NULL,
                                                 &swapchain->fs_hack_images[i].gamma_view )))
         {
