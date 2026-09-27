@@ -90,7 +90,15 @@ VULKAN_DLLS = 'vulkan-1 winevulkan'.split()
 # redistributable its installer would have run. Without it FEAR.exe stops in
 # the loader with STATUS_DLL_NOT_FOUND. What d3dx9_27 imports is staged already.
 FEAR_DLLS = ['d3dx9_27']
-GAME_DLLS = NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS + FEAR_DLLS
+# Guitar Hero III imports d3dx9_35 and the 2005 runtimes, which its fmodex.dll
+# imports too, and its IntelLaptopGaming.dll imports POWRPROF and pdh. Without
+# them GH3.exe stops in the loader with STATUS_DLL_NOT_FOUND. It then creates
+# an MSXML 6 DOM document, or a 3.0 one if that fails, and throws when neither
+# is registered, which ends it in abort(); both come from the DLLs' own
+# registration scripts in classes.reg. It asks for Vista's Game Explorer too,
+# which gameux serves.
+GH3_DLLS = 'd3dx9_35 msvcr80 msvcp80 powrprof pdh msxml3 msxml6 gameux'.split()
+GAME_DLLS = NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS + FEAR_DLLS + GH3_DLLS
 pe = probe / 'build-wine-wow64-pe'
 toolchain = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
 env = dict(os.environ, PATH=f'{toolchain}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
@@ -174,6 +182,15 @@ subprocess.run([str(toolchain / 'i686-w64-mingw32-clang'), '-Os', '-Wall', '-Wex
                 '-Wl,--dynamicbase', '-o', str(sims2 / 'sims2-setup.exe'),
                 str(tools / 'sims2_setup.c'), '-ladvapi32', '-lkernel32', '-lntdll'], check=True)
 assert 'Arch: i386\n' in readobj('--file-headers', sims2 / 'sims2-setup.exe')
+# Guitar Hero III reads the key Aspyr's installer writes, with the game's folder
+# in it, so its setup goes in that folder and writes where it is.
+gh3 = stage / 'drive_c/Guitar Hero III'
+gh3.mkdir(parents=True, exist_ok=True)
+subprocess.run([str(toolchain / 'i686-w64-mingw32-clang'), '-Os', '-Wall', '-Wextra', '-Werror',
+                '-fno-builtin', '-nostdlib', '-Wl,--entry,_start@0', '-Wl,--image-base,0x10000000',
+                '-Wl,--dynamicbase', '-o', str(gh3 / 'gh3-setup.exe'),
+                str(tools / 'gh3_setup.c'), '-lshell32', '-ladvapi32', '-lkernel32', '-lntdll'], check=True)
+assert 'Arch: i386\n' in readobj('--file-headers', gh3 / 'gh3-setup.exe')
 # DXVK's settings for the game, which the setup copies beside each executable.
 shutil.copy2(tools / 'sims2/dxvk.conf', sims2 / 'dxvk.conf')
 (sims2 / 'README.txt').write_text('''The Sims 2 Ultimate Collection
