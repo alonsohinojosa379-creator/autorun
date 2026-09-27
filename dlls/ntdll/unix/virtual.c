@@ -924,6 +924,7 @@ static NTSTATUS get_unixlib_funcs( void *so_handle, BOOL wow, const void **funcs
 #ifdef __SWITCH__
 /* Horizon links Unix backends statically. */
 extern const unixlib_entry_t wine_nx_ws2_32_unix_funcs[];
+extern const unixlib_entry_t wine_nx_dnsapi_unix_funcs[];
 extern const unixlib_entry_t wine_nx_crypt32_unix_funcs[];
 extern NTSTATUS wine_nx_win32u_unix_init(void);
 extern const unixlib_entry_t wine_nx_opengl32_unix_funcs[];
@@ -960,6 +961,7 @@ static const struct
     { "winebox64ec.dll", wine_nx_winebox64ec_unix_funcs },
 #endif
     { "ws2_32.dll", wine_nx_ws2_32_unix_funcs },
+    { "dnsapi.dll", wine_nx_dnsapi_unix_funcs },
     { "crypt32.dll", wine_nx_crypt32_unix_funcs },
     { "win32u.dll", NULL, wine_nx_win32u_unix_init },
     { "opengl32.dll", wine_nx_opengl32_unix_funcs },
@@ -977,6 +979,8 @@ static const struct
  * are in the 32-bit loader list only, so they are matched by the DLL name in
  * their export directory. */
 extern const unixlib_entry_t wine_nx_ws2_32_wow64_unix_funcs[];
+extern const unixlib_entry_t wine_nx_dnsapi_wow64_unix_funcs[];
+extern const unsigned int wine_nx_dnsapi_wow64_unix_count;
 extern const unixlib_entry_t wine_nx_opengl32_wow64_unix_funcs[];
 extern const unsigned int wine_nx_ws2_32_wow64_unix_count;
 extern const unsigned int wine_nx_opengl32_wow64_unix_count;
@@ -999,6 +1003,7 @@ static const struct
 } wine_nx_static_wow64_unix_libs[] =
 {
     { "ws2_32.dll", wine_nx_ws2_32_wow64_unix_funcs, &wine_nx_ws2_32_wow64_unix_count },
+    { "dnsapi.dll", wine_nx_dnsapi_wow64_unix_funcs, &wine_nx_dnsapi_wow64_unix_count },
     { "opengl32.dll", wine_nx_opengl32_wow64_unix_funcs, &wine_nx_opengl32_wow64_unix_count },
     { "winenxaudio.drv", wine_nx_audio_wow64_unix_funcs, &wine_nx_audio_wow64_unix_count },
     { "crypt32.dll", wine_nx_crypt32_wow64_unix_funcs, &wine_nx_crypt32_wow64_unix_count },

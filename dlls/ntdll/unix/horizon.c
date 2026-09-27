@@ -63,6 +63,7 @@
 #include "horizon_registry.h"
 #include "horizon_read_redirect.h"
 #include "horizon_object_dirs.h"
+#include "horizon_nsi.h"
 #include "horizon_keyboard.h"
 #include "horizon_mouse.h"
 #include "horizon_free_range.h"
@@ -894,7 +895,8 @@ enum horizon_server_object_type
     HORIZON_SERVER_OBJECT_DIRECTORY,
     HORIZON_SERVER_OBJECT_COMPLETION,
     HORIZON_SERVER_OBJECT_COMPLETION_WAIT,
-    HORIZON_SERVER_OBJECT_NAMED_PIPE
+    HORIZON_SERVER_OBJECT_NAMED_PIPE,
+    HORIZON_SERVER_OBJECT_NSI
 };
 
 struct horizon_ratio
@@ -12721,6 +12723,7 @@ static int horizon_server_handle_open_file_object( struct horizon_server_connect
     struct horizon_open_file_object_reply reply;
     unsigned int chars = data_size / 2;
     int is_afd = 0;
+    int is_nsi = horizon_nsi_device_name( data, data_size );
 
     memset( &reply, 0, sizeof(reply) );
 
@@ -12745,7 +12748,7 @@ static int horizon_server_handle_open_file_object( struct horizon_server_connect
         }
     }
 
-    if (!is_afd && !(data_size & 1))
+    if (!is_afd && !is_nsi && !(data_size & 1))
     {
         struct horizon_server_object *pipe;
 
@@ -12779,12 +12782,12 @@ static int horizon_server_handle_open_file_object( struct horizon_server_connect
             return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
     }
 
-    if (is_afd)
+    if (is_afd || is_nsi)
     {
         struct horizon_server_handle_entry *entry;
 
         pthread_mutex_lock( &horizon_server_objects_mutex );
-        if ((entry = horizon_server_create_handle_locked( HORIZON_SERVER_OBJECT_SOCK )))
+        if ((entry = horizon_server_create_handle_locked( is_nsi ? HORIZON_SERVER_OBJECT_NSI : HORIZON_SERVER_OBJECT_SOCK )))
         {
             entry->object->file_access = request->access;
             entry->object->file_options = request->options;
@@ -12792,8 +12795,8 @@ static int horizon_server_handle_open_file_object( struct horizon_server_connect
         }
         else reply.header.error = HORIZON_STATUS_NO_MEMORY;
         pthread_mutex_unlock( &horizon_server_objects_mutex );
-        horizon_trace( "[server] open \\Device\\Afd access=%#x options=%#x -> handle=%08x status=%08x\n",
-                       request->access, request->options, reply.handle, reply.header.error );
+        horizon_trace( "[server] open \\Device\\%s access=%#x options=%#x -> handle=%08x status=%08x\n",
+                       is_nsi ? "Nsi" : "Afd", request->access, request->options, reply.handle, reply.header.error );
     }
     else
     {
@@ -13300,6 +13303,8 @@ static void horizon_server_ioctl_start( const struct horizon_async_data *data )
     pthread_mutex_unlock( &horizon_server_objects_mutex );
 }
 
+static unsigned int horizon_server_find_io_object_locked( unsigned int handle, struct horizon_server_object **object );
+
 static void horizon_server_ioctl_done( unsigned int tid, const struct horizon_async_data *data,
                                        unsigned int status, unsigned int information )
 {
@@ -13312,7 +13317,7 @@ static void horizon_server_ioctl_done( unsigned int tid, const struct horizon_as
     async.sock = data->handle;
     async.data = *data;
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (!horizon_server_find_sock_locked( data->handle, &sock ) && sock->file_completion)
+    if (!horizon_server_find_io_object_locked( data->handle, &sock ) && sock->file_completion)
     {
         async.port = sock->file_completion;
         async.port_key = sock->file_completion_key;
@@ -13320,6 +13325,32 @@ static void horizon_server_ioctl_done( unsigned int tid, const struct horizon_as
     }
     horizon_async_finish_locked( &async, status, information );
     pthread_mutex_unlock( &horizon_server_objects_mutex );
+}
+
+static int horizon_server_handle_nsi_ioctl( struct horizon_server_connection *connection,
+                                           const struct horizon_ioctl_request *request,
+                                           const unsigned char *data, unsigned int data_size )
+{
+    struct horizon_ioctl_reply reply = {0};
+    struct horizon_server_object *object;
+    void *output = NULL;
+    unsigned int size = 0;
+    int result;
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    reply.header.error = horizon_server_find_typed_object_locked( request->async.handle,
+                                                                  HORIZON_SERVER_OBJECT_NSI, &object );
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    if (reply.header.error)
+        return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
+    horizon_server_ioctl_start( &request->async );
+    reply.header.error = horizon_nsi_ioctl( request->code, data, data_size, &output,
+                                           request->header.reply_size, &size );
+    reply.header.reply_size = size;
+    horizon_server_ioctl_done( connection->tid, &request->async, reply.header.error, size );
+    result = horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), output, size );
+    free( output );
+    return result;
 }
 
 static int horizon_server_handle_ioctl( struct horizon_server_connection *connection,
@@ -13333,6 +13364,9 @@ static int horizon_server_handle_ioctl( struct horizon_server_connection *connec
     unsigned int out_size = 0;
     unsigned int out_max = request->header.reply_size;
     unsigned int status;
+
+    if ((request->code & 0xfffff000) == 0x00121000) /* Wine's private NSI ioctls */
+        return horizon_server_handle_nsi_ioctl( connection, request, data, data_size );
 
     if (out_max > sizeof(out)) out_max = sizeof(out);
     memset( &reply, 0, sizeof(reply) );
@@ -14643,13 +14677,14 @@ static int horizon_server_handle_query_completion( struct horizon_server_connect
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
 
-/* Files and sockets are what I/O completion ports are tied to. */
 static unsigned int horizon_server_find_io_object_locked( unsigned int handle, struct horizon_server_object **object )
 {
     unsigned int status = horizon_server_find_typed_object_locked( handle, HORIZON_SERVER_OBJECT_FILE, object );
 
     if (status == HORIZON_STATUS_OBJECT_TYPE_MISMATCH)
         status = horizon_server_find_typed_object_locked( handle, HORIZON_SERVER_OBJECT_SOCK, object );
+    if (status == HORIZON_STATUS_OBJECT_TYPE_MISMATCH)
+        status = horizon_server_find_typed_object_locked( handle, HORIZON_SERVER_OBJECT_NSI, object );
     return status;
 }
 

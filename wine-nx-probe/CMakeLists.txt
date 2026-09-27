@@ -64,6 +64,8 @@ set(WINE_SWITCH_NTDLL_INCLUDES
 
 add_library(wine-horizon-real OBJECT
     ../dlls/ntdll/unix/horizon.c
+    ../dlls/ntdll/unix/horizon_network.c
+    ../dlls/ntdll/unix/horizon_nsi.c
 )
 
 target_compile_definitions(wine-horizon-real PRIVATE ${WINE_SWITCH_NTDLL_DEFS})
@@ -630,6 +632,7 @@ add_executable(wine-nx-runtime
     source/wow64_box64_bridge.c
     source/ntdll_pe_compat.c
     source/ws2_32_unix_stub.c
+    source/dnsapi_unix.c
     source/audio_unix.c
     source/xinput_unix.c
     source/thread_profile.c

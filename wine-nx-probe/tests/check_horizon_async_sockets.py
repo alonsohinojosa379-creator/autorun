@@ -173,6 +173,11 @@ static unsigned int horizon_server_find_sock_locked( unsigned int handle, struct
     return HORIZON_STATUS_SUCCESS;
 }
 
+static unsigned int horizon_server_find_io_object_locked( unsigned int handle, struct horizon_server_object **object )
+{
+    return horizon_server_find_sock_locked( handle, object );
+}
+
 static void horizon_server_post_completion_locked( struct horizon_server_object *port, unsigned long long ckey,
                                                    unsigned long long cvalue, unsigned int status,
                                                    unsigned long long information )
