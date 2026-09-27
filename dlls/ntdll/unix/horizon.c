@@ -632,6 +632,7 @@ struct horizon_fd_queue
 #define HORIZON_REQ_ALLOC_USER_HANDLE 278
 #define HORIZON_REQ_FREE_USER_HANDLE 279
 #define HORIZON_REQ_SET_CURSOR 280
+#define HORIZON_REQ_GET_NEXT_THREAD 295
 #define HORIZON_STATUS_SUCCESS 0
 #define HORIZON_STATUS_OBJECT_NAME_EXISTS 0x40000000u
 #define HORIZON_STATUS_KERNEL_APC 0x00000100u
@@ -683,6 +684,7 @@ struct horizon_fd_queue
 #define HORIZON_STATUS_TOO_MANY_OPENED_FILES 0xc000011fu
 #define HORIZON_STATUS_INFO_LENGTH_MISMATCH 0xc0000004u
 #define HORIZON_STATUS_NO_MORE_FILES 0x80000006u
+#define HORIZON_STATUS_NO_MORE_ENTRIES 0x8000001au
 #define HORIZON_STATUS_NOT_SAME_OBJECT 0xc00001acu
 #define HORIZON_STATUS_INVALID_CID 0xc000000bu
 #define HORIZON_STATUS_ABANDONED_WAIT_0 0x00000080u
@@ -1003,6 +1005,16 @@ struct horizon_get_thread_info_request
     unsigned int handle;
     unsigned int access;
     char __pad_20[4];
+};
+
+struct horizon_get_next_thread_request
+{
+    struct horizon_server_request_header header;
+    unsigned int process;
+    unsigned int last;
+    unsigned int access;
+    unsigned int attributes;
+    unsigned int flags;
 };
 
 struct horizon_get_thread_info_reply
@@ -11279,6 +11291,7 @@ static int horizon_server_handle_new_thread( struct horizon_server_connection *c
     {
         object->refs++; /* the connection's reference, dropped when its pipe closes */
         object->thread.suspend = (request->flags & HORIZON_THREAD_CREATE_SUSPENDED) ? 1 : 0;
+        object->thread.is_system = request->is_system;
         entry->thread_access = horizon_thread_map_access( request->access );
         thread_connection->thread = object;
         reply.handle = entry->handle;
@@ -11566,7 +11579,7 @@ static int horizon_server_handle_get_thread_info( struct horizon_server_connecti
 
         reply.pid = thread->pid;
         reply.tid = thread->tid;
-        reply.teb = thread->teb;
+        reply.teb = thread->terminated ? 0 : thread->teb;
         reply.entry_point = thread->entry;
         reply.affinity = thread->affinity;
         reply.exit_code = horizon_thread_exit_status( thread );
@@ -11660,6 +11673,47 @@ static int horizon_server_handle_open_thread( struct horizon_server_connection *
         entry->thread_access = horizon_thread_map_access( request->access );
         reply.handle = entry->handle;
     }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
+}
+
+static int horizon_server_handle_get_next_thread( struct horizon_server_connection *connection,
+                                                  const unsigned char *message )
+{
+    const struct horizon_get_next_thread_request *request = (const void *)message;
+    struct horizon_open_process_reply reply = {0};
+    struct horizon_server_object *object, *next = NULL;
+    struct horizon_server_handle_entry *entry;
+    unsigned int last = request->flags ? ~0u : 0;
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (request->flags > 1)
+        reply.header.error = HORIZON_STATUS_INVALID_PARAMETER;
+    else if (request->process != HORIZON_CURRENT_PROCESS_HANDLE)
+        reply.header.error = horizon_server_find_typed_object_locked(
+            request->process, HORIZON_SERVER_OBJECT_PROCESS, &object );
+    if (reply.header.error) goto done;
+    if (request->last)
+    {
+        if (!(object = horizon_server_get_thread_locked( request->last, &reply.header.error ))) goto done;
+        last = object->thread.tid;
+    }
+    for (object = horizon_server_threads; object; object = object->thread_next)
+    {
+        if (object->thread.pid != connection->pid || object->thread.is_system) continue;
+        if (request->flags ? object->thread.tid >= last : object->thread.tid <= last) continue;
+        if (!next || (request->flags ? object->thread.tid > next->thread.tid :
+                                      object->thread.tid < next->thread.tid)) next = object;
+    }
+    if (!next) reply.header.error = HORIZON_STATUS_NO_MORE_ENTRIES;
+    else if (!(entry = horizon_server_create_handle_for_object_locked( next )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
+    else
+    {
+        entry->thread_access = horizon_thread_map_access( request->access );
+        reply.handle = entry->handle;
+    }
+done:
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
@@ -15665,6 +15719,9 @@ static void *horizon_server_thread( void *param )
             break;
         case HORIZON_REQ_GET_THREAD_INFO:
             status = horizon_server_handle_get_thread_info( connection, message );
+            break;
+        case HORIZON_REQ_GET_NEXT_THREAD:
+            status = horizon_server_handle_get_next_thread( connection, message );
             break;
         case HORIZON_REQ_GET_THREAD_TIMES:
             status = horizon_server_handle_get_thread_times( connection, message );

@@ -44,6 +44,7 @@ struct horizon_thread_state
     int exit_code;
     int started;     /* init_thread released it into Windows code */
     int terminated;  /* its request pipe closed; no Windows code can still run */
+    int is_system;
     int suspend;
     long long creation_time;
     long long exit_time;

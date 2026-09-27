@@ -25,11 +25,13 @@ structures = '\n'.join(block(source, 'struct ' + name + '\n') + ';' for name in 
     'horizon_server_request_header', 'horizon_server_reply_header',
     'horizon_server_handle_entry', 'horizon_dup_handle_request', 'horizon_dup_handle_reply',
     'horizon_compare_objects_request', 'horizon_get_object_info_request',
-    'horizon_get_object_info_reply', 'horizon_open_thread_request', 'horizon_open_process_reply'))
+    'horizon_get_object_info_reply', 'horizon_open_thread_request', 'horizon_open_process_reply',
+    'horizon_get_next_thread_request', 'horizon_get_thread_info_request', 'horizon_get_thread_info_reply'))
 fixture = r'''
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
@@ -53,9 +55,10 @@ struct horizon_server_object {
     struct horizon_thread_state thread;
 };
 ''' + structures + r'''
-struct horizon_server_connection { int reply_fd; struct horizon_server_object *thread; };
+struct horizon_server_connection { int reply_fd; unsigned pid; struct horizon_server_object *thread; };
 static struct horizon_server_connection connection, *horizon_server_current = &connection;
 static struct horizon_server_object *horizon_server_threads;
+static unsigned horizon_server_running_threads = 1;
 static struct horizon_server_handle_entry *horizon_server_handles;
 static struct horizon_server_handle_entry *horizon_server_handle_hash[HORIZON_SERVER_HANDLE_HASH_SIZE];
 static pthread_mutex_t horizon_server_objects_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -92,13 +95,17 @@ helpers = '\n'.join(block(source, name) for name in (
     'static void horizon_server_unlink_handle_locked(',
     'static struct horizon_server_handle_entry *horizon_server_create_handle_locked(',
     'static struct horizon_server_handle_entry *horizon_server_create_handle_for_object_locked(',
+    'static unsigned int horizon_server_find_typed_object_locked(',
+    'static struct horizon_server_object *horizon_server_get_thread_locked(',
     'static unsigned int horizon_server_duplicate_object_handle(',
     'static struct horizon_server_object *horizon_server_find_handle_object_locked(',
     'static unsigned int horizon_server_compare_object_handles(',
     'static int horizon_server_handle_dup_handle(',
     'static int horizon_server_handle_compare_objects(',
     'static int horizon_server_handle_get_object_info(',
-    'static int horizon_server_handle_open_thread('))
+    'static int horizon_server_handle_open_thread(',
+    'static int horizon_server_handle_get_thread_info(',
+    'static int horizon_server_handle_get_next_thread('))
 dispatch = r'''
 unsigned int CDECL wine_server_call(void *ptr) {
     struct __server_request_info *req = ptr;
@@ -107,7 +114,7 @@ unsigned int CDECL wine_server_call(void *ptr) {
     int status;
     switch (req->u.req.request_header.req) {
 '''
-for name in ('DUP_HANDLE', 'COMPARE_OBJECTS', 'GET_OBJECT_INFO', 'OPEN_THREAD'):
+for name in ('DUP_HANDLE', 'COMPARE_OBJECTS', 'GET_OBJECT_INFO', 'OPEN_THREAD', 'GET_NEXT_THREAD'):
     dispatch += re.search(r'        case HORIZON_REQ_' + name + r':\n.*?            break;', source, re.S)[0]
 dispatch += r'''
     default: assert(0); return STATUS_NOT_IMPLEMENTED;
@@ -127,6 +134,7 @@ query = query[:query.index('    case ObjectNameInformation:')] + r'''
 '''
 server = (root / 'dlls/ntdll/unix/server.c').read_text()
 ntcalls = '\n'.join(block(server, 'NTSTATUS WINAPI ' + name + '(') for name in ('NtDuplicateObject', 'NtCompareObjects'))
+ntcalls += '\n' + block((root / 'dlls/ntdll/unix/thread.c').read_text(), 'NTSTATUS WINAPI NtGetNextThread(')
 signal = (root / 'dlls/ntdll/unix/signal_arm64.c').read_text()
 contexts = signal[signal.index('static NTSTATUS check_current_thread_context_access('):signal.index('/* Windows leaves the wait')]
 context_fixture = r'''
@@ -141,7 +149,165 @@ static void *get_cpu_area(struct thread_data *data, USHORT machine) {
     assert(data == &thread_data && machine == IMAGE_FILE_MACHINE_I386); return &saved;
 }
 '''
+tls_fixture = r'''
+#define ERR(...) ((void)0)
+#define GetProcessHeap() ((HANDLE)1)
+static IMAGE_TLS_DIRECTORY test_tls_dir, *tls_dirs;
+static UINT tls_module_count;
+PVOID WINAPI RtlImageDirectoryEntryToData(HMODULE module, BOOL image, USHORT directory, ULONG *size) {
+    (void)module; assert(image && directory == IMAGE_DIRECTORY_ENTRY_TLS);
+    *size = sizeof(test_tls_dir); return &test_tls_dir;
+}
+PVOID WINAPI RtlAllocateHeap(HANDLE heap, ULONG flags, SIZE_T size) {
+    assert(heap == GetProcessHeap()); return flags & HEAP_ZERO_MEMORY ? calloc(1, size) : malloc(size);
+}
+PVOID WINAPI RtlReAllocateHeap(HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size) {
+    void *result;
+    assert(heap == GetProcessHeap() && flags == HEAP_ZERO_MEMORY);
+    result = realloc(ptr, size);
+    assert(result && size == tls_module_count * 2 * sizeof(*tls_dirs));
+    memset((char *)result + size / 2, 0, size / 2);
+    return result;
+}
+BOOLEAN WINAPI RtlFreeHeap(HANDLE heap, ULONG flags, PVOID ptr) {
+    assert(heap == GetProcessHeap() && !flags); free(ptr); return TRUE;
+}
+NTSTATUS WINAPI NtClose(HANDLE handle) {
+    struct horizon_server_handle_entry *entry = horizon_server_find_handle_locked(wine_server_obj_handle(handle));
+    if (!entry) return STATUS_INVALID_HANDLE;
+    horizon_server_unlink_handle_locked(entry);
+    entry->object->refs--;
+    free(entry);
+    return 0;
+}
+NTSTATUS WINAPI NtQueryInformationThread(HANDLE handle, THREADINFOCLASS info_class, void *data, ULONG size, ULONG *ret_len) {
+    struct horizon_get_thread_info_request request = {0};
+    THREAD_BASIC_INFORMATION *info = data;
+    assert(info_class == ThreadBasicInformation && size == sizeof(*info) && !ret_len);
+    request.handle = wine_server_obj_handle(handle);
+    assert(!horizon_server_handle_get_thread_info(&connection, (const void *)&request));
+    if (wire_reply.reply_header.error) return wire_reply.reply_header.error;
+    memset(info, 0, size);
+    info->TebBaseAddress = wine_server_get_ptr(wire_reply.get_thread_info_reply.teb);
+    info->ClientId.UniqueThread = ULongToHandle(wire_reply.get_thread_info_reply.tid);
+    return 0;
+}
+'''
+tls_fixture += block((root / 'dlls/ntdll/loader.c').read_text(), 'static BOOL alloc_tls_slot(')
+
 tests = r'''
+static void test_dynamic_tls(void) {
+    struct horizon_server_object threads[4] = {0};
+    struct horizon_server_object *saved_threads = horizon_server_threads;
+    unsigned saved_pid = connection.pid;
+    TEB tebs[3] = {0};
+    void **old[2];
+    const unsigned char initial[] = {0x52, 0x45, 0x33, 0x21};
+    ULONG index = ~0u;
+    LDR_DATA_TABLE_ENTRY module = {0};
+    unsigned i, j;
+    connection.pid = 1;
+    tls_module_count = 1;
+    tls_dirs = calloc(1, sizeof(*tls_dirs));
+    for (i = 0; i < 4; ++i) {
+        threads[i].type = HORIZON_SERVER_OBJECT_THREAD;
+        threads[i].refs = 1;
+        threads[i].thread.tid = 4 * (i + 1);
+        threads[i].thread.pid = 1;
+        threads[i].thread.teb = i < 3 ? (uintptr_t)&tebs[i] : 0xdead;
+        threads[i].thread_next = i ? &threads[i - 1] : NULL;
+        if (i < 2) tebs[i].ThreadLocalStoragePointer = calloc(1, sizeof(void *));
+    }
+    threads[3].thread.terminated = 1;
+    horizon_server_threads = &threads[3];
+    test_tls_dir.StartAddressOfRawData = (uintptr_t)initial;
+    test_tls_dir.EndAddressOfRawData = (uintptr_t)initial + sizeof(initial);
+    test_tls_dir.SizeOfZeroFill = 16;
+    test_tls_dir.AddressOfIndex = (uintptr_t)&index;
+    assert(alloc_tls_slot(&module) && index == 0);
+    for (i = 0; i < 2; ++i) {
+        old[i] = tebs[i].ThreadLocalStoragePointer;
+        assert(!memcmp(old[i][0], initial, sizeof(initial)));
+        for (j = 0; j < 16; ++j) assert(!((unsigned char *)old[i][0])[sizeof(initial) + j]);
+    }
+    assert(old[0][0] != old[1][0] && !tebs[2].ThreadLocalStoragePointer);
+    assert(alloc_tls_slot(&module) && index == 1 && tls_module_count == 2);
+    for (i = 0; i < 2; ++i) {
+        void **slots = tebs[i].ThreadLocalStoragePointer;
+        assert(slots != old[i] && slots[0] == old[i][0]);
+        assert(!memcmp(slots[1], initial, sizeof(initial)) && slots[0] != slots[1]);
+        free(slots[0]); free(slots[1]); free(slots); free(old[i]);
+    }
+    for (i = 0; i < 4; ++i) assert(threads[i].refs == 1);
+    free(tls_dirs);
+    horizon_server_threads = saved_threads;
+    connection.pid = saved_pid;
+}
+
+static void test_next_thread(void) {
+    struct horizon_server_object threads[4] = {0};
+    struct horizon_server_object process = {.type = HORIZON_SERVER_OBJECT_PROCESS};
+    struct horizon_server_handle_entry *entry;
+    struct horizon_server_object *saved_threads = horizon_server_threads;
+    unsigned pid = connection.pid;
+    HANDLE next, previous = NULL, handles[3], process_handle;
+    unsigned i;
+    _Static_assert(HORIZON_REQ_GET_NEXT_THREAD == REQ_get_next_thread, "request number");
+    _Static_assert(sizeof(struct horizon_get_next_thread_request) == sizeof(struct get_next_thread_request), "request size");
+    _Static_assert(sizeof(struct horizon_open_process_reply) == sizeof(struct get_next_thread_reply), "reply size");
+    connection.pid = 1;
+    for (i = 0; i < 4; i++) {
+        threads[i].type = HORIZON_SERVER_OBJECT_THREAD;
+        threads[i].refs = 1;
+        threads[i].thread.tid = 4 * (i + 1);
+        threads[i].thread.pid = 1;
+        threads[i].thread_next = i ? &threads[i - 1] : NULL;
+    }
+    threads[3].thread.is_system = 1;
+    threads[1].thread.terminated = 1;
+    horizon_server_threads = &threads[3];
+    for (i = 0; i < 3; i++) {
+        assert(!NtGetNextThread(NtCurrentProcess(), previous, THREAD_QUERY_INFORMATION, 0, 0, &next));
+        entry = horizon_server_find_handle_locked(wine_server_obj_handle(next));
+        assert(entry && entry->object == &threads[i]);
+        assert(entry->thread_access == (THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
+        handles[i] = previous = next;
+    }
+    assert(NtGetNextThread(NtCurrentProcess(), previous, 0, 0, 0, &next) == STATUS_NO_MORE_ENTRIES && !next);
+    previous = NULL;
+    for (i = 3; i--;) {
+        assert(!NtGetNextThread(NtCurrentProcess(), previous, 0, 0, 1, &next));
+        entry = horizon_server_find_handle_locked(wine_server_obj_handle(next));
+        assert(entry->object == &threads[i] && !entry->thread_access);
+        previous = handles[i];
+        horizon_server_unlink_handle_locked(entry);
+        entry->object->refs--;
+        free(entry);
+    }
+    assert(NtGetNextThread(NtCurrentProcess(), previous, 0, 0, 1, &next) == STATUS_NO_MORE_ENTRIES && !next);
+    assert(NtGetNextThread(NtCurrentProcess(), 0, 0, 0, 2, &next) == STATUS_INVALID_PARAMETER);
+    assert(NtGetNextThread((HANDLE)0xdead, 0, 0, 0, 0, &next) == STATUS_INVALID_HANDLE);
+    assert(NtGetNextThread(handles[0], 0, 0, 0, 0, &next) == STATUS_OBJECT_TYPE_MISMATCH);
+    assert(NtGetNextThread(NtCurrentProcess(), (HANDLE)0xdead, 0, 0, 0, &next) == STATUS_INVALID_HANDLE);
+    entry = horizon_server_create_handle_for_object_locked(&process);
+    process_handle = wine_server_ptr_handle(entry->handle);
+    assert(NtGetNextThread(NtCurrentProcess(), process_handle, 0, 0, 0, &next) == STATUS_OBJECT_TYPE_MISMATCH);
+    connection.pid = 2;
+    assert(NtGetNextThread(process_handle, 0, 0, 0, 0, &next) == STATUS_NO_MORE_ENTRIES);
+    horizon_server_unlink_handle_locked(entry);
+    entry->object->refs--;
+    free(entry);
+    for (i = 0; i < 3; i++) {
+        entry = horizon_server_find_handle_locked(wine_server_obj_handle(handles[i]));
+        horizon_server_unlink_handle_locked(entry);
+        entry->object->refs--;
+        free(entry);
+        assert(threads[i].refs == 1);
+    }
+    connection.pid = pid;
+    horizon_server_threads = saved_threads;
+}
+
 static OBJECT_BASIC_INFORMATION query_info(HANDLE handle) {
     OBJECT_BASIC_INFORMATION info;
     ULONG size = 0;
@@ -166,6 +332,8 @@ int main(void) {
     OBJECT_BASIC_INFORMATION info;
     HANDLE alias, read, write, clone, zero;
     ULONG size;
+    test_next_thread();
+    test_dynamic_tls();
     _Static_assert(HORIZON_REQ_GET_OBJECT_INFO == REQ_get_object_info, "request number");
     _Static_assert(sizeof(struct horizon_get_object_info_request) == sizeof(struct get_object_info_request), "request size");
     _Static_assert(sizeof(struct horizon_get_object_info_reply) == sizeof(struct get_object_info_reply), "reply size");
@@ -245,13 +413,13 @@ int main(void) {
         free(entry);
     }
     assert(self.refs == 1 && other.refs == 1 && section.refs == 1);
-    puts("Horizon thread handles: object queries, duplication, identity and FEX context access passed");
+    puts("Horizon thread handles: enumeration, dynamic DLL TLS, lifetime, duplication and context access passed");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='horizon-handles-') as directory:
     build = Path(directory)
     path = build / 'handles.c'
-    path.write_text(fixture + helpers + dispatch + query + ntcalls + context_fixture + contexts + tests)
+    path.write_text(fixture + helpers + dispatch + query + ntcalls + context_fixture + contexts + tls_fixture + tests)
     subprocess.run([os.environ.get('WINE_NX_HOST_CC', '/usr/bin/clang'), '-std=gnu11',
                     '-fms-extensions', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
                     '-fsanitize=address,undefined', '-pthread', '-D__WINESRC__', '-D_WIN64',
