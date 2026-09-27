@@ -671,6 +671,7 @@ struct horizon_fd_queue
 #define HORIZON_STATUS_ACCESS_DENIED 0xc0000022u
 #define HORIZON_STATUS_NO_MEMORY 0xc0000017u
 #define HORIZON_STATUS_OBJECT_TYPE_MISMATCH 0xc0000024u
+#define HORIZON_STATUS_ACCESS_VIOLATION 0xc0000005u
 #define HORIZON_STATUS_OBJECT_NAME_NOT_FOUND 0xc0000034u
 #define HORIZON_STATUS_OBJECT_NAME_COLLISION 0xc0000035u
 #define HORIZON_STATUS_FILE_IS_A_DIRECTORY 0xc00000bau
@@ -690,6 +691,8 @@ struct horizon_fd_queue
 #define HORIZON_STATUS_ABANDONED_WAIT_0 0x00000080u
 #define HORIZON_CURRENT_THREAD_HANDLE 0xfffffffeu
 #define HORIZON_CURRENT_PROCESS_HANDLE 0xffffffffu
+#define HORIZON_PROCESS_ALL_ACCESS 0x001fffffu
+#define HORIZON_PROCESS_QUERY_LIMITED_INFORMATION 0x1000u
 #define HORIZON_THREAD_CREATE_SUSPENDED 0x00000001u
 #define HORIZON_SET_THREAD_INFO_PRIORITY 0x01u
 #define HORIZON_SET_THREAD_INFO_BASE_PRIORITY 0x02u
@@ -1191,6 +1194,14 @@ struct horizon_get_object_info_reply
     unsigned int ref_count;
     unsigned int handle_count;
     char __pad_20[4];
+};
+
+struct horizon_open_process_request
+{
+    struct horizon_server_request_header header;
+    unsigned int pid;
+    unsigned int access;
+    unsigned int attributes;
 };
 
 struct horizon_open_process_reply
@@ -3337,7 +3348,7 @@ struct horizon_server_object
 struct horizon_server_handle_entry
 {
     unsigned int handle;
-    unsigned int thread_access;
+    unsigned int access;
     struct horizon_server_object *object;
     struct horizon_server_handle_entry *next;
     struct horizon_server_handle_entry **pprev;     /* what points at it in horizon_server_handles */
@@ -4768,6 +4779,38 @@ static unsigned int horizon_server_close_object_handle( unsigned int handle )
     return HORIZON_STATUS_INVALID_HANDLE;
 }
 
+/* Generic mapping and implied rights from server/process.c. */
+static unsigned int horizon_process_map_access( unsigned int access )
+{
+    if (access & 0x80000000u) access |= 0x00020410u;
+    if (access & 0x40000000u) access |= 0x00020beau;
+    if (access & 0x20000000u) access |= 0x00121001u;
+    if (access & 0x12000000u) access |= HORIZON_PROCESS_ALL_ACCESS;
+    access &= ~0xf2000000u;
+    if (access & 0x0400u) access |= HORIZON_PROCESS_QUERY_LIMITED_INFORMATION;
+    if (access & 0x0200u) access |= 0x2000u;
+    if ((access & 0x0028u) == 0x0028u) access |= HORIZON_PROCESS_QUERY_LIMITED_INFORMATION;
+    return access;
+}
+
+unsigned int horizon_query_process_affinity( unsigned int handle, ULONG_PTR *mask )
+{
+    struct horizon_server_handle_entry *entry;
+    unsigned int status = HORIZON_STATUS_SUCCESS;
+
+    if (!mask) return HORIZON_STATUS_ACCESS_VIOLATION;
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (handle != HORIZON_CURRENT_PROCESS_HANDLE)
+    {
+        if (!(entry = horizon_server_find_handle_locked( handle ))) status = HORIZON_STATUS_INVALID_HANDLE;
+        else if (entry->object->type != HORIZON_SERVER_OBJECT_PROCESS) status = HORIZON_STATUS_OBJECT_TYPE_MISMATCH;
+        else if (!(entry->access & HORIZON_PROCESS_QUERY_LIMITED_INFORMATION)) status = HORIZON_STATUS_ACCESS_DENIED;
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    if (!status) *mask = horizon_get_system_affinity_mask();
+    return status;
+}
+
 static unsigned int horizon_server_duplicate_object_handle( unsigned int handle, unsigned int access,
                                                              unsigned int options, unsigned int *new_handle )
 {
@@ -4786,7 +4829,10 @@ static unsigned int horizon_server_duplicate_object_handle( unsigned int handle,
     {
         /* Process objects carry no state yet; a fresh one is equivalent. */
         if ((entry = horizon_server_create_handle_locked( HORIZON_SERVER_OBJECT_PROCESS )))
+        {
+            entry->access = options & 2 ? HORIZON_PROCESS_ALL_ACCESS : horizon_process_map_access( access );
             *new_handle = entry->handle;
+        }
         pthread_mutex_unlock( &horizon_server_objects_mutex );
         free( duplicate );
         return entry ? HORIZON_STATUS_SUCCESS : HORIZON_STATUS_NO_MEMORY;
@@ -4805,12 +4851,14 @@ static unsigned int horizon_server_duplicate_object_handle( unsigned int handle,
     else
     {
         duplicate->object = entry->object;
-        source_access = entry->thread_access;
+        source_access = entry->access;
     }
 
     if (duplicate->object->type == HORIZON_SERVER_OBJECT_THREAD)
-        duplicate->thread_access = options & 2 /* DUPLICATE_SAME_ACCESS */ ? source_access :
+        duplicate->access = options & 2 /* DUPLICATE_SAME_ACCESS */ ? source_access :
                                    horizon_thread_map_access( access );
+    else if (duplicate->object->type == HORIZON_SERVER_OBJECT_PROCESS)
+        duplicate->access = options & 2 ? source_access : horizon_process_map_access( access );
     duplicate->handle = horizon_server_alloc_handle();
     duplicate->object->refs++;
     horizon_server_link_handle_locked( duplicate );
@@ -6556,7 +6604,7 @@ static int horizon_server_handle_get_object_info( struct horizon_server_connecti
     {
         entry = horizon_server_find_handle_locked( request->handle );
         reply.access = object->type == HORIZON_SERVER_OBJECT_MAPPING ? object->mapping_access :
-                       entry ? entry->thread_access : HORIZON_THREAD_ALL_ACCESS;
+                       entry ? entry->access : HORIZON_THREAD_ALL_ACCESS;
         reply.ref_count = object->refs;
         for (entry = horizon_server_handles; entry; entry = entry->next)
             if (entry->object == object) reply.handle_count++;
@@ -6565,12 +6613,23 @@ static int horizon_server_handle_get_object_info( struct horizon_server_connecti
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
 
-static int horizon_server_handle_open_object( struct horizon_server_connection *connection, int type )
+static int horizon_server_handle_open_process( struct horizon_server_connection *connection,
+                                               const unsigned char *message )
 {
-    struct horizon_open_process_reply reply;
+    const struct horizon_open_process_request *request = (const void *)message;
+    struct horizon_open_process_reply reply = {0};
+    struct horizon_server_handle_entry *entry;
 
-    memset( &reply, 0, sizeof(reply) );
-    reply.header.error = horizon_server_create_object_handle( type, &reply.handle );
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (request->pid != connection->pid) reply.header.error = HORIZON_STATUS_INVALID_CID;
+    else if (!(entry = horizon_server_create_handle_locked( HORIZON_SERVER_OBJECT_PROCESS )))
+        reply.header.error = HORIZON_STATUS_NO_MEMORY;
+    else
+    {
+        entry->access = horizon_process_map_access( request->access );
+        reply.handle = entry->handle;
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
 
@@ -11292,7 +11351,7 @@ static int horizon_server_handle_new_thread( struct horizon_server_connection *c
         object->refs++; /* the connection's reference, dropped when its pipe closes */
         object->thread.suspend = (request->flags & HORIZON_THREAD_CREATE_SUSPENDED) ? 1 : 0;
         object->thread.is_system = request->is_system;
-        entry->thread_access = horizon_thread_map_access( request->access );
+        entry->access = horizon_thread_map_access( request->access );
         thread_connection->thread = object;
         reply.handle = entry->handle;
         __atomic_add_fetch( &horizon_lifecycle.connections, 1, __ATOMIC_RELAXED );
@@ -11670,7 +11729,7 @@ static int horizon_server_handle_open_thread( struct horizon_server_connection *
         reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
-        entry->thread_access = horizon_thread_map_access( request->access );
+        entry->access = horizon_thread_map_access( request->access );
         reply.handle = entry->handle;
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
@@ -11710,7 +11769,7 @@ static int horizon_server_handle_get_next_thread( struct horizon_server_connecti
         reply.header.error = HORIZON_STATUS_NO_MEMORY;
     else
     {
-        entry->thread_access = horizon_thread_map_access( request->access );
+        entry->access = horizon_thread_map_access( request->access );
         reply.handle = entry->handle;
     }
 done:
@@ -15786,7 +15845,7 @@ static void *horizon_server_thread( void *param )
             status = horizon_server_write_status( connection->reply_fd, HORIZON_STATUS_SUCCESS );
             break;
         case HORIZON_REQ_OPEN_PROCESS:
-            status = horizon_server_handle_open_object( connection, HORIZON_SERVER_OBJECT_PROCESS );
+            status = horizon_server_handle_open_process( connection, message );
             break;
         case HORIZON_REQ_OPEN_THREAD:
             status = horizon_server_handle_open_thread( connection, message );

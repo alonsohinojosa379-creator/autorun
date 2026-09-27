@@ -296,6 +296,13 @@ static unsigned int horizon_registry_init(void)
     {
         static const char machine_seed[] =
             "WINE REGISTRY Version 2\n"
+            "[System\\\\CurrentControlSet\\\\Control\\\\ComputerName\\\\ComputerName]\n"
+            "\"ComputerName\"=\"WINE-NX\"\n"
+            "[System\\\\CurrentControlSet\\\\Control\\\\ComputerName\\\\ActiveComputerName]\n"
+            "\"ComputerName\"=\"WINE-NX\"\n"
+            "[System\\\\CurrentControlSet\\\\Services\\\\Tcpip\\\\Parameters]\n"
+            "\"Hostname\"=\"wine-nx\"\n"
+            "\"Domain\"=\"\"\n"
             "[Software\\\\Classes\\\\CLSID\\\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\\\InprocServer32]\n"
             "@=\"mmdevapi.dll\"\n"
             "\"ThreadingModel\"=\"Both\"\n"

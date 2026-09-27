@@ -20,13 +20,14 @@ def block(text, signature):
     return text[start:end]
 
 
-definitions = '\n'.join(re.findall(r'^#define HORIZON_(?:STATUS_|CURRENT_|REQ_|SERVER_HANDLE_HASH_SIZE)\w* .*', source, re.M))
+definitions = '\n'.join(re.findall(r'^#define HORIZON_(?:STATUS_|CURRENT_|REQ_|PROCESS_|SERVER_HANDLE_HASH_SIZE)\w* .*', source, re.M))
 structures = '\n'.join(block(source, 'struct ' + name + '\n') + ';' for name in (
     'horizon_server_request_header', 'horizon_server_reply_header',
     'horizon_server_handle_entry', 'horizon_dup_handle_request', 'horizon_dup_handle_reply',
     'horizon_compare_objects_request', 'horizon_get_object_info_request',
     'horizon_get_object_info_reply', 'horizon_open_thread_request', 'horizon_open_process_reply',
-    'horizon_get_next_thread_request', 'horizon_get_thread_info_request', 'horizon_get_thread_info_reply'))
+    'horizon_get_next_thread_request', 'horizon_get_thread_info_request', 'horizon_get_thread_info_reply',
+    'horizon_open_process_request'))
 fixture = r'''
 #include <assert.h>
 #include <pthread.h>
@@ -63,6 +64,7 @@ static struct horizon_server_handle_entry *horizon_server_handles;
 static struct horizon_server_handle_entry *horizon_server_handle_hash[HORIZON_SERVER_HANDLE_HASH_SIZE];
 static pthread_mutex_t horizon_server_objects_mutex = PTHREAD_MUTEX_INITIALIZER;
 static unsigned next_handle = 0x100;
+static ULONG_PTR horizon_get_system_affinity_mask(void) { return 7; }
 static unsigned horizon_server_alloc_handle(void) { return next_handle += 4; }
 static union generic_reply wire_reply;
 static int horizon_server_write_reply(int fd, const void *data, size_t size, const void *extra, size_t extra_size) {
@@ -97,6 +99,8 @@ helpers = '\n'.join(block(source, name) for name in (
     'static struct horizon_server_handle_entry *horizon_server_create_handle_for_object_locked(',
     'static unsigned int horizon_server_find_typed_object_locked(',
     'static struct horizon_server_object *horizon_server_get_thread_locked(',
+    'static unsigned int horizon_process_map_access(',
+    'unsigned int horizon_query_process_affinity(',
     'static unsigned int horizon_server_duplicate_object_handle(',
     'static struct horizon_server_object *horizon_server_find_handle_object_locked(',
     'static unsigned int horizon_server_compare_object_handles(',
@@ -104,6 +108,7 @@ helpers = '\n'.join(block(source, name) for name in (
     'static int horizon_server_handle_compare_objects(',
     'static int horizon_server_handle_get_object_info(',
     'static int horizon_server_handle_open_thread(',
+    'static int horizon_server_handle_open_process(',
     'static int horizon_server_handle_get_thread_info(',
     'static int horizon_server_handle_get_next_thread('))
 dispatch = r'''
@@ -135,6 +140,23 @@ query = query[:query.index('    case ObjectNameInformation:')] + r'''
 server = (root / 'dlls/ntdll/unix/server.c').read_text()
 ntcalls = '\n'.join(block(server, 'NTSTATUS WINAPI ' + name + '(') for name in ('NtDuplicateObject', 'NtCompareObjects'))
 ntcalls += '\n' + block((root / 'dlls/ntdll/unix/thread.c').read_text(), 'NTSTATUS WINAPI NtGetNextThread(')
+process = (root / 'dlls/ntdll/unix/process.c').read_text()
+affinity = process[process.index('    case ProcessAffinityMask:'):process.index('    case ProcessSessionInformation:')]
+ntcalls += r'''
+#define __SWITCH__
+NTSTATUS WINAPI NtQueryInformationProcess(HANDLE handle, PROCESSINFOCLASS class, void *info,
+                                         ULONG size, ULONG *ret_len) {
+    ULONG len = 0;
+    NTSTATUS ret = 0;
+    switch (class) {
+''' + affinity + r'''
+    default: return STATUS_INVALID_INFO_CLASS;
+    }
+    if (ret_len) *ret_len = len;
+    return ret;
+}
+#undef __SWITCH__
+'''
 signal = (root / 'dlls/ntdll/unix/signal_arm64.c').read_text()
 contexts = signal[signal.index('static NTSTATUS check_current_thread_context_access('):signal.index('/* Windows leaves the wait')]
 context_fixture = r'''
@@ -270,7 +292,7 @@ static void test_next_thread(void) {
         assert(!NtGetNextThread(NtCurrentProcess(), previous, THREAD_QUERY_INFORMATION, 0, 0, &next));
         entry = horizon_server_find_handle_locked(wine_server_obj_handle(next));
         assert(entry && entry->object == &threads[i]);
-        assert(entry->thread_access == (THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
+        assert(entry->access == (THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION));
         handles[i] = previous = next;
     }
     assert(NtGetNextThread(NtCurrentProcess(), previous, 0, 0, 0, &next) == STATUS_NO_MORE_ENTRIES && !next);
@@ -278,7 +300,7 @@ static void test_next_thread(void) {
     for (i = 3; i--;) {
         assert(!NtGetNextThread(NtCurrentProcess(), previous, 0, 0, 1, &next));
         entry = horizon_server_find_handle_locked(wine_server_obj_handle(next));
-        assert(entry->object == &threads[i] && !entry->thread_access);
+        assert(entry->object == &threads[i] && !entry->access);
         previous = handles[i];
         horizon_server_unlink_handle_locked(entry);
         entry->object->refs--;
@@ -321,6 +343,57 @@ static HANDLE duplicate(HANDLE handle, ACCESS_MASK access, ULONG options) {
     assert(result);
     return result;
 }
+static void test_process_affinity(void) {
+    struct horizon_open_process_request request = {0};
+    struct horizon_server_handle_entry *entry;
+    struct horizon_server_object *object;
+    const unsigned rights[] = {0, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+                               GENERIC_READ, GENERIC_EXECUTE, MAXIMUM_ALLOWED};
+    ULONG_PTR mask = 0;
+    ULONG length = 0;
+    unsigned saved_pid = connection.pid;
+    unsigned handle;
+    _Static_assert(sizeof(request) == sizeof(struct open_process_request), "process request size");
+    assert(!horizon_query_process_affinity(HORIZON_CURRENT_PROCESS_HANDLE, &mask) && mask == 7);
+    assert(!NtQueryInformationProcess(NtCurrentProcess(), ProcessAffinityMask, &mask, sizeof(mask), &length));
+    assert(mask == 7 && length == sizeof(mask));
+    assert(NtQueryInformationProcess(NtCurrentProcess(), ProcessAffinityMask, &mask, sizeof(mask) - 1,
+                                     NULL) == STATUS_INFO_LENGTH_MISMATCH);
+    assert(horizon_query_process_affinity(HORIZON_CURRENT_PROCESS_HANDLE, NULL) == HORIZON_STATUS_ACCESS_VIOLATION);
+    assert(horizon_query_process_affinity(HORIZON_CURRENT_THREAD_HANDLE, &mask) == HORIZON_STATUS_INVALID_HANDLE);
+    connection.pid = request.pid = 23;
+    for (unsigned i = 0; i < sizeof(rights) / sizeof(rights[0]); ++i) {
+        request.access = rights[i];
+        assert(!horizon_server_handle_open_process(&connection, (const void *)&request));
+        assert(!wire_reply.reply_header.error);
+        handle = wire_reply.open_process_reply.handle;
+        mask = 0xcccccccc;
+        assert(horizon_query_process_affinity(handle, &mask) == (i ? 0u : HORIZON_STATUS_ACCESS_DENIED));
+        assert(mask == (i ? 7 : 0xcccccccc));
+        entry = horizon_server_find_handle_locked(handle);
+        object = entry->object;
+        HANDLE alias = duplicate(wine_server_ptr_handle(handle), 0, DUPLICATE_SAME_ACCESS);
+        assert(horizon_query_process_affinity(wine_server_obj_handle(alias), &mask) == (i ? 0u : HORIZON_STATUS_ACCESS_DENIED));
+        assert(!NtClose(alias));
+        assert(!NtClose(wine_server_ptr_handle(handle)));
+        assert(horizon_query_process_affinity(handle, &mask) == HORIZON_STATUS_INVALID_HANDLE);
+        assert(!object->refs);
+        free(object);
+    }
+    request.pid++;
+    assert(!horizon_server_handle_open_process(&connection, (const void *)&request));
+    assert(wire_reply.reply_header.error == HORIZON_STATUS_INVALID_CID && !wire_reply.open_process_reply.handle);
+    HANDLE alias = duplicate(NtCurrentProcess(), PROCESS_QUERY_INFORMATION, 0);
+    handle = wine_server_obj_handle(alias);
+    object = horizon_server_find_handle_locked(handle)->object;
+    assert(!horizon_query_process_affinity(handle, &mask) && mask == 7);
+    unsigned count = 0;
+    for (unsigned bit = 1; bit && bit <= mask; bit = 1u << ++count) assert(count < 32);
+    assert(count == 3);
+    assert(!NtClose(alias));
+    free(object);
+    connection.pid = saved_pid;
+}
 int main(void) {
     struct horizon_server_object self = {.refs = 1, .type = HORIZON_SERVER_OBJECT_THREAD};
     struct horizon_server_object other = {.refs = 1, .type = HORIZON_SERVER_OBJECT_THREAD};
@@ -334,6 +407,7 @@ int main(void) {
     ULONG size;
     test_next_thread();
     test_dynamic_tls();
+    test_process_affinity();
     _Static_assert(HORIZON_REQ_GET_OBJECT_INFO == REQ_get_object_info, "request number");
     _Static_assert(sizeof(struct horizon_get_object_info_request) == sizeof(struct get_object_info_request), "request size");
     _Static_assert(sizeof(struct horizon_get_object_info_reply) == sizeof(struct get_object_info_reply), "reply size");
@@ -387,7 +461,7 @@ int main(void) {
     assert(!wire_reply.reply_header.error);
     assert(query_info(wine_server_ptr_handle(wire_reply.open_thread_reply.handle)).GrantedAccess == horizon_thread_map_access(GENERIC_READ));
     entry = horizon_server_create_handle_for_object_locked(&other);
-    entry->thread_access = THREAD_ALL_ACCESS;
+    entry->access = THREAD_ALL_ACCESS;
     assert(NtCompareObjects(wine_server_ptr_handle(entry->handle), alias) == STATUS_NOT_SAME_OBJECT);
     assert(get_thread_wow64_context(wine_server_ptr_handle(entry->handle), &ctx, sizeof(ctx)) == STATUS_NOT_IMPLEMENTED);
     assert(NtQueryObject((HANDLE)0xdead, ObjectBasicInformation, &info, sizeof(info), &size) == STATUS_INVALID_HANDLE && !size);

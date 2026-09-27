@@ -175,6 +175,42 @@ static void reload(void)
     horizon_registry.root = NULL;
     assert(!horizon_registry_init());
 }
+static void test_machine_identity(void)
+{
+    static const unsigned short *computer_paths[] = {
+        u"System\\CurrentControlSet\\Control\\ComputerName\\ComputerName",
+        u"System\\CurrentControlSet\\Control\\ComputerName\\ActiveComputerName"
+    };
+    static const unsigned short parameters[] = u"System\\CurrentControlSet\\Services\\Tcpip\\Parameters";
+    static const unsigned short computer[] = u"ComputerName", hostname[] = u"Hostname", domain[] = u"Domain";
+    static const unsigned short netbios[] = u"WINE-NX", dns[] = u"wine-nx", custom[] = u"MY-SWITCH";
+    unsigned int i, len;
+    struct horizon_reg_key *key;
+
+    for (i = 0; i < 2; i++)
+    {
+        for (len = 0; computer_paths[i][len / 2]; len += 2) {}
+        check_value(machine_key(), computer_paths[i], len, computer, sizeof(computer) - 2,
+                    HORIZON_REG_SZ, netbios, sizeof(netbios));
+        key = open_key(machine_key(), computer_paths[i], len);
+        assert(!horizon_reg_set_value(&horizon_registry, key, computer, sizeof(computer) - 2,
+                                      HORIZON_REG_SZ, custom, sizeof(custom)));
+        horizon_reg_release(&horizon_registry, key);
+    }
+    check_value(machine_key(), parameters, sizeof(parameters) - 2, hostname, sizeof(hostname) - 2,
+                HORIZON_REG_SZ, dns, sizeof(dns));
+    check_value(machine_key(), parameters, sizeof(parameters) - 2, domain, sizeof(domain) - 2,
+                HORIZON_REG_SZ, none, sizeof(none));
+    assert(horizon_registry_flush());
+    reload();
+    for (i = 0; i < 2; i++)
+    {
+        for (len = 0; computer_paths[i][len / 2]; len += 2) {}
+        check_value(machine_key(), computer_paths[i], len, computer, sizeof(computer) - 2,
+                    HORIZON_REG_SZ, custom, sizeof(custom));
+    }
+    puts("Machine identity: NetBIOS/DNS defaults and saved overrides passed");
+}
 static void read_file(const char *path, char *buffer, size_t size)
 {
     FILE *file = fopen(path, "rb");
@@ -391,6 +427,7 @@ int main(void)
     assert(!horizon_registry_flush_key(key));
     for(i=0;i<handle_count;i++) horizon_server_free_object(handles[i].object);
     test_batching();
+    test_machine_identity();
     test_save_and_load();
     puts("Registry server: protocol layouts, HKCU identity, COM/audio seeds, truncated replies, notifications and saved hives passed");
     return 0;

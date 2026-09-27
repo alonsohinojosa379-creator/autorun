@@ -1458,6 +1458,9 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
         len = sizeof(ULONG_PTR);
         if (size == len)
         {
+#ifdef __SWITCH__
+            ret = horizon_query_process_affinity( wine_server_obj_handle( handle ), info );
+#else
             const ULONG_PTR system_mask = get_system_affinity_mask();
 
             SERVER_START_REQ(get_process_info)
@@ -1467,6 +1470,7 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
                     *(ULONG_PTR *)info = reply->affinity & system_mask;
             }
             SERVER_END_REQ;
+#endif
         }
         else return STATUS_INFO_LENGTH_MISMATCH;
         break;
