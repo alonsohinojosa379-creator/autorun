@@ -359,35 +359,58 @@ void launcher_dlls_open( struct launcher_dlls *d )
     }
 }
 
+int launcher_dlls_is_ready( struct launcher_dlls *d )
+{
+    return !d || ready( d, NULL, 0 );
+}
+
+/* The check and a plan, waiting for the one running in the background. */
+static void settle( struct launcher_dlls *d )
+{
+    if (d->thread) run( d, JOB_NONE, "Checking the DLL repository" );
+    if (!d->have_remote) run( d, JOB_CHECK, "Checking the DLL repository" );
+}
+
+int launcher_dlls_install( struct launcher_dlls *d )
+{
+    if (!d) return 1;
+    settle( d );
+    if (!d->have_remote)
+    {
+        if (d->ui->running) ui_message( d->ui, "Windows DLLs", horizon_dlls_error( d->result ) );
+        return 0;
+    }
+    return update( d ) && ready( d, NULL, 0 );
+}
+
 int launcher_dlls_ready( struct launcher_dlls *d )
 {
     char why[160], text[512];
 
-    if (!d) return 1;
-    if (ready( d, why, sizeof(why) )) return 1;
-    if (d->thread) run( d, JOB_NONE, "Checking the DLL repository" );
-    if (!d->have_remote && run( d, JOB_CHECK, "Checking the DLL repository" ) != HORIZON_DLLS_OK)
-    {
-        if (d->ui->running)
-            ui_message( d->ui, "Windows DLLs needed",
-                        "Games run on Windows DLLs that Autorun downloads from its DLL repository, and it could "
-                        "not be reached. Connect to the internet, or copy the repository's switch folder to "
-                        "the SD card." );
-        return 0;
-    }
-    /* Nothing to download that would put it right: the repository has no
-     * DLLs for this Autorun yet. */
-    if (!d->planned || !d->plan.pending)
-    {
-        snprintf( text, sizeof(text), "%s\n\nThe DLL repository has nothing newer for this version of Autorun "
-                  "yet. Update Autorun, or check again later.", why );
-        ui_message( d->ui, "Windows DLLs needed", text );
-        return 0;
-    }
-    if (!update( d )) return 0;
-    if (ready( d, why, sizeof(why) )) return 1;
-    ui_message( d->ui, "Windows DLLs needed", why );
-    return 0;
+    if (!d || ready( d, why, sizeof(why) )) return 1;
+    snprintf( text, sizeof(text), "This game needs the Windows DLLs Autorun downloads from its DLL repository. %s\n\n"
+              "Download them in Windows DLLs; the game starts when you come back with them there.", why );
+    if (!ui_confirm( d->ui, "Windows DLLs needed", text, "Open Windows DLLs" )) return 0;
+    launcher_dlls_open( d );
+    return ready( d, NULL, 0 );
+}
+
+const char *launcher_dlls_describe( struct launcher_dlls *d, char *buffer, size_t size )
+{
+    char download[32], card[32];
+
+    if (!d) return "Windows DLLs are not available in this build.";
+    if (d->thread) return "Checking the DLL repository...";
+    if (!d->have_remote || !d->planned)
+        return ready( d, NULL, 0 ) ? "The card has the Windows DLLs. The DLL repository could not be reached to "
+                                     "look for newer ones." :
+                                     "The DLL repository could not be reached. Connect to the internet, or skip and "
+                                     "download them later.";
+    if (!d->plan.pending) return "The card has the Windows DLLs, up to date.";
+    snprintf( buffer, size, "%u files: %s to download, %s on the SD card.", d->plan.pending,
+              size_text( d->plan.download_bytes, download, sizeof(download) ),
+              size_text( d->plan.pending_bytes, card, sizeof(card) ) );
+    return buffer;
 }
 
 const char *launcher_dlls_status( struct launcher_dlls *d, char *buffer, size_t size, int *tone )

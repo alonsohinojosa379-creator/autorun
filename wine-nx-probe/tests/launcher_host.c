@@ -62,6 +62,13 @@ const char *launcher_dlls_status( struct launcher_dlls *dlls, char *buffer, size
     return "Up to date";
 }
 void launcher_dlls_destroy( struct launcher_dlls *dlls ) { (void)dlls; }
+int launcher_dlls_is_ready( struct launcher_dlls *dlls ) { (void)dlls; return 1; }
+int launcher_dlls_install( struct launcher_dlls *dlls ) { (void)dlls; return 1; }
+const char *launcher_dlls_describe( struct launcher_dlls *dlls, char *buffer, size_t size )
+{
+    (void)dlls; (void)buffer; (void)size;
+    return "The card has the Windows DLLs, up to date.";
+}
 
 int launcher_platform_font( const void **data, size_t *size )
 {

@@ -1768,7 +1768,7 @@ static void save_look( struct launcher *l );
 
 static void quick_setup( struct launcher *l )
 {
-    int result = launcher_setup_run( &l->ui, l->options, l->logo );
+    int result = launcher_setup_run( &l->ui, l->options, l->logo, l->dlls );
     launcher_kv_set( &l->look, "setup-offered", "1" );
     if (result) launcher_kv_set( &l->look, "setup-complete", "1" );
     save_look( l );
