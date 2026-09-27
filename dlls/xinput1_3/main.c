@@ -1130,9 +1130,6 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputGetKeystroke(DWORD index, DWORD reserved, P
 
     if (index >= XUSER_MAX_COUNT && index != XUSER_INDEX_ANY) return ERROR_BAD_ARGUMENTS;
 
-    /* No keystroke events from the Switch pad yet. */
-    if (nx_backend) return nx_get_state(index == XUSER_INDEX_ANY ? 0 : index, NULL) ? ERROR_DEVICE_NOT_CONNECTED : ERROR_EMPTY;
-
     if (index == XUSER_INDEX_ANY)
     {
         int i;
@@ -1208,14 +1205,8 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputGetCapabilitiesEx(DWORD unk, DWORD index, D
         if (index >= XUSER_MAX_COUNT) return ERROR_BAD_ARGUMENTS;
         if ((ret = nx_get_state(index, NULL))) return ret;
         memset(caps, 0, sizeof(*caps));
-#if XINPUT_VER >= 4
         caps->Capabilities.Type = XINPUT_DEVTYPE_GAMEPAD;
-        caps->Capabilities.Flags |= XINPUT_CAPS_PMD_SUPPORTED;
-#endif
         caps->Capabilities.SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
-#if XINPUT_VER >= 3
-        caps->Capabilities.Flags |= XINPUT_CAPS_VOICE_SUPPORTED;
-#endif
         caps->Capabilities.Gamepad.wButtons = XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN
                 | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_START
                 | XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB
