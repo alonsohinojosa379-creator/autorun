@@ -76,11 +76,14 @@ if [ ! -f "$hoc_dist" ]; then
     curl -fL --retry 3 -o "$hoc_dist" \
         'https://github.com/Horizon-OC/Horizon-OC/releases/download/2.5.1/dist.zip'
 fi
+# devkitPro's own name for it: .exe under MSYS2, none on Linux and macOS.
+nm="$DEVKITA64/bin/aarch64-none-elf-nm"
+[ -x "$nm.exe" ] && nm="$nm.exe"
 python3 "$probe/tools/make-boot-bundle.py" \
     --stock "$ams/stratosphere/loader/$build/loader.kip" \
     --hoc "$work/loader-hoc.kip" \
     --hoc-elf "$hoc_ams/stratosphere/loader/$build/loader.elf" \
-    --nm "$DEVKITA64/bin/aarch64-none-elf-nm.exe" \
+    --nm "$nm" \
     --mesosphere "$ams/mesosphere/$build/mesosphere.bin" \
     --atmosphere-zip "$release" --hoc-zip "$hoc_dist" \
     --atmosphere-license "$ams/LICENSE" \

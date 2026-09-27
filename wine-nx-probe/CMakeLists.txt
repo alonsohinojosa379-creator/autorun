@@ -917,7 +917,12 @@ if(WINE_NX_MESA_SWITCH_DIR)
     foreach(lib EGL GL glapi vulkan mesa_util_c11 blake3 mesa_util mesa_util_simd xmlconfig)
         list(APPEND SWITCH_EGL "${WINE_NX_MESA_SWITCH_DIR}/lib${lib}.a")
     endforeach()
-    find_library(SWITCH_ELF elf HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
+    # NVK's cubin import needs libelf only where Mesa was built with it (the
+    # MSYS2 SDK); devkitPro has no libelf portlib, and Mesa leaves it out there.
+    find_library(SWITCH_ELF elf HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
+    if(NOT SWITCH_ELF)
+        set(SWITCH_ELF "")
+    endif()
     find_library(SWITCH_EXPAT expat HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
     list(APPEND SWITCH_EGL ${SWITCH_ELF} ${SWITCH_EXPAT} ${SWITCH_ZSTD} ${SWITCH_Z} -Wl,--end-group)
     set(SWITCH_GLAPI "")

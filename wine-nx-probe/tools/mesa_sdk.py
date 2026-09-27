@@ -14,6 +14,9 @@ def host_path(value):
             return Path(f'{drive.upper()}:/{tail}')
         if Path(f'/mnt/{drive}').is_dir():
             return Path(f'/mnt/{drive}/{tail}')
+    # The devkitPro containers mount the checkout at /work.
+    if value.startswith('/work/') and not Path(value).exists():
+        return Path(__file__).resolve().parents[2] / value[len('/work/'):]
     return Path(value)
 
 
