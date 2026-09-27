@@ -47,3 +47,4 @@ for mode in 32 64; do
     "$build/fex_lookup_cache" "$mode" fixed wide
     "$build/fex_lookup_cache" "$mode" dynamic wide
 done
+python3 "$probe/tests/check_fex_cpu_features.py"
