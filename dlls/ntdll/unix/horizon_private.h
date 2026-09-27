@@ -17,14 +17,22 @@
 
 extern unsigned int horizon_set_process_machine( unsigned short machine );
 extern ULONG_PTR horizon_get_system_affinity_mask(void);
+extern ULONG_PTR horizon_get_current_thread_affinity(void);
 extern unsigned int horizon_get_processor_count(void);
 /* The runtime's thread profiler (wine-nx-probe/source/thread_profile.c); weak,
  * since the ntdll test executables link without the runtime. */
 extern void wine_nx_thread_register( char kind, unsigned int tid, void *teb ) __attribute__((weak));
 extern void wine_nx_thread_unregister( void ) __attribute__((weak));
 extern void wine_nx_thread_affinity_fixed( void ) __attribute__((weak));
+extern void wine_nx_thread_set_name( unsigned int tid, const char *name ) __attribute__((weak));
+extern void wine_nx_thread_set_affinity( unsigned int tid, unsigned int mask ) __attribute__((weak));
+extern __thread int horizon_suspend_pending;
+extern void horizon_wait_suspend_arm64ec(void);
 extern void horizon_get_memory_info( unsigned long long *total, unsigned long long *used );
 extern void horizon_get_address_space_limits( void **start, void **limit );
+extern void *virtual_alloc_horizon_native( size_t size, void **token );
+extern int horizon_protect_fex_page( void *base, BOOL enable );
+extern void virtual_free_horizon_native( void *token );
 extern unsigned long long horizon_next_thread_local_page( unsigned long long addr, unsigned long long limit );
 extern unsigned int horizon_drop_thread_local_pages( unsigned int *found );
 extern void *wine_nx_arm64ec_dispatch_ret;
@@ -32,6 +40,7 @@ extern int horizon_get_kernel_regions( void **starts, size_t *sizes, int max );
 /* Logs the kernel's view of the low 4 GB once: megabytes per memory type and the largest free ranges. */
 extern void horizon_log_low_address_space( void );
 extern BOOL horizon_get_stack_region( void **start, void **limit );
+extern BOOL horizon_is_native_stack_range( const void *address, size_t size );
 /* Around re-protecting every view: the server's session views stay writable. */
 extern void horizon_lock_session_views( void );
 extern void horizon_unlock_session_views( void );
@@ -46,6 +55,10 @@ extern unsigned int horizon_server_protocol_version(void);
 extern int horizon_server_connect(void);
 extern void horizon_server_send_fd( int fd );
 extern int horizon_server_receive_fd( unsigned int *handle );
+extern int horizon_fast_sync_enabled;
+extern int horizon_server_profile_enabled;
+extern int horizon_server_sync_call( unsigned int tid, const void *request, const void *data,
+                                     unsigned int data_size, void *reply, void *reply_data );
 
 /* Horizon address arbitration used as a futex; timeout_ns < 0 waits forever. */
 extern int horizon_futex_wait( const int *addr, int value, long long timeout_ns );

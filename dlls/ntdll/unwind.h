@@ -28,9 +28,12 @@
 
 #if defined(__aarch64__) || defined(__arm64ec__)
 
+static const ULONG exception_flags_mask = CONTEXT_EXCEPTION_ACTIVE |
+    CONTEXT_SERVICE_ACTIVE | CONTEXT_EXCEPTION_REQUEST | CONTEXT_EXCEPTION_REPORTING;
+
 static inline ULONG ctx_flags_x64_to_arm( ULONG flags )
 {
-    ULONG ret = CONTEXT_ARM64;
+    ULONG ret = CONTEXT_ARM64 | (flags & exception_flags_mask);
 
     flags &= ~CONTEXT_AMD64;
     if (flags & CONTEXT_AMD64_CONTROL) ret |= CONTEXT_ARM64_CONTROL;
@@ -42,7 +45,7 @@ static inline ULONG ctx_flags_x64_to_arm( ULONG flags )
 
 static inline ULONG ctx_flags_arm_to_x64( ULONG flags )
 {
-    ULONG ret = CONTEXT_AMD64;
+    ULONG ret = CONTEXT_AMD64 | (flags & exception_flags_mask);
 
     flags &= ~CONTEXT_ARM64;
     if (flags & CONTEXT_ARM64_CONTROL) ret |= CONTEXT_AMD64_CONTROL;
@@ -124,7 +127,7 @@ static inline UINT fpcsr_to_mxcsr( UINT fpcr, UINT fpsr )
     return ret;
 }
 
-static inline void context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_NT_CONTEXT *ec_ctx )
+static inline void context_x64_to_arm_base( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_NT_CONTEXT *ec_ctx )
 {
     UINT64 fpcsr;
 
@@ -168,16 +171,21 @@ static inline void context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_
     fpcsr = mxcsr_to_fpcsr( ec_ctx->AMD64_MxCsr );
     arm_ctx->Fpcr = fpcsr;
     arm_ctx->Fpsr = fpcsr >> 32;
+}
 
-    if ((ec_ctx->ContextFlags & CONTEXT_XSTATE) == CONTEXT_XSTATE)
+static inline void context_x64_to_arm( ARM64_NT_CONTEXT *arm_ctx, const ARM64EC_NT_CONTEXT *ec_ctx )
+{
+    context_x64_to_arm_base( arm_ctx, ec_ctx );
+
+    if ((ec_ctx->ContextFlags & CONTEXT_AMD64_XSTATE) == CONTEXT_AMD64_XSTATE)
     {
         CONTEXT_EX *ec_xctx = (CONTEXT_EX *)(ec_ctx + 1);
         YMMCONTEXT *ec_ymm = RtlLocateExtendedFeature( ec_xctx, XSTATE_AVX, NULL );
-        memcpy( arm_ctx->V + 16, ec_ymm, sizeof(*ec_ymm) );
+        if (ec_ymm) memcpy( arm_ctx->V + 16, ec_ymm, sizeof(*ec_ymm) );
     }
 }
 
-static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_NT_CONTEXT *arm_ctx )
+static inline void context_arm_to_x64_base( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_NT_CONTEXT *arm_ctx )
 {
     memset( ec_ctx, 0, sizeof(*ec_ctx) );
     ec_ctx->ContextFlags = ctx_flags_arm_to_x64( arm_ctx->ContextFlags );
@@ -225,12 +233,17 @@ static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_N
     ec_ctx->X17_3 = arm_ctx->X17 >> 48;
 
     memcpy( ec_ctx->V, arm_ctx->V, sizeof(ec_ctx->V) );
+}
+
+static inline void context_arm_to_x64( ARM64EC_NT_CONTEXT *ec_ctx, const ARM64_NT_CONTEXT *arm_ctx )
+{
+    context_arm_to_x64_base( ec_ctx, arm_ctx );
 
     if ((arm_ctx->ContextFlags & CONTEXT_ARM64_FEX_YMMSTATE) == CONTEXT_ARM64_FEX_YMMSTATE)
     {
         CONTEXT_EX *ec_xctx = (CONTEXT_EX *)(ec_ctx + 1);
         YMMCONTEXT *ec_ymm = RtlLocateExtendedFeature( ec_xctx, XSTATE_AVX, NULL );
-        memcpy( ec_ymm, arm_ctx->V + 16, sizeof(*ec_ymm) );
+        if (ec_ymm) memcpy( ec_ymm, arm_ctx->V + 16, sizeof(*ec_ymm) );
     }
 }
 

@@ -4,7 +4,9 @@
  *
  * Run it in a folder whose "sdmc:" holds switch/wine/drive_c (paths on the card
  * are relative there). A script of steps drives it, one step per line:
- *   key NAME    press a key (up, down, left, right, a, b, x, y, plus, minus, l, r)
+ *   key NAME    press a key (up, down, left, right, a, b, x, y, plus, minus, l, r, zl, zr)
+ *   trigger NAME VALUE    send a controller trigger axis event (zl or zr, 0 to 32767)
+ *   axis NAME VALUE    move the left stick (x or y, -32768 to 32767)
  *   tap X Y     tap the touch screen
  *   wait N      let N frames pass
  *   shot FILE   save the next frame as a PNG
@@ -24,9 +26,12 @@
 #include <png.h>
 
 #include "launcher.h"
+#include "launcher_settings.h"
 #include "launcher_catalog.h"
 #include "launcher_ui.h"
 #include "launcher_update.h"
+#include "forwarder.h"
+#include "launcher_image.h"
 #include "dxvk_releases.h"
 
 static char script[256][300];
@@ -87,30 +92,85 @@ void wine_nx_runtime_trace( const char *msg )
     printf( "%s\n", msg );
 }
 
-enum dxvk_result dxvk_release_catalog( const char *runtime_dir, struct dxvk_release *releases,
-                                       int max_releases, int *count, int refresh, int *cached )
+static char graphics_installed[2][32];
+static void graphics_resolve( int vkd3d, const char *requested, struct dxvk_version *selected );
+
+static enum dxvk_result graphics_catalog( int vkd3d, struct dxvk_release *releases, int max_releases,
+                                          int *count, int cache_only, dxvk_progress_callback progress, void *opaque )
 {
-    (void)runtime_dir; (void)releases; (void)max_releases; (void)refresh; (void)cached;
+    const char *mode = getenv( "LAUNCHER_TEST_GRAPHICS" );
+    const char *versions[] = { vkd3d ? "3.1-rc1" : "4.0-rc1", vkd3d ? "3.0b" : "3.1.1",
+                               vkd3d ? "2.14.1" : "2.7.1", "1.0", "0.9" };
+    int i;
+
     *count = 0;
-    return DXVK_NOT_FOUND;
+    if (!mode || (cache_only && !strcmp( mode, "fresh" ))) return DXVK_NOT_FOUND;
+    if (!cache_only)
+    {
+        Uint32 until = SDL_GetTicks() + 3000;
+        fprintf( stderr, "graphics catalog %d started\n", vkd3d );
+        while (SDL_GetTicks() < until)
+        {
+            if (progress && progress( opaque, DXVK_PROGRESS_DOWNLOAD, 0, 0 )) return DXVK_CANCELLED;
+            SDL_Delay( 10 );
+        }
+        if (!strcmp( mode, "offline" )) return DXVK_NETWORK_ERROR;
+        fprintf( stderr, "graphics catalog %d finished\n", vkd3d );
+    }
+    for (i = cache_only ? (!strcmp( mode, "stale" ) ? 2 : 1) : 0; i < 5 && *count < max_releases; i++)
+    {
+        struct dxvk_release *release = releases + (*count)++;
+        memset( release, 0, sizeof(*release) );
+        strcpy( release->version, versions[i] );
+        release->prerelease = !i;
+        release->size = 10 * 1024 * 1024;
+    }
+    return DXVK_OK;
 }
 
-enum dxvk_result dxvk_install_release( const char *runtime_dir, const struct dxvk_release *release,
+enum dxvk_result dxvk_release_catalog( enum dxvk_source source, const char *runtime_dir, struct dxvk_release *releases,
+                                       int max_releases, int *count, int cache_only,
                                        dxvk_progress_callback progress, void *opaque )
 {
-    (void)runtime_dir; (void)release; (void)progress; (void)opaque;
-    return DXVK_IO_ERROR;
+    (void)source; (void)runtime_dir;
+    return graphics_catalog( 0, releases, max_releases, count, cache_only, progress, opaque );
 }
 
-int dxvk_release_installed( const char *runtime_dir, unsigned short machine, const char *version )
+static enum dxvk_result graphics_install( int vkd3d, const struct dxvk_release *release,
+                                          dxvk_progress_callback progress, void *opaque )
 {
-    (void)runtime_dir; (void)machine; (void)version;
-    return 0;
+    int i;
+
+    if (!getenv( "LAUNCHER_TEST_GRAPHICS" )) return DXVK_IO_ERROR;
+    fprintf( stderr, "graphics install %d %s\n", vkd3d, release->version );
+    for (i = 0; i <= 100; i++)
+    {
+        if (progress && progress( opaque, DXVK_PROGRESS_DOWNLOAD, release->size * i / 100, release->size ))
+            return DXVK_CANCELLED;
+        SDL_Delay( 25 );
+    }
+    strcpy( graphics_installed[vkd3d], release->version );
+    return DXVK_OK;
 }
 
-int dxvk_root_version( const char *runtime_dir, unsigned short machine, char *version, size_t size )
+enum dxvk_result dxvk_install_release( enum dxvk_source source, const char *runtime_dir, const struct dxvk_release *release,
+                                       dxvk_progress_callback progress, void *opaque )
 {
-    (void)runtime_dir; (void)machine;
+    (void)source; (void)runtime_dir;
+    return graphics_install( 0, release, progress, opaque );
+}
+
+int dxvk_release_installed( enum dxvk_source source, const char *runtime_dir, unsigned short machine, const char *version )
+{
+    struct dxvk_version selected;
+    (void)source; (void)runtime_dir; (void)machine;
+    graphics_resolve( 0, version, &selected );
+    return version[0] && selected.installed;
+}
+
+int dxvk_root_version( enum dxvk_source source, const char *runtime_dir, unsigned short machine, char *version, size_t size )
+{
+    (void)source; (void)runtime_dir; (void)machine;
     if (size) version[0] = 0;
     return 0;
 }
@@ -122,25 +182,57 @@ const char *dxvk_result_message( enum dxvk_result result )
 }
 
 enum dxvk_result vkd3d_release_catalog( const char *runtime_dir, struct dxvk_release *releases,
-                                       int max_releases, int *count, int refresh, int *cached )
+                                       int max_releases, int *count, int cache_only,
+                                       dxvk_progress_callback progress, void *opaque )
 {
-    return dxvk_release_catalog( runtime_dir, releases, max_releases, count, refresh, cached );
+    (void)runtime_dir;
+    return graphics_catalog( 1, releases, max_releases, count, cache_only, progress, opaque );
 }
 
 enum dxvk_result vkd3d_install_release( const char *runtime_dir, const struct dxvk_release *release,
                                        dxvk_progress_callback progress, void *opaque )
 {
-    return dxvk_install_release( runtime_dir, release, progress, opaque );
+    (void)runtime_dir;
+    return graphics_install( 1, release, progress, opaque );
 }
 
 int vkd3d_release_installed( const char *runtime_dir, unsigned short machine, const char *version )
 {
-    return dxvk_release_installed( runtime_dir, machine, version );
+    struct dxvk_version selected;
+    (void)runtime_dir; (void)machine;
+    graphics_resolve( 1, version, &selected );
+    return version[0] && selected.installed;
 }
 
 int vkd3d_root_version( const char *runtime_dir, unsigned short machine, char *version, size_t size )
 {
-    return dxvk_root_version( runtime_dir, machine, version, size );
+    return dxvk_root_version( DXVK_SOURCE_OFFICIAL, runtime_dir, machine, version, size );
+}
+
+static void graphics_resolve( int vkd3d, const char *requested, struct dxvk_version *selected )
+{
+    const char *mode = getenv( "LAUNCHER_TEST_GRAPHICS" );
+    const char *version = graphics_installed[vkd3d];
+
+    memset( selected, 0, sizeof(*selected) );
+    if (!version[0] && mode && strcmp( mode, "fresh" ) && strcmp( mode, "stale" ))
+        version = vkd3d ? "3.0b" : "3.1.1";
+    strcpy( selected->version, requested[0] ? requested : version );
+    selected->installed = version[0] && !strcmp( version, selected->version );
+}
+
+void dxvk_resolve_version( enum dxvk_source source, const char *runtime_dir, unsigned short machine, const char *requested,
+                           struct dxvk_version *selected )
+{
+    (void)source; (void)runtime_dir; (void)machine;
+    graphics_resolve( 0, requested, selected );
+}
+
+void vkd3d_resolve_version( const char *runtime_dir, unsigned short machine, const char *requested,
+                            struct dxvk_version *selected )
+{
+    (void)runtime_dir; (void)machine;
+    graphics_resolve( 1, requested, selected );
 }
 
 static int machine_of( const char *path, unsigned short *machine )
@@ -228,6 +320,7 @@ static SDL_Keycode key_code( const char *name )
         { "up", SDLK_UP }, { "down", SDLK_DOWN }, { "left", SDLK_LEFT }, { "right", SDLK_RIGHT },
         { "a", SDLK_RETURN }, { "b", SDLK_ESCAPE }, { "x", SDLK_x }, { "y", SDLK_y }, { "plus", SDLK_PLUS },
         { "minus", SDLK_MINUS }, { "l", SDLK_PAGEUP }, { "r", SDLK_PAGEDOWN },
+        { "zl", SDLK_LEFTBRACKET }, { "zr", SDLK_RIGHTBRACKET },
     };
     size_t i;
 
@@ -263,6 +356,29 @@ static void on_frame( SDL_Renderer *renderer )
         if (sscanf( line, "key %255s", arg ) == 1)
         {
             push_key( key_code( arg ) );
+            wait_frames = 1;
+            return;
+        }
+        if (sscanf( line, "axis %255s %d", arg, &x ) == 2)
+        {
+            SDL_Event event = { .type = SDL_CONTROLLERAXISMOTION };
+            assert( !strcmp( arg, "x" ) || !strcmp( arg, "y" ) );
+            assert( x >= -32768 && x <= 32767 );
+            event.caxis.axis = !strcmp( arg, "x" ) ? SDL_CONTROLLER_AXIS_LEFTX : SDL_CONTROLLER_AXIS_LEFTY;
+            event.caxis.value = x;
+            SDL_PushEvent( &event );
+            wait_frames = 1;
+            return;
+        }
+        if (sscanf( line, "trigger %255s %d", arg, &x ) == 2)
+        {
+            SDL_Event event = { .type = SDL_CONTROLLERAXISMOTION };
+
+            assert( !strcmp( arg, "zl" ) || !strcmp( arg, "zr" ) );
+            assert( x >= 0 && x <= 32767 );
+            event.caxis.axis = !strcmp( arg, "zl" ) ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
+            event.caxis.value = x;
+            SDL_PushEvent( &event );
             wait_frames = 1;
             return;
         }
@@ -353,45 +469,34 @@ static void carousel_fixture(void)
 /* Nothing can be installed from here: the screens leading to it are what this
  * harness is for, and the failure they show is the one a console without
  * Atmosphere would give. */
-static unsigned int install_forwarder( int bits, const char *name, unsigned long long *id, const char **step )
+static unsigned int install_forwarder( const char **step )
 {
-    (void)bits;
-    (void)name;
-    if (id) *id = 0x0500DEADBEEF1000ull;
     if (step) *step = "opening the content store";
     return 0x4A8;
 }
 
-/* The forwarders the console has, when LAUNCHER_HOST_TITLES names them (ids in
- * hex, any separator): without it the launcher is told nothing can be opened. */
-static const char *installed_titles;
 
-static int title_installed( unsigned long long id )
+static unsigned int install_game_forwarder( const struct wine_nx_forwarder *request, const char **step )
 {
-    char text[20];
-
-    snprintf( text, sizeof(text), "%016llX", id );
-    return installed_titles && strstr( installed_titles, text );
-}
-
-static int launch_title( unsigned long long id )
-{
-    printf( "launch_title %016llX\n", id );
-    return 1;
-}
-
-static unsigned long long forwarder_id( int bits )
-{
-    return bits == 32 ? 0x0500000000032000ull : 0x0500000000039000ull;
+    struct launcher_icon icon = {0};
+    assert( request->game_id && request->name[0] && request->author );
+    assert( launcher_image_decode( request->icon, request->icon_size, &icon ) );
+    assert( icon.width == 256 && icon.height == 256 );
+    launcher_icon_free( &icon );
+    printf( "forwarder game=%u name='%s' author='%s' JPEG=%zu\n",
+            request->game_id, request->name, request->author, request->icon_size );
+    *step = NULL;
+    return 0;
 }
 
 int main( int argc, char **argv )
 {
     struct wine_nx_launcher_options options = { .runtime_dir = "sdmc:/switch/wine", .build = "nx-host-test",
-                                                .nro_path = "sdmc:/switch/wine/wine-nx-runtime.nro",
-                                                .emummc = -1, .address_space_bits = 32,
+                                                .emummc = -1, .address_space_bits = 39,
+                                                .low_window = 1, .four_cores_available = 1,
                                                 .machine_of = machine_of, .vulkan = 1,
-                                                .install_forwarder = install_forwarder };
+                                                .install_forwarder = install_forwarder,
+                                                .install_game_forwarder = install_game_forwarder };
     char target[512] = "", line[300];
     FILE *file;
     int chosen;
@@ -409,15 +514,19 @@ int main( int argc, char **argv )
         if (line[0] && line[0] != '#') snprintf( script[script_count++], sizeof(script[0]), "%s", line );
     }
     fclose( file );
+    if (argc > 3 && !strcmp( argv[3], "--setup-fixture" )) options.own_forwarder = 1;
+    else
+    {
+        struct launcher_kv look;
+        const char *path = "sdmc:/switch/wine/launcher.txt";
+        assert( launcher_kv_load( &look, path ) );
+        assert( launcher_kv_set( &look, "setup-offered", "1" ) );
+        assert( launcher_kv_save( &look, path ) );
+    }
     if (argc > 3 && !strcmp( argv[3], "--carousel-fixture" )) carousel_fixture();
+    else if (argc > 3 && !strcmp( argv[3], "--setup-fixture" )) {}
     else if (argc > 3) snprintf( target, sizeof(target), "%s", argv[3] );
 
-    if ((installed_titles = getenv( "LAUNCHER_HOST_TITLES" )))
-    {
-        options.launch_title = launch_title;
-        options.title_installed = title_installed;
-        options.forwarder_id = forwarder_id;
-    }
     ui_present_hook = on_frame;
     chosen = wine_nx_launcher_run( &options, target, sizeof(target) );
     printf( "launcher returned %d target '%s' verbose %d profile %d framebuffer %d after %d frames\n",

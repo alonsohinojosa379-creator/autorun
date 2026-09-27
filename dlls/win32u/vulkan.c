@@ -38,6 +38,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
+#ifdef WINE_NX_SWAP_POC
+#include "../ntdll/unix/horizon_swap.h"
+#endif
+
 static PFN_vkGetDeviceProcAddr p_vkGetDeviceProcAddr;
 static PFN_vkGetInstanceProcAddr p_vkGetInstanceProcAddr;
 static PFN_vkCreateInstance p_vkCreateInstance;
@@ -66,6 +70,11 @@ static float nx_upscaling_sharpness = 0.4f;
  * runtime, which has no dynamic linker. */
 extern PFN_vkVoidFunction wine_nx_vkGetDeviceProcAddr( VkDevice device, const char *name ) __asm__("vkGetDeviceProcAddr");
 extern PFN_vkVoidFunction wine_nx_vkGetInstanceProcAddr( VkInstance instance, const char *name ) __asm__("vkGetInstanceProcAddr");
+extern VkResult wine_nx_vk_allocate_shared_memory( VkDevice device,
+                                                    const VkMemoryAllocateInfo *allocate_info,
+                                                    uint32_t nvmap_id, VkDeviceMemory *memory_out );
+extern BOOL wine_nx_vk_export_memory( VkDeviceMemory memory, uint32_t *nvmap_id,
+                                      void **reference );
 
 static uint64_t nx_frame_interval;
 static VkPresentModeKHR nx_present_mode = VK_PRESENT_MODE_FIFO_KHR;
@@ -124,15 +133,15 @@ static void nx_vk_trace( const char *format, ... )
 
 extern void horizon_get_address_space_limits( void **start, void **limit );
 
-static BOOL driver_maps_fit_wow64(void)
+static BOOL nx_uses_32bit_address_space(void)
 {
-    static int fit = -1;
+    static int is_32bit = -1;
     void *start, *limit;
 
-    if (fit >= 0) return fit;
+    if (is_32bit >= 0) return is_32bit;
     horizon_get_address_space_limits( &start, &limit );
-    fit = (ULONG_PTR)limit <= 0x100000000;
-    return fit;
+    is_32bit = (ULONG_PTR)limit <= 0x100000000;
+    return is_32bit;
 }
 #endif
 
@@ -157,7 +166,11 @@ static const UINT EXTERNAL_FENCE_WIN32_BITS = VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQ
 
 static BOOL use_external_memory(void)
 {
+#ifdef __SWITCH__
+    return TRUE;
+#else
     return zero_bits != 0;
+#endif
 }
 
 struct mempool
@@ -355,7 +368,7 @@ static struct fence *fence_from_handle( VkFence handle )
 }
 
 #ifdef __SWITCH__
-static LONG nx_host_import_logs;  /* [NXVK] lines about the first imports only */
+static LONG nx_host_import_logs;
 
 /* The program's Vulkan memory, logged every 256 allocations and on failures:
  * DXVK sub-allocates, so an allocator that churns or fails shows nowhere else. */
@@ -372,7 +385,7 @@ static void nx_memory_note_alloc( VkDeviceSize size, BOOL imported )
     if (allocs % 256) return;
     freed = __atomic_load_n( &nx_memory_free_bytes, __ATOMIC_RELAXED );
     nx_vk_trace( "[NXVK] memory: %d allocations of %lld MB, %d frees of %lld MB, %lld MB live, "
-                 "%d with imported 32-bit mappings", (int)allocs, bytes >> 20,
+                 "%d with imported host mappings", (int)allocs, bytes >> 20,
                  (int)__atomic_load_n( &nx_memory_frees, __ATOMIC_RELAXED ), freed >> 20,
                  (bytes - freed) >> 20, (int)__atomic_load_n( &nx_memory_imports, __ATOMIC_RELAXED ) );
 }
@@ -382,25 +395,45 @@ static BOOL nx_memory_log_failure(void)
     return __atomic_add_fetch( &nx_memory_failure_logs, 1, __ATOMIC_RELAXED ) <= 32;
 }
 
-/* On NVK every memory type is host visible, so importing each allocation from a
- * 32-bit mapping mirrors all of a program's GPU memory into its 2 GB address
- * space: NFSU2 ran out of it loading a race. In a 32-bit address space the
- * driver's memory lies in the kernel's heap region, below 4 GB and outside
- * Wine's views, so its own mappings reach the program at no address space cost. */
 static BOOL nx_driver_maps_preferred(void)
 {
     static LONG logged;
+    BOOL native = !zero_bits || nx_uses_32bit_address_space();
 
-    if (!driver_maps_fit_wow64()) return FALSE;
     if (__atomic_add_fetch( &logged, 1, __ATOMIC_RELAXED ) == 1)
-        nx_vk_trace( "[NXVK] 32-bit address space: Vulkan memory uses the driver's own mappings, "
-                     "not imports into the program's address space" );
+        nx_vk_trace( "[NXVK] Vulkan memory uses %s",
+                     native ? "native driver mappings" : "low host imports for the Win32 guest" );
+    return native;
+}
+
+static BOOL nx_can_import_fragmented_memory( const VkMemoryAllocateInfo *info )
+{
+    const VkBaseInStructure *next;
+
+    if (zero_bits || nx_uses_32bit_address_space()) return FALSE;
+    for (next = info->pNext; next; next = next->pNext)
+    {
+        if (next->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO &&
+            (((const VkMemoryAllocateFlagsInfo *)next)->flags &
+             (VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT | VK_MEMORY_ALLOCATE_ZERO_INITIALIZE_BIT_EXT)))
+            return FALSE;
+        if (next->sType == VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO &&
+            ((const VkMemoryOpaqueCaptureAddressAllocateInfo *)next)->opaqueCaptureAddress)
+            return FALSE;
+        if (next->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO &&
+            (((const VkMemoryDedicatedAllocateInfo *)next)->image || ((const VkMemoryDedicatedAllocateInfo *)next)->buffer))
+            return FALSE;
+        if (next->sType == VK_STRUCTURE_TYPE_DEDICATED_ALLOCATION_MEMORY_ALLOCATE_INFO_NV ||
+            next->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_TENSOR_ARM)
+            return FALSE;
+    }
     return TRUE;
 }
 #endif
 
-static VkResult allocate_external_host_memory( struct vulkan_device *device, VkMemoryAllocateInfo *alloc_info, uint32_t mem_flags,
-                                               VkImportMemoryHostPointerInfoEXT *import_info )
+static VkResult import_external_host_memory( struct vulkan_device *device, VkMemoryAllocateInfo *alloc_info,
+                                             uint32_t mem_flags, void *mapping,
+                                             VkImportMemoryHostPointerInfoEXT *import_info )
 {
     struct vulkan_physical_device *physical_device = device->physical_device;
     VkMemoryHostPointerPropertiesEXT props =
@@ -408,33 +441,11 @@ static VkResult allocate_external_host_memory( struct vulkan_device *device, VkM
         .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
     };
     uint32_t i, align = physical_device->external_memory_align - 1;
-    SIZE_T alloc_size = alloc_info->allocationSize;
-    static int once;
-    void *mapping = NULL;
-    NTSTATUS status;
     VkResult res;
-
-    if (!once++) FIXME( "Using VK_EXT_external_memory_host\n" );
-
-    if ((status = NtAllocateVirtualMemory( GetCurrentProcess(), &mapping, zero_bits, &alloc_size, MEM_COMMIT, PAGE_READWRITE )))
-    {
-        ERR( "NtAllocateVirtualMemory failed\n" );
-#ifdef __SWITCH__
-        if (nx_memory_log_failure())
-            nx_vk_trace( "[NXVK] no 32-bit mapping for %llu bytes of memory type %u: status %#x",
-                         (unsigned long long)alloc_info->allocationSize, alloc_info->memoryTypeIndex, (unsigned int)status );
-#endif
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
-    }
 
     if ((res = device->p_vkGetMemoryHostPointerPropertiesEXT( device->host.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                                               mapping, &props )))
-    {
-        ERR( "vkGetMemoryHostPointerPropertiesEXT failed: %d\n", res );
-        alloc_size = 0;
-        NtFreeVirtualMemory( GetCurrentProcess(), &mapping, &alloc_size, MEM_RELEASE );
         return res;
-    }
 
     if (!(props.memoryTypeBits & (1u << alloc_info->memoryTypeIndex)))
     {
@@ -451,15 +462,7 @@ static VkResult allocate_external_host_memory( struct vulkan_device *device, VkM
         }
         if (i == physical_device->memory_properties.memoryTypeCount)
         {
-            FIXME( "Not found compatible memory type\n" );
-#ifdef __SWITCH__
-            if (__atomic_add_fetch( &nx_host_import_logs, 1, __ATOMIC_RELAXED ) <= 8)
-                nx_vk_trace( "[NXVK] no memory type takes host pointers (types %#x) with type %u's flags %#x: "
-                             "allocated without a 32-bit mapping", props.memoryTypeBits,
-                             alloc_info->memoryTypeIndex, mem_flags );
-#endif
-            alloc_size = 0;
-            NtFreeVirtualMemory( GetCurrentProcess(), &mapping, &alloc_size, MEM_RELEASE );
+            return VK_ERROR_FEATURE_NOT_PRESENT;
         }
     }
 
@@ -473,12 +476,46 @@ static VkResult allocate_external_host_memory( struct vulkan_device *device, VkM
         alloc_info->allocationSize = (alloc_info->allocationSize + align) & ~align;
 #ifdef __SWITCH__
         if (__atomic_add_fetch( &nx_host_import_logs, 1, __ATOMIC_RELAXED ) <= 8)
-            nx_vk_trace( "[NXVK] %llu bytes of memory type %u imported from the 32-bit mapping %p",
+            nx_vk_trace( "[NXVK] %llu bytes of memory type %u imported from host mapping %p",
                          (unsigned long long)alloc_info->allocationSize, alloc_info->memoryTypeIndex, mapping );
 #endif
     }
 
     return VK_SUCCESS;
+}
+
+static VkResult allocate_external_host_memory( struct vulkan_device *device, VkMemoryAllocateInfo *alloc_info, uint32_t mem_flags,
+                                               VkImportMemoryHostPointerInfoEXT *import_info )
+{
+    SIZE_T alloc_size = alloc_info->allocationSize;
+    static int once;
+    void *mapping = NULL;
+    NTSTATUS status;
+    VkResult res;
+
+    if (!once++) FIXME( "Using VK_EXT_external_memory_host\n" );
+    if ((status = NtAllocateVirtualMemory( GetCurrentProcess(), &mapping, zero_bits, &alloc_size, MEM_COMMIT, PAGE_READWRITE )))
+    {
+#ifdef __SWITCH__
+        if (nx_memory_log_failure())
+            nx_vk_trace( "[NXVK] no host mapping for %llu bytes of memory type %u: status %#x",
+                         (unsigned long long)alloc_info->allocationSize, alloc_info->memoryTypeIndex, (unsigned int)status );
+#endif
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    res = import_external_host_memory( device, alloc_info, mem_flags, mapping, import_info );
+    if (res != VK_SUCCESS)
+    {
+#ifdef __SWITCH__
+        if (nx_memory_log_failure())
+            nx_vk_trace( "[NXVK] host import at %p for %llu bytes failed: %d", mapping,
+                         (unsigned long long)alloc_info->allocationSize, res );
+#endif
+        alloc_size = 0;
+        NtFreeVirtualMemory( GetCurrentProcess(), &mapping, &alloc_size, MEM_RELEASE );
+        if (res == VK_ERROR_FEATURE_NOT_PRESENT) return VK_SUCCESS;
+    }
+    return res;
 }
 
 static VkExternalMemoryHandleTypeFlagBits get_host_external_memory_type(void)
@@ -487,7 +524,21 @@ static VkExternalMemoryHandleTypeFlagBits get_host_external_memory_type(void)
     driver_funcs->p_map_device_extensions( &extensions );
     if (extensions.has_VK_KHR_external_memory_fd) return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
     if (extensions.has_VK_EXT_external_memory_dma_buf) return VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    if (extensions.has_VK_EXT_external_memory_host) return VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
     return 0;
+}
+
+static void map_external_memory_properties( VkExternalMemoryProperties *properties,
+                                            VkExternalMemoryHandleTypeFlagBits handle_type )
+{
+    properties->compatibleHandleTypes = handle_type;
+    properties->exportFromImportedHandleTypes = handle_type;
+#ifdef __SWITCH__
+    if ((handle_type & EXTERNAL_MEMORY_WIN32_BITS) &&
+        get_host_external_memory_type() == VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT)
+        properties->externalMemoryFeatures |= VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT |
+                                               VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+#endif
 }
 
 static VkExternalSemaphoreHandleTypeFlagBits get_host_external_semaphore_type(void)
@@ -761,7 +812,7 @@ static VkResult init_physical_device( struct vulkan_physical_device *physical_de
         }
     }
 
-    if (zero_bits && physical_device->extensions.has_VK_EXT_external_memory_host && !physical_device->map_placed_align)
+    if (use_external_memory() && physical_device->extensions.has_VK_EXT_external_memory_host && !physical_device->map_placed_align)
     {
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_mem_props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host_mem_props};
@@ -773,13 +824,18 @@ static VkResult init_physical_device( struct vulkan_physical_device *physical_de
     }
 
     driver_funcs->p_map_device_extensions( &extensions );
-    if (extensions.has_VK_KHR_external_memory_win32 && zero_bits && !physical_device->map_placed_align)
+    if (extensions.has_VK_KHR_external_memory_win32 && zero_bits && !physical_device->map_placed_align &&
+        get_host_external_memory_type() != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT)
     {
         WARN( "Cannot export WOW64 memory without VK_EXT_map_memory_placed\n" );
         extensions.has_VK_KHR_external_memory_win32 = 0;
     }
+#ifdef __SWITCH__
+    extensions.has_VK_KHR_win32_keyed_mutex = 0;
+#else
     extensions.has_VK_KHR_win32_keyed_mutex = extensions.has_VK_KHR_timeline_semaphore &&
                                               extensions.has_VK_KHR_external_semaphore_fd;
+#endif
 
     /* filter out unsupported client device extensions */
 #define USE_VK_EXT(x) client_physical_device->extensions.has_ ## x = extensions.has_ ## x;
@@ -863,24 +919,11 @@ static BOOL add_instance_extension( const char *extension, size_t len, struct vu
     return FALSE;
 }
 
-static void parse_instance_extensions( struct vulkan_instance_extensions *extensions, const char *str )
-{
-    const char *next;
-    for (next = str; *next; next++)
-    {
-        if (*next != ' ') continue;
-        add_instance_extension( str, next - str, extensions );
-        str = next + 1;
-    }
-    if (next > str) add_instance_extension( str, next - str, extensions );
-}
-
 static VkResult win32u_vkCreateInstance( const VkInstanceCreateInfo *client_create_info, const VkAllocationCallbacks *allocator,
                                          VkInstance *client_instance_ptr )
 {
     VkInstanceCreateInfo *create_info = (VkInstanceCreateInfo *)client_create_info; /* cast away const, chain has been copied in the thunks */
     VkInstance host_instance = VK_NULL_HANDLE, client_instance = *client_instance_ptr;
-    const VkCreateInfoWineInstanceCallback *callback_info;
     struct vulkan_physical_device *physical_devices;
     struct mempool pool = {0};
     struct instance *instance;
@@ -894,21 +937,8 @@ static VkResult win32u_vkCreateInstance( const VkInstanceCreateInfo *client_crea
     list_init( &instance->utils_messengers );
     list_init( &instance->report_callbacks );
 
-    if (instance->obj.extensions.has_VK_WINE_openxr_instance_extensions)
-    {
-        parse_instance_extensions( &instance->obj.extensions, getenv( "__WINE_OPENXR_VK_INSTANCE_EXTENSIONS" ) );
-        instance->obj.extensions.has_VK_WINE_openxr_instance_extensions = 0;
-    }
-
-    pthread_key_create(&instance->obj.transient_object_handle, free);
-
     if ((res = convert_instance_create_info( &pool, create_info, instance ))) goto failed;
-    if ((callback_info = pop_next_struct( (VkBaseOutStructure **)&create_info->pNext, VK_STRUCTURE_TYPE_CREATE_INFO_WINE_INSTANCE_CALLBACK )))
-    {
-        PFN_vkCreateInstanceCallbackWINE callback = (void *)(UINT_PTR)callback_info->native_create_callback;
-        if ((res = callback( create_info, allocator, &host_instance, p_vkGetInstanceProcAddr, (void *)(UINT_PTR)callback_info->context ))) goto failed;
-    }
-    else if ((res = p_vkCreateInstance( create_info, NULL /* allocator */, &host_instance ))) goto failed;
+    if ((res = p_vkCreateInstance( create_info, NULL /* allocator */, &host_instance ))) goto failed;
 
     vulkan_object_init_ptr( &instance->obj.obj, (UINT_PTR)host_instance, &client_instance->obj );
     instance->obj.p_insert_object = vulkan_instance_insert_object;
@@ -961,35 +991,7 @@ static void win32u_vkDestroyInstance( VkInstance client_instance, const VkAlloca
     if (instance->objects.compare) pthread_rwlock_destroy( &instance->objects_lock );
     free_debug_utils_messengers( &instance->utils_messengers );
     free_debug_report_callbacks( &instance->report_callbacks );
-    pthread_key_delete(instance->obj.transient_object_handle);
     free( instance );
-}
-
-static BOOL add_device_extension( const char *extension, size_t len, struct vulkan_device_extensions *extensions )
-{
-#define USE_VK_EXT(x) \
-    if (len == sizeof(#x) - 1 && !strncmp( #x, extension, len ))    \
-    {                                                               \
-        if (!extensions->has_ ## x) TRACE( "Adding %s\n", #x );     \
-        return extensions->has_ ## x = 1;                           \
-    }
-    ALL_VK_DEVICE_EXTS
-#undef USE_VK_EXT
-    WARN( "Extension %s is not supported.\n", debugstr_a(extension) );
-    return FALSE;
-}
-
-static void parse_device_extensions( struct vulkan_device_extensions *extensions, const char *str )
-{
-    const char *next;
-
-    for (next = str; *next; next++)
-    {
-        if (*next != ' ') continue;
-        add_device_extension( str, next - str, extensions );
-        str = next + 1;
-    }
-    if (next > str) add_device_extension( str, next - str, extensions );
 }
 
 static VkResult convert_device_create_info( struct vulkan_physical_device *physical_device, VkDeviceCreateInfo *info,
@@ -1015,8 +1017,6 @@ static VkResult convert_device_create_info( struct vulkan_physical_device *physi
     device->extensions.has_VK_KHR_external_memory_win32 = 0;
     device->extensions.has_VK_KHR_external_fence_win32 = 0;
     device->extensions.has_VK_KHR_external_semaphore_win32 = 0;
-    device->extensions.has_VK_WINE_openvr_device_extensions = 0;
-    device->extensions.has_VK_WINE_openxr_device_extensions = 0;
 
     if (device->extensions.has_VK_EXT_external_memory_dma_buf)
         device->extensions.has_VK_KHR_external_memory_fd = 1;
@@ -1095,7 +1095,6 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device, 
     struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
     struct vulkan_instance *instance = physical_device->instance;
     VkDevice host_device, client_device = *client_device_ptr;
-    const VkCreateInfoWineDeviceCallback *callback_info;
     unsigned int queue_count, props_count, i;
     /* create_info may point at this until the host device is created */
     VkPhysicalDeviceFeatures features = {0};
@@ -1118,7 +1117,6 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device, 
 
     if (!(device = calloc( 1, sizeof(*device) + queue_count * sizeof(*device->queues) + props_count * sizeof(*device->queue_props) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
     device->extensions = client_device->extensions;
-    device->queues = (void *)(device + 1);
     device->queue_props = (void *)(device->queues + queue_count);
 
 {
@@ -1148,30 +1146,8 @@ static VkResult win32u_vkCreateDevice( VkPhysicalDevice client_physical_device, 
 #endif
 }
 
-    if (device->extensions.has_VK_WINE_openvr_device_extensions)
-    {
-        VkPhysicalDeviceProperties properties = {0};
-        const char *vr_exts;
-        char name[64];
-        instance->p_vkGetPhysicalDeviceProperties( physical_device->host.physical_device, &properties );
-        sprintf( name, "VK_WINE_OPENVR_DEVICE_EXTS_PCIID_%04x_%04x", properties.vendorID, (uint16_t)properties.deviceID );
-        if (!(vr_exts = getenv( name ))) vr_exts = getenv( "VK_WINE_OPENVR_DEVICE_EXTS" );
-        if (vr_exts) parse_device_extensions( &device->extensions, vr_exts );
-        device->extensions.has_VK_WINE_openvr_device_extensions = 0;
-    }
-    if (device->extensions.has_VK_WINE_openxr_device_extensions)
-    {
-        parse_device_extensions( &device->extensions, getenv( "__WINE_OPENXR_VK_DEVICE_EXTENSIONS" ) );
-        device->extensions.has_VK_WINE_openxr_device_extensions = 0;
-    }
-
     if ((res = convert_device_create_info( physical_device, create_info, &pool, device ))) goto failed;
-    if ((callback_info = pop_next_struct( (VkBaseOutStructure **)&create_info->pNext, VK_STRUCTURE_TYPE_CREATE_INFO_WINE_DEVICE_CALLBACK )))
-    {
-        PFN_vkCreateDeviceCallbackWINE callback = (void *)(UINT_PTR)callback_info->native_create_callback;
-        if ((res = callback( physical_device->host.physical_device, create_info, allocator, &host_device, p_vkGetDeviceProcAddr, (void *)(UINT_PTR)callback_info->context ))) goto failed;
-    }
-    else if ((res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device ))) goto failed;
+    if ((res = instance->p_vkCreateDevice( physical_device->host.physical_device, create_info, NULL /* allocator */, &host_device ))) goto failed;
 
     vulkan_object_init_ptr( &device->obj, (UINT_PTR)host_device, &client_device->obj );
     device->physical_device = physical_device;
@@ -1261,17 +1237,6 @@ static void win32u_vkGetDeviceQueue2( VkDevice client_device, const VkDeviceQueu
     *client_queue = device_find_queue( client_device, &info );
 }
 
-static void set_transient_client_handle(struct vulkan_instance *instance, uint64_t client_handle)
-{
-    uint64_t *handle = pthread_getspecific(instance->transient_object_handle);
-    if (!handle)
-    {
-        handle = malloc(sizeof(uint64_t));
-        pthread_setspecific(instance->transient_object_handle, handle);
-    }
-    *handle = client_handle;
-}
-
 static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryAllocateInfo *client_alloc_info,
                                          const VkAllocationCallbacks *allocator, VkDeviceMemory *ret )
 {
@@ -1286,11 +1251,25 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
     VkImportMemoryWin32HandleInfoKHR *import_win32 = NULL;
     VkDeviceMemory host_device_memory = VK_NULL_HANDLE;
     VkExportMemoryAllocateInfo *export_info = NULL;
+    VkExternalMemoryHandleTypeFlagBits host_memory_type = get_host_external_memory_type();
     struct device_memory *memory;
     BOOL nt_shared = FALSE;
+    BOOL native_shared_request;
+    uint32_t shared_nvmap_id = 0;
     uint32_t mem_flags;
     void *mapping = NULL;
     VkResult res;
+#ifdef __SWITCH__
+    BOOL host_import_retry;
+#endif
+#ifdef WINE_NX_SWAP_POC
+    struct horizon_swap_reclaim_budget reclaim_budget = { .remaining = SIZE_MAX };
+    struct timespec alloc_start, alloc_end;
+    unsigned int alloc_attempts = 0;
+    BOOL reclaim_host_memory;
+
+    clock_gettime( CLOCK_MONOTONIC, &alloc_start );
+#endif
 
     for (next = &prev->pNext; *next; prev = *next, next = &(*next)->pNext)
     {
@@ -1305,7 +1284,13 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
             {
                 nt_shared = !(export_info->handleTypes & (VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT |
                                                           VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT));
-                export_info->handleTypes = get_host_external_memory_type();
+                export_info->handleTypes = host_memory_type;
+#ifdef __SWITCH__
+                if (host_memory_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT)
+                {
+                    *next = (*next)->pNext; next = &prev;
+                }
+#endif
             }
             break;
         case VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHR:
@@ -1328,32 +1313,21 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
         }
     }
 
+    native_shared_request = host_memory_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT &&
+                            (export_info || import_win32);
     /* For host visible memory, we try to use VK_EXT_external_memory_host on wow64 to ensure that mapped pointer is 32-bit. */
     mem_flags = physical_device->memory_properties.memoryTypes[alloc_info->memoryTypeIndex].propertyFlags;
-    if (physical_device->external_memory_align && (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !pointer_info &&
+#ifdef __SWITCH__
+    host_import_retry = !export_info && !import_win32 && !pointer_info && physical_device->external_memory_align &&
+                        (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && nx_can_import_fragmented_memory( alloc_info );
+#endif
+    if (!native_shared_request && physical_device->external_memory_align &&
+        (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !pointer_info &&
 #ifdef __SWITCH__
         !nx_driver_maps_preferred() &&
 #endif
         (res = allocate_external_host_memory( device, alloc_info, mem_flags, &host_pointer_info )))
-    {
-#ifdef __SWITCH__
-        /* In a 32-bit address space every mapping the driver makes lies below
-         * 4 GB, so when no 32-bit range is left to import (DXVK's 64 MB chunks
-         * in NFSU2), the driver's own mapping can go to the program instead. */
-        static LONG fallback_logs;
-
-        if (res == VK_ERROR_OUT_OF_HOST_MEMORY && driver_maps_fit_wow64())
-        {
-            if (__atomic_add_fetch( &fallback_logs, 1, __ATOMIC_RELAXED ) <= 8)
-                nx_vk_trace( "[NXVK] 32-bit address space full: %llu bytes of memory type %u use the driver's own mapping",
-                             (unsigned long long)alloc_info->allocationSize, alloc_info->memoryTypeIndex );
-        }
-        else
-#endif
         return res;
-    }
-    /* The 32-bit mapping the host imports, if any: vkMapMemory hands it out, and
-     * it is released once the host memory is freed. */
     mapping = host_pointer_info.pHostPointer;
 
     if (!(memory = calloc( 1, sizeof(*memory) )))
@@ -1391,64 +1365,162 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
             break;
         }
 
-        if (device->client.device->extensions.has_VK_KHR_win32_keyed_mutex && memory->sync)
+#if defined(__SWITCH__) && defined(WINE_NX_MESA_SWITCH)
+        if (native_shared_request)
         {
-            VkSemaphoreTypeCreateInfo semaphore_type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
-            VkSemaphoreCreateInfo semaphore_create = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &semaphore_type};
-            VkImportSemaphoreFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR};
+            SIZE_T shared_size;
 
-            semaphore_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-            if ((res = device->p_vkCreateSemaphore( device->host.device, &semaphore_create, NULL, &memory->semaphore ))) goto failed;
+            if (!memory->local || !d3dkmt_resource_get_nvmap( memory->local, &shared_nvmap_id, &shared_size ) ||
+                alloc_info->allocationSize > shared_size)
+            {
+                res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+                goto failed;
+            }
+            alloc_info->allocationSize = shared_size;
+        }
+        else
+#endif
+        {
+            if (device->client.device->extensions.has_VK_KHR_win32_keyed_mutex && memory->sync)
+            {
+                VkSemaphoreTypeCreateInfo semaphore_type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+                VkSemaphoreCreateInfo semaphore_create = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &semaphore_type};
+                VkImportSemaphoreFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR};
 
-            fd_info.handleType = get_host_external_semaphore_type();
-            fd_info.semaphore = memory->semaphore;
-            if ((fd_info.fd = d3dkmt_object_get_fd( memory->sync )) < 0)
+                semaphore_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+                if ((res = device->p_vkCreateSemaphore( device->host.device, &semaphore_create, NULL, &memory->semaphore ))) goto failed;
+
+                fd_info.handleType = get_host_external_semaphore_type();
+                fd_info.semaphore = memory->semaphore;
+                if ((fd_info.fd = d3dkmt_object_get_fd( memory->sync )) < 0)
+                {
+                    res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+                    goto failed;
+                }
+
+                if ((res = device->p_vkImportSemaphoreFdKHR( device->host.device, &fd_info ))) goto failed;
+            }
+
+            if ((fd_info.fd = d3dkmt_object_get_fd( memory->local )) < 0)
             {
                 res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
                 goto failed;
             }
 
-            if ((res = device->p_vkImportSemaphoreFdKHR( device->host.device, &fd_info ))) goto failed;
+            fd_info.handleType = get_host_external_memory_type();
+            fd_info.pNext = alloc_info->pNext;
+            alloc_info->pNext = &fd_info;
         }
-
-        if ((fd_info.fd = d3dkmt_object_get_fd( memory->local )) < 0)
-        {
-            res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
-            goto failed;
-        }
-
-        fd_info.handleType = get_host_external_memory_type();
-        fd_info.pNext = alloc_info->pNext;
-        alloc_info->pNext = &fd_info;
     }
 
-    set_transient_client_handle(instance, (uintptr_t)&memory->obj.obj);
-    if ((res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory ))) goto failed;
+#ifdef WINE_NX_SWAP_POC
+    reclaim_host_memory = !import_win32 && !pointer_info && !mapping && !native_shared_request;
+    do
+    {
+        alloc_attempts++;
+        /* Let the driver trim its BO cache before reclaiming guest pages. */
+        if (reclaim_host_memory) horizon_swap_native_begin();
+#endif
+#if defined(__SWITCH__) && defined(WINE_NX_MESA_SWITCH)
+    if (native_shared_request)
+        res = wine_nx_vk_allocate_shared_memory( device->host.device, alloc_info,
+                                                 shared_nvmap_id, &host_device_memory );
+    else
+#endif
+        res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory );
+#ifdef WINE_NX_SWAP_POC
+        if (reclaim_host_memory) horizon_swap_native_end();
+#endif
+#ifdef __SWITCH__
+    if (res == VK_ERROR_OUT_OF_HOST_MEMORY && host_import_retry)
+    {
+        VkResult import_res;
+
+        /* Chunked Wine backing can use holes too small for one native allocation. */
+        host_import_retry = FALSE;
+        import_res = allocate_external_host_memory( device, alloc_info, mem_flags, &host_pointer_info );
+        if (!import_res && (mapping = host_pointer_info.pHostPointer))
+        {
+#ifdef WINE_NX_SWAP_POC
+            alloc_attempts++;
+            reclaim_host_memory = FALSE;
+#endif
+            res = device->p_vkAllocateMemory( device->host.device, alloc_info, NULL, &host_device_memory );
+        }
+        else if (import_res) res = import_res;
+    }
+#endif
+#ifdef WINE_NX_SWAP_POC
+    } while (res == VK_ERROR_OUT_OF_HOST_MEMORY && reclaim_host_memory &&
+             horizon_swap_native_reclaim( alloc_info->allocationSize, &reclaim_budget ));
+    clock_gettime( CLOCK_MONOTONIC, &alloc_end );
+    unsigned long long alloc_ms = (alloc_end.tv_sec - alloc_start.tv_sec) * 1000LL +
+                                 (alloc_end.tv_nsec - alloc_start.tv_nsec) / 1000000LL;
+    if (alloc_attempts > 1 || alloc_ms >= 50 || alloc_info->allocationSize >= 64 * UINT64_C(1048576))
+        nx_vk_trace( "[NXVK-ALLOC] size_kb=%llu backing=%s attempts=%u elapsed_ms=%llu result=%d",
+                     (unsigned long long)alloc_info->allocationSize >> 10, mapping ? "host" : "native",
+                     alloc_attempts, alloc_ms, res );
+#endif
+    if (res) goto failed;
 
     if (export_info)
     {
         if (!memory->local)
         {
-            VkMemoryGetFdInfoKHR get_fd_info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = host_device_memory};
-            int fd = -1;
-
-            switch ((get_fd_info.handleType = get_host_external_memory_type()))
+#if defined(__SWITCH__) && defined(WINE_NX_MESA_SWITCH)
+            if (native_shared_request)
             {
-            case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
-            case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
-                if ((res = device->p_vkGetMemoryFdKHR( device->host.device, &get_fd_info, &fd ))) goto failed;
-                break;
-            default:
-                FIXME( "Unsupported handle type %#x\n", get_fd_info.handleType );
-                break;
+                void *reference;
+
+                if (!wine_nx_vk_export_memory( host_device_memory, &shared_nvmap_id, &reference ))
+                {
+                    res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+                    goto failed;
+                }
+                memory->local = d3dkmt_create_nvmap_resource( alloc_info->allocationSize,
+                                                               shared_nvmap_id, reference,
+                                                               nt_shared ? NULL : &memory->global );
+                if (!memory->local)
+                {
+                    res = VK_ERROR_OUT_OF_HOST_MEMORY;
+                    goto failed;
+                }
             }
+            else
+#endif
+            {
+                VkMemoryGetFdInfoKHR get_fd_info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = host_device_memory};
+                int fd = -1;
 
-            memory->local = d3dkmt_create_resource( fd, nt_shared ? NULL : &memory->global );
-            close( fd );
+                switch ((get_fd_info.handleType = get_host_external_memory_type()))
+                {
+                case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+                case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
+                    if ((res = device->p_vkGetMemoryFdKHR( device->host.device, &get_fd_info, &fd ))) goto failed;
+                    break;
+                default:
+                    FIXME( "Unsupported handle type %#x\n", get_fd_info.handleType );
+                    res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+                    break;
+                }
 
-            if (!memory->local) goto failed;
+                if (fd < 0) goto failed;
+
+                memory->local = d3dkmt_create_resource( fd, nt_shared ? NULL : &memory->global );
+                close( fd );
+
+                if (!memory->local)
+                {
+                    res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+                    goto failed;
+                }
+            }
         }
-        if (nt_shared && !(memory->shared = create_shared_resource_handle( memory->local, &export_win32 ))) goto failed;
+        if (nt_shared && !(memory->shared = create_shared_resource_handle( memory->local, &export_win32 )))
+        {
+            res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+            goto failed;
+        }
     }
 
     vulkan_object_init( &memory->obj.obj, host_device_memory );
@@ -1466,9 +1538,11 @@ failed:
     WARN( "Failed to allocate memory, res %d\n", res );
 #ifdef __SWITCH__
     if (nx_memory_log_failure())
+    {
         nx_vk_trace( "[NXVK] vkAllocateMemory of %llu bytes of memory type %u failed: %d%s",
                      (unsigned long long)alloc_info->allocationSize, alloc_info->memoryTypeIndex, res,
-                     mapping ? " (with an imported 32-bit mapping)" : "" );
+                     mapping ? " (with an imported host mapping)" : "" );
+    }
 #endif
     if (host_device_memory) device->p_vkFreeMemory( device->host.device, host_device_memory, NULL );
     if (mapping)
@@ -1481,7 +1555,7 @@ failed:
     d3dkmt_destroy_mutex( memory->mutex );
     d3dkmt_destroy_sync( memory->sync );
     free( memory );
-    return VK_ERROR_OUT_OF_HOST_MEMORY;
+    return res;
 }
 
 static void win32u_vkFreeMemory( VkDevice client_device, VkDeviceMemory client_memory, const VkAllocationCallbacks *allocator )
@@ -1537,6 +1611,7 @@ static VkResult win32u_vkGetMemoryWin32HandleKHR( VkDevice client_device, const 
     {
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT:
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT:
+        if (!memory->global) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
         TRACE( "Returning global D3DKMT handle %#x\n", memory->global );
         *handle = UlongToPtr( memory->global );
         return VK_SUCCESS;
@@ -1545,7 +1620,9 @@ static VkResult win32u_vkGetMemoryWin32HandleKHR( VkDevice client_device, const 
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT:
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP_BIT:
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT:
-        NtDuplicateObject( NtCurrentProcess(), memory->shared, NtCurrentProcess(), handle, 0, 0, DUPLICATE_SAME_ATTRIBUTES | DUPLICATE_SAME_ACCESS );
+        if (!memory->shared || NtDuplicateObject( NtCurrentProcess(), memory->shared, NtCurrentProcess(), handle,
+                                                  0, 0, DUPLICATE_SAME_ATTRIBUTES | DUPLICATE_SAME_ACCESS ))
+            return VK_ERROR_INVALID_EXTERNAL_HANDLE;
         TRACE( "Returning NT shared handle %p -> %p\n", memory->shared, *handle );
         return VK_SUCCESS;
 
@@ -1591,7 +1668,8 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
     {
         *data = (char *)memory->vm_map + info.offset;
         TRACE( "returning %p\n", *data );
-        return VK_SUCCESS;
+        res = VK_SUCCESS;
+        goto done;
     }
 
     if (physical_device->map_placed_align)
@@ -1642,16 +1720,20 @@ static VkResult win32u_vkMapMemory2KHR( VkDevice client_device, const VkMemoryMa
             nx_vk_trace( "[NXVK] driver mapping %p for %llu bytes", *data, (unsigned long long)memory->size );
     }
 #endif
+done:
 #ifdef _WIN64
-    if (NtCurrentTeb()->WowTebOffset && res == VK_SUCCESS && (UINT_PTR)*data >> 32)
+    if (NtCurrentTeb()->WowTebOffset && res == VK_SUCCESS &&
+        ((UINT_PTR)*data > UINT32_MAX ||
+         (map_info->size == VK_WHOLE_SIZE ? memory->size - map_info->offset : map_info->size) >
+         0x100000000ULL - (UINT_PTR)*data))
     {
 #ifdef __SWITCH__
-        nx_vk_trace( "[NXVK] Vulkan mapping %p does not fit a 32-bit pointer; no imported low mapping", *data );
+        nx_vk_trace( "[NXVK] rejected Vulkan mapping %p: range exceeds the Win32 address space", *data );
 #endif
         FIXME( "returned mapping %p does not fit 32-bit pointer\n", *data );
-        device->p_vkUnmapMemory( device->host.device, memory->obj.host.device_memory );
+        if (!memory->vm_map) device->p_vkUnmapMemory( device->host.device, memory->obj.host.device_memory );
         *data = NULL;
-        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+        res = VK_ERROR_MEMORY_MAP_FAILED;
     }
 #endif
 
@@ -1799,8 +1881,7 @@ static void get_physical_device_external_buffer_properties( struct vulkan_physic
     if (handle_type & EXTERNAL_MEMORY_WIN32_BITS) buffer_info->handleType = get_host_external_memory_type();
 
     p_vkGetPhysicalDeviceExternalBufferProperties( physical_device->host.physical_device, buffer_info, buffer_properties );
-    buffer_properties->externalMemoryProperties.compatibleHandleTypes = handle_type;
-    buffer_properties->externalMemoryProperties.exportFromImportedHandleTypes = handle_type;
+    map_external_memory_properties( &buffer_properties->externalMemoryProperties, handle_type );
 }
 
 static void win32u_vkGetPhysicalDeviceExternalBufferProperties( VkPhysicalDevice client_physical_device, const VkPhysicalDeviceExternalBufferInfo *buffer_info,
@@ -1942,8 +2023,7 @@ static VkResult get_physical_device_image_format_properties( struct vulkan_physi
         case VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES:
         {
             VkExternalImageFormatProperties *props = (VkExternalImageFormatProperties *)*next;
-            props->externalMemoryProperties.compatibleHandleTypes = handle_type;
-            props->externalMemoryProperties.exportFromImportedHandleTypes = handle_type;
+            map_external_memory_properties( &props->externalMemoryProperties, handle_type );
             break;
         }
         case VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT: break;
@@ -2005,14 +2085,20 @@ static VkResult win32u_vkCreateWin32SurfaceKHR( VkInstance client_instance, cons
         surface->hwnd = dummy;
     }
 
-    if ((res = driver_funcs->p_vulkan_surface_create( surface->hwnd, fshack_enabled, instance,
-                                                      &host_surface, &surface->client )))
+    if (!(surface->client = get_unused_client_surface( surface->hwnd, 0, fshack_enabled )))
+        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+    else
     {
+        res = driver_funcs->p_vulkan_surface_create( surface->client, instance, &host_surface );
+        use_window_client_surface( surface->client, !res );
+    }
+    if (res)
+    {
+        if (surface->client) client_surface_release( surface->client );
         if (dummy) NtUserDestroyWindow( dummy );
         free( surface );
         return res;
     }
-    add_window_client_surface( surface->hwnd, surface->client );
     set_window_pixel_format( surface->hwnd, -1, TRUE );
 
     vulkan_object_init( &surface->obj.obj, host_surface );
@@ -2037,6 +2123,13 @@ static void win32u_vkDestroySurfaceKHR( VkInstance client_instance, VkSurfaceKHR
     if (allocator) FIXME( "Support for allocation callbacks not implemented yet\n" );
 
     instance->p_vkDestroySurfaceKHR( instance->host.instance, surface->obj.host.surface, NULL /* allocator */ );
+#if defined(__SWITCH__) && defined(WINE_NX_MESA_SWITCH)
+    {
+        extern void wine_nx_gl_release_window(void);
+        wine_nx_gl_release_window();
+    }
+#endif
+    use_window_client_surface( surface->client, FALSE );
     client_surface_release( surface->client );
 
     instance->p_remove_object( instance, &surface->obj.obj );
@@ -2162,18 +2255,6 @@ static void *find_vk_struct( void *s, VkStructureType t )
     return NULL;
 }
 
-static void fixup_device_id_vulkan( UINT *vendor_id, UINT *device_id )
-{
-    struct pci_id id_real;
-    const struct pci_id *id = &id_real;
-
-    id_real.vendor = *vendor_id;
-    id_real.device = *device_id;
-    fixup_device_id( &id );
-    *vendor_id = id->vendor;
-    *device_id = id->device;
-}
-
 static void get_physical_device_properties2( struct vulkan_physical_device *physical_device, VkPhysicalDeviceProperties2 *properties2,
                                              PFN_vkGetPhysicalDeviceProperties2 p_vkGetPhysicalDeviceProperties2 )
 {
@@ -2220,7 +2301,6 @@ static void get_physical_device_properties2( struct vulkan_physical_device *phys
         vk11->deviceNodeMask = node_mask;
     }
 
-    fixup_device_id_vulkan( &properties2->properties.vendorID, &properties2->properties.deviceID );
 
     TRACE( "deviceName:%s deviceLUIDValid:%d LUID:%08x:%08x.\n",
            properties2->properties.deviceName, device_luid_valid, luid.HighPart, luid.LowPart );
@@ -2989,7 +3069,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
      * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
      * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
      */
-    if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_WINE_RAW_DPI ) ) &&
+    if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI ) ) &&
         !extents_equals( &create_info_host.imageExtent, &client_rect ) &&
         instance->extensions.has_VK_EXT_surface_maintenance1 &&
         physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
@@ -4962,20 +5042,11 @@ static struct vulkan_funcs vulkan_funcs =
     .p_vkUnmapMemory2KHR = win32u_vkUnmapMemory2KHR,
 };
 
-static VkResult nulldrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct vulkan_instance *instance,
-                                               VkSurfaceKHR *surface, struct client_surface **client )
+static VkResult nulldrv_vulkan_surface_create( struct client_surface *client, const struct vulkan_instance *instance,
+                                               VkSurfaceKHR *surface )
 {
     VkHeadlessSurfaceCreateInfoEXT create_info = {.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
-    VkResult res;
-
-    if (!(*client = nulldrv_client_surface_create( hwnd ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
-    if ((res = instance->p_vkCreateHeadlessSurfaceEXT( instance->host.instance, &create_info, NULL, surface )))
-    {
-        client_surface_release(*client);
-        *client = NULL;
-    }
-
-    return res;
+    return instance->p_vkCreateHeadlessSurfaceEXT( instance->host.instance, &create_info, NULL, surface );
 }
 
 static VkBool32 nulldrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )
@@ -4997,8 +5068,6 @@ static void nulldrv_map_device_extensions( struct vulkan_device_extensions *exte
     if (extensions->has_VK_KHR_external_semaphore_fd) extensions->has_VK_KHR_external_semaphore_win32 = 1;
     if (extensions->has_VK_KHR_external_fence_win32) extensions->has_VK_KHR_external_fence_fd = 1;
     if (extensions->has_VK_KHR_external_fence_fd) extensions->has_VK_KHR_external_fence_win32 = 1;
-    extensions->has_VK_WINE_openvr_device_extensions = 1;
-    extensions->has_VK_WINE_openxr_device_extensions = 1;
 }
 
 static const struct vulkan_driver_funcs nulldrv_funcs =
@@ -5029,11 +5098,11 @@ static void vulkan_driver_load(void)
     pthread_once( &init_once, vulkan_driver_init );
 }
 
-static VkResult lazydrv_vulkan_surface_create( HWND hwnd, BOOL raw, const struct vulkan_instance *instance,
-                                               VkSurfaceKHR *surface, struct client_surface **client )
+static VkResult lazydrv_vulkan_surface_create( struct client_surface *client, const struct vulkan_instance *instance,
+                                               VkSurfaceKHR *surface )
 {
     vulkan_driver_load();
-    return driver_funcs->p_vulkan_surface_create( hwnd, raw, instance, surface, client );
+    return driver_funcs->p_vulkan_surface_create( client, instance, surface );
 }
 
 static VkBool32 lazydrv_get_physical_device_presentation_support( struct vulkan_physical_device *physical_device, uint32_t queue )

@@ -68,6 +68,42 @@ static void test_settings( const char *dir )
     struct launcher_kv kv;
     char path[768], other[768], config[512];
 
+    load_text( &kv, "" );
+    launcher_settings_read( &kv, &settings );
+    assert( !settings.fast_sync && !settings.fex && !settings.four_cores );
+    load_text( &kv, "four-cores=1\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( settings.four_cores && launcher_settings_write( &kv, &settings ) );
+    launcher_settings_read( &kv, &back );
+    assert( back.four_cores );
+    settings.four_cores = 0;
+    assert( launcher_settings_write( &kv, &settings ) && !strstr( kv.text, "four-cores=" ) );
+    load_text( &kv, "four-cores=unknown\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( !settings.four_cores );
+    load_text( &kv, "cpu=fex\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( settings.fex );
+    assert( launcher_settings_write( &kv, &settings ) );
+    launcher_settings_read( &kv, &back );
+    assert( back.fex );
+    settings.fex = 0;
+    assert( launcher_settings_write( &kv, &settings ) && !strstr( kv.text, "cpu=" ) );
+    load_text( &kv, "cpu=unknown\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( !settings.fex );
+    load_text( &kv, "sync=horizon\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( settings.fast_sync );
+    assert( launcher_settings_write( &kv, &settings ) );
+    launcher_settings_read( &kv, &back );
+    assert( back.fast_sync );
+    settings.fast_sync = 0;
+    assert( launcher_settings_write( &kv, &settings ) && !strstr( kv.text, "sync=" ) );
+    load_text( &kv, "sync=fsync\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( !settings.fast_sync );
+
     assert( launcher_settings_path( "sdmc:/switch/wine/drive_c/nfsu2/SPEED2.EXE", path, sizeof(path) ) );
     assert( !strcmp( path, "sdmc:/switch/wine/drive_c/nfsu2/SPEED2.wine-nx.txt" ) );
     assert( !launcher_settings_path( "sdmc:/readme.txt", path, sizeof(path) ) );
@@ -77,20 +113,21 @@ static void test_settings( const char *dir )
     launcher_settings_read( &kv, &settings );
     assert( settings.verbose == 1 && settings.profile == 0 && settings.framebuffer == 1 && settings.dxvk == 1 );
     assert( settings.hidden == 0 && !settings.title[0] );  /* only 1 or on hides */
-    assert( settings.address_space == -1 );                /* absent: read it from the program */
-    load_text( &kv, "address-space=32\n" );
-    launcher_settings_read( &kv, &settings );
-    assert( settings.address_space == 1 );
-    load_text( &kv, "address-space=Any\n" );
-    launcher_settings_read( &kv, &settings );
-    assert( settings.address_space == 0 );
 
     load_text( &kv, "d3d=wine\nd3d9=dxvk\n" );
     launcher_settings_read( &kv, &settings );
     assert( settings.dxvk == 0 );
     load_text( &kv, "d3d=DXVK\ndxvk-version=2.7.1\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.dxvk == 1 && !strcmp( settings.dxvk_version, "2.7.1" ) );
+    assert( settings.dxvk == 1 && settings.dxvk_source == DXVK_SOURCE_OFFICIAL &&
+            !strcmp( settings.dxvk_version, "2.7.1" ) );
+    load_text( &kv, "d3d=dxvk\ndxvk-source=gplasync\ndxvk-version=3.1.1-1\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( settings.dxvk_source == DXVK_SOURCE_GPLASYNC && !strcmp( settings.dxvk_version, "3.1.1-1" ) );
+    assert( launcher_settings_write( &kv, &settings ) && strstr( kv.text, "dxvk-source=gplasync\n" ) );
+    load_text( &kv, "d3d=dxvk\ndxvk-source=sarek\ndxvk-version=1.13.0\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( settings.dxvk_source == DXVK_SOURCE_SAREK && !strcmp( settings.dxvk_version, "1.13.0" ) );
     load_text( &kv, "d3d=DXVK\ndxvk-version=../../bad\n" );
     launcher_settings_read( &kv, &settings );
     assert( settings.dxvk == 1 && !settings.dxvk_version[0] );
@@ -99,9 +136,12 @@ static void test_settings( const char *dir )
             !launcher_dxvk_version_valid( "3.1/other" ) );
     assert( launcher_dxvk_version_selectable( "1.0" ) && launcher_dxvk_version_selectable( "3.1.1" ) );
     assert( !launcher_dxvk_version_selectable( "0.96" ) && !launcher_dxvk_version_selectable( "bad" ) );
-    assert( !strcmp( launcher_dxvk_directory( 0x014c ), "dxvk" ) );
-    assert( !strcmp( launcher_dxvk_directory( 0x8664 ), "dxvk64" ) );
-    assert( !launcher_dxvk_directory( 0xaa64 ) && !launcher_dxvk_directory( 0 ) );
+    assert( !strcmp( launcher_dxvk_directory( 0x014c, DXVK_SOURCE_OFFICIAL ), "dxvk" ) );
+    assert( !strcmp( launcher_dxvk_directory( 0x8664, DXVK_SOURCE_OFFICIAL ), "dxvk64" ) );
+    assert( !strcmp( launcher_dxvk_directory( 0x014c, DXVK_SOURCE_SAREK ), "dxvk-sarek" ) );
+    assert( !strcmp( launcher_dxvk_directory( 0x8664, DXVK_SOURCE_GPLASYNC ), "dxvk-gplasync64" ) );
+    assert( !launcher_dxvk_directory( 0xaa64, DXVK_SOURCE_OFFICIAL ) &&
+            !launcher_dxvk_directory( 0, DXVK_SOURCE_OFFICIAL ) );
     assert( LAUNCHER_HUD_COUNT == 4 );
     assert( !strcmp( launcher_hud_values[2], "api,fps,frametimes" ) );
     assert( !strcmp( launcher_hud_values[3],
@@ -131,11 +171,19 @@ static void test_settings( const char *dir )
         assert( !launcher_dxvk_config_add( with_game, strlen( with_game ) + 8, game, sizeof(game) - 1 ) );
     }
     assert( strstr( config, "dxgi.syncInterval = 1" ) );
+    assert( !strstr( config, "dxvk.enableDescriptorBuffer" ) );
+    settings.dxvk_hud = 1;
+    assert( launcher_dxvk_config( &settings, config, sizeof(config) ) );
+    assert( strstr( config, "dxvk.enableDescriptorBuffer = False" ) );
+    settings.dxvk_hud = 0;
     assert( launcher_settings_write( &kv, &settings ) && !strstr( kv.text, "frame-limit=" ) );
-    assert( launcher_dxvk_version_directory( 0x8664, "2.7.1", path, sizeof(path) ) &&
+    assert( launcher_dxvk_version_directory( 0x8664, DXVK_SOURCE_OFFICIAL, "2.7.1", path, sizeof(path) ) &&
             !strcmp( path, "dxvk64\\versions\\2.7.1" ) );
-    assert( launcher_dxvk_version_directory( 0x014c, "", path, sizeof(path) ) && !strcmp( path, "dxvk" ) );
-    assert( !launcher_dxvk_version_directory( 0x8664, "../bad", path, sizeof(path) ) );
+    assert( launcher_dxvk_version_directory( 0x014c, DXVK_SOURCE_OFFICIAL, "", path, sizeof(path) ) &&
+            !strcmp( path, "dxvk" ) );
+    assert( launcher_dxvk_version_directory( 0x8664, DXVK_SOURCE_GPLASYNC, "3.1.1-1", path, sizeof(path) ) &&
+            !strcmp( path, "dxvk-gplasync64\\versions\\3.1.1-1" ) );
+    assert( !launcher_dxvk_version_directory( 0x8664, DXVK_SOURCE_OFFICIAL, "../bad", path, sizeof(path) ) );
 
     load_text( &kv, "upscaling=fsr\nupscaling-sharpness=80%\n" );
     launcher_settings_read( &kv, &settings );
@@ -157,7 +205,7 @@ static void test_settings( const char *dir )
     snprintf( path, sizeof(path), "%s/game.wine-nx.txt", dir );
     load_text( &kv, "# written by hand\n" );
     memset( &settings, 0, sizeof(settings) );
-    settings.own_controls = settings.address_space = -1;
+    settings.own_controls = -1;
     settings.vsync = settings.lsfg_performance = settings.lsfg_flow = 1;
     strcpy( settings.title, "Need for Speed" );
     settings.hidden = 1;
@@ -175,7 +223,7 @@ static void test_settings( const char *dir )
 
     /* Back to the global settings: only the comment stays; without it the file goes. */
     memset( &settings, 0, sizeof(settings) );
-    settings.verbose = settings.profile = settings.framebuffer = settings.own_controls = settings.address_space = -1;
+    settings.verbose = settings.profile = settings.framebuffer = settings.own_controls = -1;
     settings.vsync = settings.lsfg_performance = settings.lsfg_flow = 1;
     assert( launcher_settings_write( &kv, &settings ) && !strcmp( kv.text, "# written by hand\n" ) );
     assert( launcher_kv_save( &kv, path ) && !access( path, F_OK ) );

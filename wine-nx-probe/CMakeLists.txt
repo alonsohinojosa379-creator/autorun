@@ -2,6 +2,18 @@ cmake_minimum_required(VERSION 3.18)
 
 project(wine_nx_probe LANGUAGES C CXX ASM)
 
+set(WINE_NX_BOOT_BUNDLE "" CACHE PATH "Verified Atmosphere/HOC boot payload bundle")
+if(WINE_NX_BOOT_BUNDLE)
+    set(WINE_NX_BOOT_ROMFS_FILES "")
+    foreach(file setup_boot_manifest.h romfs/setup/loader-stock.kip romfs/setup/loader-hoc.kip
+                 romfs/setup/mesosphere.bin
+                 romfs/setup/LICENSE.Atmosphere romfs/setup/LICENSE.HOC)
+        if(NOT EXISTS "${WINE_NX_BOOT_BUNDLE}/${file}")
+            message(FATAL_ERROR "Incomplete boot bundle: ${file}")
+        endif()
+        list(APPEND WINE_NX_BOOT_ROMFS_FILES "${WINE_NX_BOOT_BUNDLE}/${file}")
+    endforeach()
+endif()
 set(WINE_NX_PE_BUILD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build-wine-arm64-pe-clean"
     CACHE PATH "Wine PE build supplying generated COM headers")
 
@@ -86,8 +98,10 @@ target_include_directories(wine-server-real PRIVATE ${WINE_SWITCH_NTDLL_INCLUDES
 
 add_library(wine-sync-real OBJECT
     ../dlls/ntdll/unix/sync.c
-    ../dlls/ntdll/unix/fsync.c
 )
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../dlls/ntdll/unix/fsync.c")
+    target_sources(wine-sync-real PRIVATE ../dlls/ntdll/unix/fsync.c)
+endif()
 
 target_compile_definitions(wine-sync-real PRIVATE ${WINE_SWITCH_NTDLL_DEFS})
 
@@ -156,6 +170,9 @@ target_include_directories(wine-virtual-real PRIVATE ${WINE_SWITCH_NTDLL_INCLUDE
 add_library(wine-signal-arm64-real OBJECT
     ../dlls/ntdll/unix/signal_arm64.c
 )
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../dlls/ntdll/unix/syscall.c")
+    target_sources(wine-signal-arm64-real PRIVATE ../dlls/ntdll/unix/alpc.c ../dlls/ntdll/unix/syscall.c)
+endif()
 
 target_compile_definitions(wine-signal-arm64-real PRIVATE ${WINE_SWITCH_NTDLL_DEFS})
 
@@ -328,7 +345,7 @@ add_library(wine-win32u-real OBJECT
     ../dlls/win32u/clipboard.c
     ../dlls/win32u/clipping.c
     ../dlls/win32u/cursoricon.c
-    ../dlls/win32u/d3dkmt_switch_stub.c
+    ../dlls/win32u/d3dkmt_switch.c
     ../dlls/win32u/dc.c
     ../dlls/win32u/dce.c
     ../dlls/win32u/defwnd.c
@@ -600,19 +617,14 @@ target_compile_definitions(wine-nx-hbl PRIVATE VERSION="3.0.0")
 target_link_options(wine-nx-hbl PRIVATE -Wl,-wrap,exit)
 target_link_libraries(wine-nx-hbl PRIVATE nx)
 
+add_executable(autorun-game-forwarder source/game_forwarder.c)
+set_target_properties(autorun-game-forwarder PROPERTIES SUFFIX ".elf" C_STANDARD 11)
+target_link_options(autorun-game-forwarder PRIVATE -Wl,--gc-sections)
+target_link_libraries(autorun-game-forwarder PRIVATE nx)
+
 add_executable(wine-nx-runtime
     source/runtime.c
-    "${CMAKE_CURRENT_BINARY_DIR}/forwarder_embed.c"
-    source/launcher.c
-    source/launcher_catalog.c
-    source/launcher_console.c
-    source/launcher_svg.c
-    source/launcher_ui.c
-    source/steamgriddb.c
     source/dxvk_releases.c
-    source/autorun_update.c
-    source/autorun_install.c
-    source/launcher_update.c
     source/runtime_platform.c
     source/sd_cache.c
     source/wow64_box64_bridge.c
@@ -625,7 +637,6 @@ add_executable(wine-nx-runtime
     source/osk.c
     source/compositor_gl.c
     source/compositor_egl.c
-    source/forwarder.c
     $<TARGET_OBJECTS:wine-horizon-real>
     $<TARGET_OBJECTS:wine-server-real>
     $<TARGET_OBJECTS:wine-sync-real>
@@ -650,6 +661,17 @@ add_executable(wine-nx-runtime
     $<TARGET_OBJECTS:wine-opengl32-unix-real>
 )
 
+target_sources(wine-nx-runtime PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/forwarder_embed.c"
+    source/launcher.c source/launcher_graphics.c source/launcher_catalog.c source/launcher_console.c
+    source/launcher_svg.c source/launcher_ui.c source/launcher_audio.c source/launcher_forwarder.c
+    source/launcher_image.c source/steamgriddb.c source/autorun_update.c source/autorun_install.c
+    source/launcher_update.c source/launcher_setup.c source/setup_boot.c source/forwarder.c)
+if(WINE_NX_BOOT_BUNDLE)
+    target_compile_definitions(wine-nx-runtime PRIVATE WINE_NX_BOOT_BUNDLE)
+    target_include_directories(wine-nx-runtime PRIVATE "${WINE_NX_BOOT_BUNDLE}")
+endif()
+
 set_target_properties(wine-nx-runtime PROPERTIES SUFFIX ".elf")
 
 # What the launcher carries to build a forwarder with: the loader's exefs and
@@ -659,6 +681,13 @@ find_program(NPDMTOOL npdmtool HINTS "$ENV{DEVKITPRO}/tools/bin" "/opt/devkitpro
 if(ELF2NSO AND NPDMTOOL)
     set(HBL_NSO "${CMAKE_CURRENT_BINARY_DIR}/hbl-main")
     set(HBL_NPDM "${CMAKE_CURRENT_BINARY_DIR}/hbl-main.npdm")
+    set(GAME_FORWARDER_NSO "${CMAKE_CURRENT_BINARY_DIR}/game-forwarder-main")
+    add_custom_command(
+        OUTPUT "${GAME_FORWARDER_NSO}"
+        COMMAND "${ELF2NSO}" "$<TARGET_FILE:autorun-game-forwarder>" "${GAME_FORWARDER_NSO}"
+        DEPENDS autorun-game-forwarder
+        VERBATIM
+    )
     add_custom_command(
         OUTPUT "${HBL_NSO}"
         COMMAND "${ELF2NSO}" "$<TARGET_FILE:wine-nx-hbl>" "${HBL_NSO}"
@@ -677,12 +706,11 @@ if(ELF2NSO AND NPDMTOOL)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/make-embed.py"
                 "${CMAKE_CURRENT_BINARY_DIR}/forwarder_embed.c"
                 wine_nx_hbl_main "${HBL_NSO}"
+                wine_nx_game_forwarder_main "${GAME_FORWARDER_NSO}"
                 wine_nx_hbl_npdm "${HBL_NPDM}"
-                wine_nx_icon_32bit "${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun-32.jpg"
                 wine_nx_icon_any "${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun.jpg"
                 wine_nx_logo "${CMAKE_CURRENT_SOURCE_DIR}/assets/logo.png"
-        DEPENDS "${HBL_NSO}" "${HBL_NPDM}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun-32.jpg"
+        DEPENDS "${HBL_NSO}" "${HBL_NPDM}" "${GAME_FORWARDER_NSO}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun.jpg"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/logo.png"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/make-embed.py"
@@ -760,6 +788,10 @@ endif()
 option(WINE_NX_BOX64_INTERPRETER "Build the Box64 interpreter adapter" OFF)
 option(WINE_NX_BOX64_DYNAREC "Use the ARM64 dynarec in the Box64 adapter" OFF)
 option(WINE_NX_AMD64 "Enable AMD64 applications through Wine ARM64EC and Box64" OFF)
+option(WINE_NX_FEX "Enable the Horizon FEX WoW64 and ARM64EC backends" OFF)
+if(WINE_NX_FEX AND NOT WINE_NX_AMD64)
+    message(FATAL_ERROR "WINE_NX_FEX requires WINE_NX_AMD64")
+endif()
 if(WINE_NX_AMD64 AND NOT (WINE_NX_BOX64_INTERPRETER OR WINE_NX_BOX64_DYNAREC))
     message(FATAL_ERROR "WINE_NX_AMD64 requires WINE_NX_BOX64_INTERPRETER or WINE_NX_BOX64_DYNAREC")
 endif()
@@ -783,6 +815,13 @@ if(WINE_NX_AMD64)
     target_compile_definitions(wine-virtual-real PRIVATE WINE_NX_AMD64)
     target_compile_definitions(wine-nx-runtime PRIVATE WINE_NX_AMD64)
 endif()
+if(WINE_NX_FEX)
+    target_sources(wine-nx-runtime PRIVATE source/fex_jit.c source/fex_unix.c source/fex_context.S source/fex_exceptions.c)
+    set_source_files_properties(source/fex_unix.c PROPERTIES COMPILE_DEFINITIONS WINE_UNIX_LIB)
+    target_compile_definitions(wine-virtual-real PRIVATE WINE_NX_FEX)
+    target_compile_definitions(wine-nx-runtime PRIVATE WINE_NX_FEX)
+    target_link_options(wine-nx-runtime PRIVATE "-Wl,--wrap=__libnx_exception_entry")
+endif()
 
 target_compile_definitions(wine-nx-runtime PRIVATE ${WINE_SWITCH_NTDLL_DEFS})
 
@@ -797,12 +836,41 @@ target_compile_options(wine-nx-runtime PRIVATE
 
 target_include_directories(wine-nx-runtime PRIVATE ${WINE_SWITCH_NTDLL_INCLUDES})
 
-target_link_options(wine-nx-runtime PRIVATE -Wl,--gc-sections)
+target_sources(wine-nx-runtime PRIVATE source/horizon_virtmem.c source/low_window.c source/native_heap.c)
+foreach(symbol _sbrk_r _free_r _malloc_usable_size_r _mallinfo_r _memalign_r _realloc_r)
+    target_link_options(wine-nx-runtime PRIVATE "-Wl,--wrap=${symbol}")
+endforeach()
+
+option(WINE_NX_SWAP_POC "Build experimental SD-backed guest memory paging" OFF)
+if(WINE_NX_SWAP_POC)
+    if(NOT WINE_NX_FEX)
+        message(FATAL_ERROR "WINE_NX_SWAP_POC requires the per-thread FEX exception entry")
+    endif()
+    target_sources(wine-nx-runtime PRIVATE source/swap_store.c source/swap_file.c source/swap_native.c
+        source/swap_pager.c source/launcher_swap.c)
+    target_compile_definitions(wine-nx-runtime PRIVATE WINE_NX_SWAP_POC)
+    foreach(target wine-horizon-real wine-virtual-real wine-system-real wine-win32u-real)
+        target_compile_definitions(${target} PRIVATE WINE_NX_SWAP_POC)
+    endforeach()
+    foreach(symbol threadCreate threadClose svcSendSyncRequest svcSendSyncRequestWithUserBuffer
+            svcReplyAndReceive svcReplyAndReceiveWithUserBuffer svcSendAsyncRequestWithUserBuffer
+            svcCreateTransferMemory nvioctlNvmap_Alloc nvMapCreate svcSetMemoryAttribute svcMapMemory
+            svcMapDeviceAddressSpace svcMapDeviceAddressSpaceByForce svcMapDeviceAddressSpaceAligned
+            svcWaitForAddress svcSignalToAddress svcArbitrateLock svcArbitrateUnlock
+            svcWaitProcessWideKeyAtomic svcSignalProcessWideKey _malloc_r _calloc_r)
+        target_link_options(wine-nx-runtime PRIVATE "-Wl,--wrap=${symbol}")
+    endforeach()
+endif()
+target_link_options(wine-nx-runtime PRIVATE -Wl,--gc-sections -Wl,--wrap=svcCreateThread
+    -Wl,--wrap=svcSetThreadCoreMask
+    -Wl,--wrap=virtmemFindAslr -Wl,--wrap=virtmemFindCodeMemory
+    -Wl,--wrap=virtmemFindStack -Wl,--wrap=virtmemAddReservation -Wl,--wrap=virtmemRemoveReservation)
 
 # freetype (+ its deps) for win32u font rendering; nx last for the libnx syscalls
 find_library(SWITCH_FREETYPE freetype HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_HARFBUZZ harfbuzz HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_PNG png HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
+find_library(SWITCH_TURBOJPEG turbojpeg HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
 find_library(SWITCH_BZ2 bz2 HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_Z z HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_ZSTD zstd HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
@@ -849,10 +917,14 @@ if(WINE_NX_MESA_SWITCH_DIR)
     foreach(lib EGL GL glapi vulkan mesa_util_c11 blake3 mesa_util mesa_util_simd xmlconfig)
         list(APPEND SWITCH_EGL "${WINE_NX_MESA_SWITCH_DIR}/lib${lib}.a")
     endforeach()
-    find_library(SWITCH_EXPAT expat HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
-    list(APPEND SWITCH_EGL ${SWITCH_EXPAT} ${SWITCH_ZSTD} ${SWITCH_Z} -Wl,--end-group)
+    find_library(SWITCH_ELF elf HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
+    find_library(SWITCH_EXPAT expat HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
+    list(APPEND SWITCH_EGL ${SWITCH_ELF} ${SWITCH_EXPAT} ${SWITCH_ZSTD} ${SWITCH_Z} -Wl,--end-group)
     set(SWITCH_GLAPI "")
     set(SWITCH_DRM_NOUVEAU "")
+    target_include_directories(wine-nx-runtime BEFORE PRIVATE "${WINE_NX_MESA_SWITCH_DIR}/../include")
+    target_link_options(wine-nx-runtime PRIVATE
+        -Wl,-u,vk_icdGetInstanceProcAddr -Wl,-u,vk_icdNegotiateLoaderICDInterfaceVersion -pthread)
     target_compile_definitions(wine-nx-runtime PRIVATE WINE_NX_MESA_SWITCH)
     target_sources(wine-nx-runtime PRIVATE source/vulkan_probe.c)
     set_source_files_properties(source/vulkan_probe.c PROPERTIES
@@ -894,7 +966,7 @@ endif()
 # functions come through eglGetProcAddress, so it works over either Mesa.
 find_library(SWITCH_SDL2 SDL2 HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_SDL2_TTF SDL2_ttf HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
-set_source_files_properties(source/launcher.c source/launcher_catalog.c source/launcher_ui.c source/launcher_update.c source/steamgriddb.c source/dxvk_releases.c source/osk.c PROPERTIES
+set_source_files_properties(source/launcher.c source/launcher_catalog.c source/launcher_graphics.c source/launcher_ui.c source/launcher_audio.c source/launcher_forwarder.c source/launcher_image.c source/launcher_update.c source/launcher_setup.c source/launcher_swap.c source/steamgriddb.c source/dxvk_releases.c source/osk.c PROPERTIES
     INCLUDE_DIRECTORIES "$ENV{DEVKITPRO}/portlibs/switch/include/SDL2"
     COMPILE_DEFINITIONS _REENTRANT)
 set_property(SOURCE source/launcher_update.c APPEND PROPERTY COMPILE_DEFINITIONS WINE_NX_BUILD_VERSION)
@@ -903,7 +975,7 @@ set_property(SOURCE source/launcher.c APPEND PROPERTY COMPILE_DEFINITIONS WINE_N
 target_link_libraries(wine-nx-runtime PRIVATE
     ${SWITCH_SDL2_TTF} ${SWITCH_SDL2}
     ${SWITCH_CURL} ${SWITCH_MBEDTLS} ${SWITCH_MBEDX509} ${SWITCH_MBEDCRYPTO} ${SWITCH_MINIZIP}
-    ${SWITCH_FREETYPE} ${SWITCH_PNG} ${SWITCH_BZ2} ${SWITCH_Z} ${SWITCH_ZSTD} ${SWITCH_HARFBUZZ}
+    ${SWITCH_FREETYPE} ${SWITCH_PNG} ${SWITCH_TURBOJPEG} ${SWITCH_BZ2} ${SWITCH_Z} ${SWITCH_ZSTD} ${SWITCH_HARFBUZZ}
     ${SWITCH_EGL} ${SWITCH_GLAPI} ${SWITCH_DRM_NOUVEAU} stdc++ nx m)
 
 find_program(NACPTOOL nacptool HINTS "$ENV{DEVKITPRO}/tools/bin" "/opt/devkitpro/tools/bin")
@@ -1038,11 +1110,16 @@ if(NACPTOOL AND ELF2NRO)
         VERBATIM
     )
 
+    set(RUNTIME_ROMFS_ARG "")
+    if(WINE_NX_BOOT_BUNDLE)
+        set(RUNTIME_ROMFS_ARG "--romfsdir=${WINE_NX_BOOT_BUNDLE}/romfs")
+    endif()
     add_custom_command(
         OUTPUT "${RUNTIME_NRO_FILE}"
         COMMAND "${ELF2NRO}" "$<TARGET_FILE:wine-nx-runtime>" "${RUNTIME_NRO_FILE}" "--nacp=${RUNTIME_NACP_FILE}"
-                "--icon=${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun.jpg"
+                "--icon=${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun.jpg" ${RUNTIME_ROMFS_ARG}
         DEPENDS wine-nx-runtime "${RUNTIME_NACP_FILE}" "${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun.jpg"
+                ${WINE_NX_BOOT_ROMFS_FILES}
         VERBATIM
     )
 

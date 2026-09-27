@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include "launcher_audio.h"
 
 /* SDL names controller buttons by position: Nintendo's A, on the right, is SDL's B. */
 enum ui_button
@@ -25,6 +26,8 @@ enum ui_button
     UI_DOWN = SDL_CONTROLLER_BUTTON_DPAD_DOWN,
     UI_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT,
     UI_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
+    UI_ZL = SDL_CONTROLLER_BUTTON_MAX,
+    UI_ZR,
 };
 
 enum ui_touch
@@ -75,6 +78,7 @@ struct ui_text_entry
 struct ui
 {
     SDL_Window *window;
+    struct launcher_audio *audio;
     SDL_Renderer *renderer;
     int width, height;
     TTF_Font *small, *normal, *large;
@@ -107,11 +111,14 @@ struct ui
     int back_focused;
     /* How many modals are open: only the first dims what is behind it. */
     int modal_depth;
+    int hide_overlays;
 
     SDL_GameController *controller;
     int held;
     Uint32 held_since, held_last;
     int stick_x, stick_y;
+    Sint16 axes[4];
+    int trigger_left, trigger_right;
     struct
     {
         int active, vertical;
@@ -138,6 +145,7 @@ struct ui
 
 int  ui_init( struct ui *ui, const void *font_data, size_t font_size, int animations );
 void ui_quit( struct ui *ui );
+void ui_sound( struct ui *ui, enum launcher_sound sound );
 /* Why ui_init failed. */
 const char *ui_error(void);
 /* Whether SDL got as far as a window, so the screen was in EGL's hands. */
@@ -240,6 +248,7 @@ struct ui_row
     unsigned char kind; /* enum ui_row_kind, for ui_settings_run */
     unsigned char value_tone;
     unsigned char on;   /* UI_ROW_SWITCH: which way it is set */
+    unsigned char choices; /* dropdown rows; zero for a live catalog */
     unsigned char group;/* which section it belongs to */
 };
 
@@ -247,10 +256,9 @@ struct ui_list
 {
     int selection, top;
     int started;
-    /* How far the rows have slid, eased toward top * ROW_HEIGHT so the list
-     * scrolls under the highlight instead of jumping a row at a time. */
-    float scroll;
-    int started_scroll;
+    float scroll, scroll_from;
+    int scroll_target, started_scroll;
+    Uint32 scroll_since;
     /* ui_settings_run: whether the sections or the rows have the focus, and
      * whether the row in focus is being changed rather than moved between. */
     int in_rows;
@@ -286,5 +294,7 @@ enum ui_action ui_settings_run( struct ui *ui, struct ui_list *list, const char 
                                 const struct ui_row *rows, int count, int can_reset, int *group );
 int ui_settings_dropdown( struct ui *ui, const struct ui_list *anchor,
                           const struct ui_row *rows, int count, int selection );
+int ui_settings_dropdown_live( struct ui *ui, const struct ui_list *anchor, const struct ui_row *rows,
+                               int selection, int (*update)( void *data, int *selection ), void *data );
 
 #endif

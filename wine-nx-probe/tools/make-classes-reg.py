@@ -19,14 +19,31 @@ cannot follow. widl has already followed it: the registration script it builds
 into the DLL, which its DllRegisterServer writes from, names the classes of that
 version. Those come second, so a class the IDL gave a DLL stays with it.
 """
+import argparse
 from pathlib import Path
+import os
 import re
-import sys
+import shutil
+import subprocess
 
 root = Path(__file__).resolve().parents[2]
 
 COCLASS = re.compile(
     r'\[(?P<attrs>[^\]]*?)\]\s*coclass\s+(?P<name>\w+)', re.S)
+EXTRA_IDL = {'gameux': ('include/gameux.idl',)}
+
+
+def idl_text(path, defines):
+    compiler = os.environ.get('WINE_NX_IDL_CPP') or shutil.which('clang') or shutil.which('cpp')
+    if not compiler:
+        raise RuntimeError('IDL registration requires clang or cpp')
+    includes = ['-I', str(root / 'include')]
+    if pe := os.environ.get('WINE_NX_PE_BUILD_DIR'):
+        includes = ['-I', str(Path(pe) / 'include'), *includes]
+    return subprocess.check_output(
+        [compiler, '-E', '-P', '-x', 'c', *includes,
+         *defines, str(path)], text=True)
+
 
 def classes_of(dll):
     """(uuid, threading, coclass name) for each class this DLL serves."""
@@ -34,16 +51,29 @@ def classes_of(dll):
     spec = source / f'{dll}.spec'
     if not spec.exists() or 'DllGetClassObject' not in spec.read_text():
         return []
+    makefile = (source / 'Makefile.in').read_text()
+    defines = ['-D' + item for item in re.findall(r'(?<!\S)-D([A-Za-z_]\w*(?:=\w+)?)', makefile)]
     found = []
-    for idl in sorted(source.glob('*.idl')):
+    seen = set()
+    idls = list(sorted(source.glob('*.idl'))) + [root / name for name in EXTRA_IDL.get(dll, ())]
+    parent = re.search(r'^PARENTSRC\s*=\s*(\S+)', makefile, re.M)
+    if parent:
+        idls += sorted((source / parent.group(1)).glob('*.idl'))
+    for idl in idls:
         # A typelib is a description of interfaces, not a list of what is served.
         if idl.name.endswith('_tlb.idl'):
             continue
-        for match in COCLASS.finditer(idl.read_text()):
+        for match in COCLASS.finditer(idl_text(idl, defines)):
             attrs = match.group('attrs')
             uuid = re.search(r'uuid\s*\(\s*([0-9a-fA-F-]{36})\s*\)', attrs)
             if not uuid:
                 continue
+            if dll.startswith('xaudio2_') and match.group('name') not in (
+                    'XAudio2', 'AudioVolumeMeter', 'AudioReverb'):
+                continue
+            if uuid.group(1).lower() in seen:
+                continue
+            seen.add(uuid.group(1).lower())
             threading = re.search(r'threading\s*\(\s*(\w+)\s*\)', attrs)
             threading = (threading.group(1) if threading else 'both').capitalize()
             found.append((uuid.group(1).lower(), threading, match.group('name')))
@@ -67,7 +97,10 @@ def write(stage, dlls):
     seen = {}
     syswow64 = stage / 'drive_c/windows/syswow64'
     found = [(dll, classes_of(dll)) for dll in sorted(dlls)]
-    found += [(dll, registered_classes_of(syswow64 / f'{dll}.dll')) for dll in sorted(dlls)]
+    for dll in sorted(dlls):
+        path = syswow64 / f'{dll}.dll'
+        if path.is_file():
+            found.append((dll, registered_classes_of(path)))
     for dll, classes in found:
         for uuid, threading, name in classes:
             # The first DLL to claim a class keeps it, as the load order would.
@@ -85,6 +118,11 @@ def write(stage, dlls):
     return len(seen)
 
 if __name__ == '__main__':
-    stage = Path(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument('stage', type=Path)
+    parser.add_argument('--wine-source', type=Path, default=root)
+    args = parser.parse_args()
+    root = args.wine_source.resolve()
+    stage = args.stage
     staged = sorted(p.stem for p in (stage / 'drive_c/windows/syswow64').glob('*.dll'))
     print(f'classes.reg: {write(stage, staged)} classes from {len(staged)} DLLs')

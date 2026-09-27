@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "dxvk_releases.h"
 
 #define LAUNCHER_KV_MAX 8192
 
@@ -176,10 +177,14 @@ struct launcher_settings
     int hidden;       /* left out of the library */
     int verbose;      /* verbose traces */
     int profile;      /* the sampling profiler */
+    int fast_sync;
+    int fex;
+    int four_cores;
     int framebuffer;  /* 1: windows go to the framebuffer, 0: through the compositor */
     int dxvk;         /* architecture-specific DXVK payload */
+    enum dxvk_source dxvk_source;
     char vkd3d_version[32];
-    char dxvk_version[32]; /* empty: the bundled latest release */
+    char dxvk_version[32]; /* empty: newest installed release */
     int dxvk_hud;
     int frame_limit;
     int vsync;
@@ -193,9 +198,6 @@ struct launcher_settings
      * setting existed means; 0 Autorun's keys alone, the file kept for when it
      * is turned on again. */
     int own_controls;
-    /* What the program needs of the address space (launcher_catalog.h):
-     * -1 read it from the program itself, 0 any, 1 the low 4 GB. */
-    int address_space;
 };
 
 enum {
@@ -226,6 +228,12 @@ static inline int launcher_dxvk_config( const struct launcher_settings *settings
     length = snprintf( out, size, "dxgi.syncInterval = %d\nd3d9.presentInterval = %d\n",
                        !!settings->vsync, !!settings->vsync );
     if (length < 0 || (size_t)length >= size) return 0;
+    if (settings->dxvk_hud)
+    {
+        int extra = snprintf( out + length, size - length, "dxvk.enableDescriptorBuffer = False\n" );
+        if (extra < 0 || (size_t)extra >= size - length) return 0;
+        length += extra;
+    }
     if (settings->frame_limit)
     {
         int extra = snprintf( out + length, size - length,
@@ -257,10 +265,18 @@ static inline int launcher_dxvk_config_add( char *out, size_t size, const char *
     return 1;
 }
 
-static inline const char *launcher_dxvk_directory( unsigned short machine )
+static inline const char *launcher_dxvk_directory( unsigned short machine, enum dxvk_source source )
 {
-    if (machine == 0x014c) return "dxvk";
-    if (machine == 0x8664) return "dxvk64";
+    static const char *const directories[DXVK_SOURCE_COUNT][2] =
+    {
+        { "dxvk", "dxvk64" },
+        { "dxvk-sarek", "dxvk-sarek64" },
+        { "dxvk-gplasync", "dxvk-gplasync64" }
+    };
+
+    if (source < 0 || source >= DXVK_SOURCE_COUNT) return NULL;
+    if (machine == 0x014c) return directories[source][0];
+    if (machine == 0x8664) return directories[source][1];
     return NULL;
 }
 
@@ -284,10 +300,10 @@ static inline int launcher_dxvk_version_selectable( const char *version )
     return end != version && major >= 1;
 }
 
-static inline int launcher_dxvk_version_directory( unsigned short machine, const char *version,
+static inline int launcher_dxvk_version_directory( unsigned short machine, enum dxvk_source source, const char *version,
                                                    char *out, size_t size )
 {
-    const char *base = launcher_dxvk_directory( machine );
+    const char *base = launcher_dxvk_directory( machine, source );
     int length;
 
     if (!base || !out || !size || (version && version[0] && !launcher_dxvk_version_valid( version ))) return 0;
@@ -363,6 +379,9 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
     settings->hidden = launcher_setting_state( kv, "hidden" ) == 1;
     settings->verbose = launcher_setting_state( kv, "verbose" );
     settings->profile = launcher_setting_state( kv, "profile" );
+    settings->fast_sync = launcher_kv_get( kv, "sync", value, sizeof(value) ) && !strcasecmp( value, "horizon" );
+    settings->fex = launcher_kv_get( kv, "cpu", value, sizeof(value) ) && !strcasecmp( value, "fex" );
+    settings->four_cores = launcher_setting_state( kv, "four-cores" ) == 1;
     settings->framebuffer = -1;
     if (launcher_kv_get( kv, "windows", value, sizeof(value) ))
     {
@@ -372,6 +391,12 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
     if (!launcher_kv_get( kv, "d3d", value, sizeof(value) ) &&
         !launcher_kv_get( kv, "d3d9", value, sizeof(value) )) value[0] = 0;
     settings->dxvk = !strcasecmp( value, "dxvk" );
+    settings->dxvk_source = DXVK_SOURCE_OFFICIAL;
+    if (launcher_kv_get( kv, "dxvk-source", value, sizeof(value) ))
+    {
+        if (!strcasecmp( value, "sarek" )) settings->dxvk_source = DXVK_SOURCE_SAREK;
+        else if (!strcasecmp( value, "gplasync" )) settings->dxvk_source = DXVK_SOURCE_GPLASYNC;
+    }
     settings->vkd3d_version[0] = 0;
     if (launcher_kv_get( kv, "vkd3d-version", value, sizeof(value) ) && launcher_dxvk_version_valid( value ))
         memcpy( settings->vkd3d_version, value, strlen( value ) + 1 );
@@ -410,12 +435,6 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
         for (int i = 0; i < LAUNCHER_SHARPNESS_COUNT; i++)
             if (!strcasecmp( value, launcher_sharpness_labels[i] )) settings->upscaling_sharpness = i;
     }
-    settings->address_space = -1;
-    if (launcher_kv_get( kv, "address-space", value, sizeof(value) ))
-    {
-        if (!strcasecmp( value, "32-bit" ) || !strcmp( value, "32" )) settings->address_space = 1;
-        else if (!strcasecmp( value, "any" )) settings->address_space = 0;
-    }
 }
 
 /* Store settings, leaving out what matches the global settings. */
@@ -424,6 +443,7 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
     static const char *states[] = { NULL, "0", "1" };
 
     if (settings->dxvk_hud < 0 || settings->dxvk_hud >= LAUNCHER_HUD_COUNT ||
+        settings->dxvk_source < 0 || settings->dxvk_source >= DXVK_SOURCE_COUNT ||
         settings->frame_limit < 0 || settings->frame_limit >= LAUNCHER_FRAME_LIMIT_COUNT ||
         settings->lsfg_flow < 0 || settings->lsfg_flow >= 3 ||
         settings->upscaling < 0 || settings->upscaling >= LAUNCHER_UPSCALING_COUNT ||
@@ -432,10 +452,15 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
            launcher_kv_set( kv, "hidden", settings->hidden ? "1" : NULL ) &&
            launcher_kv_set( kv, "verbose", states[settings->verbose + 1] ) &&
            launcher_kv_set( kv, "profile", states[settings->profile + 1] ) &&
+           launcher_kv_set( kv, "sync", settings->fast_sync ? "horizon" : NULL ) &&
+           launcher_kv_set( kv, "cpu", settings->fex ? "fex" : NULL ) &&
+           launcher_kv_set( kv, "four-cores", settings->four_cores ? "1" : NULL ) &&
            launcher_kv_set( kv, "windows", settings->framebuffer < 0 ? NULL :
                                            settings->framebuffer ? "framebuffer" : "compositor" ) &&
            launcher_kv_set( kv, "d3d9", NULL ) &&
            launcher_kv_set( kv, "d3d", settings->dxvk ? "dxvk" : NULL ) &&
+           launcher_kv_set( kv, "dxvk-source", settings->dxvk_source == DXVK_SOURCE_SAREK ? "sarek" :
+                            settings->dxvk_source == DXVK_SOURCE_GPLASYNC ? "gplasync" : NULL ) &&
            launcher_kv_set( kv, "vkd3d-version", settings->vkd3d_version[0] ? settings->vkd3d_version : NULL ) &&
            launcher_kv_set( kv, "dxvk-version", settings->dxvk_version[0] ? settings->dxvk_version : NULL ) &&
            launcher_kv_set( kv, "dxvk-hud", settings->dxvk_hud ? launcher_hud_values[settings->dxvk_hud] : NULL ) &&
@@ -450,9 +475,7 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
                             launcher_upscaling_values[settings->upscaling] : NULL ) &&
            launcher_kv_set( kv, "upscaling-sharpness", settings->upscaling == 1 && settings->upscaling_sharpness != 2 ?
                             launcher_sharpness_labels[settings->upscaling_sharpness] : NULL ) &&
-           launcher_kv_set( kv, "own-controls", states[settings->own_controls + 1] ) &&
-           launcher_kv_set( kv, "address-space", settings->address_space < 0 ? NULL :
-                                                 settings->address_space ? "32-bit" : "any" );
+           launcher_kv_set( kv, "own-controls", states[settings->own_controls + 1] );
 }
 
 #endif

@@ -17,6 +17,14 @@ static Mutex usb_mutex;
 static UsbHsFsDevice usb_devices[LAUNCHER_MAX_USB_VOLUMES];
 static u32 usb_device_count;
 
+void usbHsFsRequestTransferError(u32 endpoint, Result rc)
+{
+    char line[96];
+    snprintf(line, sizeof(line), "[USB] endpoint 0x%02x closed after incomplete transfer: 0x%08x",
+             (unsigned)endpoint, (unsigned)rc);
+    wine_nx_runtime_trace(line);
+}
+
 static void usb_status_changed( const UsbHsFsDevice *devices, u32 count, void *user_data )
 {
     (void)user_data;
@@ -42,6 +50,15 @@ void wine_nx_usb_start(void)
     usbHsFsSetPopulateCallback( NULL, NULL );
     snprintf( buf, sizeof(buf), "[USB] mass storage unavailable: 0x%08x", (unsigned)rc );
     wine_nx_runtime_trace( buf );
+}
+
+void wine_nx_usb_stop(void)
+{
+    if (!usb_started) return;
+    usbHsFsSetPopulateCallback( NULL, NULL );
+    usbHsFsExit();
+    usb_started = 0;
+    usb_device_count = 0;
 }
 
 /* Drives mount on libusbhsfs' own thread. Wait for the attached ones, up to

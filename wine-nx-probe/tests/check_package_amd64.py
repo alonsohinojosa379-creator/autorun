@@ -2,6 +2,7 @@
 """Exercise the AMD64 package dependency closure without running packaging."""
 import ast
 import functools
+import hashlib
 import json
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -14,21 +15,29 @@ from zipfile import ZipFile
 
 root = Path(__file__).resolve().parents[2]
 package = root / 'wine-nx-probe/tools/package-amd64.py'
-selected = {'module_name', 'apiset', 'import_host', 'coff_blocks', 'imports', 'forwarders',
+selected = {'stage_file', 'module_name', 'apiset', 'import_host', 'coff_blocks', 'imports', 'forwarders',
             'stage_closure', 'validate_external_imports'}
 tree = ast.parse(package.read_text(), filename=str(package))
 game_runtime = next(ast.literal_eval(node.value) for node in tree.body
                     if isinstance(node, ast.Assign) and
                     any(isinstance(target, ast.Name) and target.id == 'game_runtime' for target in node.targets))
+game_runtime64 = next(ast.literal_eval(node.value) for node in tree.body
+                      if isinstance(node, ast.Assign) and
+                      any(isinstance(target, ast.Name) and target.id == 'game_runtime64' for target in node.targets))
 assert set(game_runtime) == {
-    'cfgmgr32', 'dwmapi', 'msvcp140', 'normaliz', 'powrprof', 'vcruntime140', 'wldap32',
-    'x3daudio1_7', 'xapofx1_5',
+    'cfgmgr32', 'concrt140', 'dwmapi', 'explorerframe', 'gameux', 'mfplat', 'mfplay', 'mfreadwrite',
+    'mscoree', 'msctf', 'msvcp140', 'mswsock', 'netprofm', 'normaliz', 'powrprof',
+    'uiautomationcore', 'uxtheme', 'vcruntime140', 'wbemprox', 'wldap32', 'wtsapi32',
+    'x3daudio1_7',
+    'xapofx1_5', 'xaudio2_0', 'xaudio2_5', 'xaudio2_7', 'xaudio2_9',
 }
+assert set(game_runtime64) == {'vcruntime140_1'}
+assert "tools/make-classes-reg.py" in package.read_text().replace('\\', '/')
 helpers = ast.Module(body=[node for node in tree.body
                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in selected],
                      type_ignores=[])
 ast.fix_missing_locations(helpers)
-namespace = {'functools': functools, 're': re}
+namespace = {'functools': functools, 're': re, 'hashlib': hashlib}
 exec(compile(helpers, str(package), 'exec'), namespace)
 assert selected <= namespace.keys()
 
@@ -131,9 +140,12 @@ class Fixture:
 
     def install(self):
         namespace['stage'] = self.stage
+        namespace['source_hashes'] = {}
         namespace['built'] = self.built
         namespace['inspect'] = self.inspect
         namespace['shutil'] = SimpleNamespace(copy2=self.copy2)
+        namespace['strip'] = 'fixture-strip'
+        namespace['stage_release'] = lambda source, destination, _: self.copy2(source, destination)
         namespace['forwarders'].cache_clear()
 
 
@@ -237,6 +249,9 @@ with tempfile.TemporaryDirectory(prefix='wine-nx-package-amd64-') as temp:
     assert not any(name.startswith(('api-ms-', 'ext-ms-')) for name in built_names), built_names
     assert not any(name.startswith('krnl386') for name in built_names), built_names
     assert {name for _, name, _ in fixture.copies} == expected, fixture.copies
+    assert namespace['source_hashes'] == {
+        'drive_c/windows/system32/' + name: hashlib.sha256(name.encode()).hexdigest() for name in expected
+    }
 
 with tempfile.TemporaryDirectory(prefix='wine-nx-package-amd64-arch-') as temp:
     fixture = Fixture(temp)
@@ -317,17 +332,56 @@ with tempfile.TemporaryDirectory(prefix='autorun-amd64-merge-') as temp:
     for name in ('run-entry.txt', 'target.txt', 'vulkan-probe.txt'):
         (runtime / name).write_text('keep\n')
     archive = temp / 'amd64.zip'
-    manifest = {'features': {name: True for name in
-                ('amd64', 'dynarec', 'vulkan', 'dxvk', 'vkd3d', 'lsfg')}}
-    with ZipFile(archive, 'w') as z:
-        z.writestr('switch/wine/build-manifest.json', json.dumps(manifest))
-        z.writestr('switch/wine/wine-nx-runtime.nro', b'NRO0 nx-amd64-box64-3\0')
-        z.writestr('switch/wine/drive_c/windows/system32/winebox64ec.dll', b'cpu')
-        z.writestr('switch/wine/drive_c/dxvk64/dxgi.dll', b'dxvk')
-        z.writestr('switch/wine/drive_c/vkd3d64/d3d12.dll', b'vkd3d')
-    assert autorun_namespace['merge_amd64'](archive, stage) == '3'
-    assert (runtime / 'drive_c/dxvk64/dxgi.dll').read_bytes() == b'dxvk'
-    for name in ('run-entry.txt', 'target.txt', 'vulkan-probe.txt'):
-        assert (runtime / name).read_text() == 'keep\n'
+    runtime_markers = re.findall(r'#define WINE_NX_RUNTIME_BUILD "(nx-amd64-[^"]+)"',
+                                (root / 'wine-nx-probe/source/runtime.c').read_text())
+    def make_archive(fex, missing=None, runtime_fex=None):
+        manifest = {'features': {name: True for name in
+                    ('amd64', 'dynarec', 'vulkan', 'dxvk', 'vkd3d', 'lsfg')}}
+        manifest['features']['fex'] = fex
+        kind = 'fex-' if (fex if runtime_fex is None else runtime_fex) else 'box64-'
+        marker = next(value for value in runtime_markers if value.startswith('nx-amd64-' + kind))
+        with ZipFile(archive, 'w') as z:
+            z.writestr('switch/wine/build-manifest.json', json.dumps(manifest))
+            z.writestr('switch/wine/wine-nx-runtime.nro', f'NRO0 {marker}\0'.encode())
+            z.writestr('switch/wine/drive_c/windows/system32/winebox64ec.dll', b'cpu')
+            if fex:
+                for dll in ('libarm64ecfex.dll', 'libwow64fex.dll'):
+                    if dll != missing:
+                        z.writestr(f'switch/wine/drive_c/windows/system32/{dll}', b'fex')
+            z.writestr('switch/wine/drive_c/dxvk64/dxgi.dll', b'dxvk')
+            z.writestr('switch/wine/drive_c/vkd3d64/d3d12.dll', b'vkd3d')
+            for name in ('run-entry.txt', 'target.txt', 'vulkan-probe.txt'):
+                z.writestr(f'switch/wine/{name}', 'replace\n')
+        return marker
+
+    for fex in (False, True):
+        expected = make_archive(fex).removeprefix('nx-amd64-')
+        if not fex:
+            expected = expected.removeprefix('box64-')
+        assert autorun_namespace['merge_amd64'](archive, stage) == expected
+        assert (runtime / 'drive_c/dxvk64/dxgi.dll').read_bytes() == b'dxvk'
+        if fex:
+            for dll in ('libarm64ecfex.dll', 'libwow64fex.dll'):
+                assert (runtime / 'drive_c/windows/system32' / dll).read_bytes() == b'fex'
+        for name in ('run-entry.txt', 'target.txt', 'vulkan-probe.txt'):
+            assert (runtime / name).read_text() == 'keep\n'
+
+    for dll in ('libarm64ecfex.dll', 'libwow64fex.dll'):
+        make_archive(True, missing=dll)
+        try:
+            autorun_namespace['merge_amd64'](archive, stage)
+        except AssertionError as error:
+            assert f'no FEX CPU module: {dll}' in str(error), error
+        else:
+            raise AssertionError(f'accepted a FEX package without {dll}')
+
+    for fex in (False, True):
+        make_archive(fex, runtime_fex=not fex)
+        try:
+            autorun_namespace['merge_amd64'](archive, stage)
+        except AssertionError as error:
+            assert 'inconsistent FEX support' in str(error), error
+        else:
+            raise AssertionError('accepted a runtime/manifest mismatch')
 
 print('PASS: the Autorun package merges the complete AMD64 graphics runtime without replacing package settings')

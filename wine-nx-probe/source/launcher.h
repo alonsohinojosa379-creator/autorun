@@ -6,16 +6,8 @@
 
 #include <stddef.h>
 
-/* An application installed on the console. The launcher shows these so a
- * forwarder made with another address space can be chosen. */
-#define LAUNCHER_MAX_TITLES 96
 #define LAUNCHER_MAX_USB_VOLUMES 5
-
-struct wine_nx_launcher_title
-{
-    unsigned long long id;
-    char name[128];
-};
+struct wine_nx_forwarder;
 
 struct wine_nx_launcher_usb_volume
 {
@@ -27,7 +19,6 @@ struct wine_nx_launcher_usb_volume
 struct wine_nx_launcher_options
 {
     const char *runtime_dir;   /* sdmc:/switch/wine: target.txt, args.txt, config/settings.json... */
-    const char *nro_path;      /* this program's own NRO, which a forwarder starts */
     /* Which of the two system memories the console booted from: 1 an emuMMC,
      * 0 the real one, -1 when Atmosphere did not say. */
     int emummc;
@@ -36,28 +27,17 @@ struct wine_nx_launcher_options
     int (*machine_of)( const char *path, unsigned short *machine );
     int (*list_usb)( struct wine_nx_launcher_usb_volume *volumes, int max );
     int vulkan;                /* the runtime has Vulkan for DXVK */
-    /* How wide an address space Horizon gave this process: 32 when the low 4 GB
-     * is all of it, 36 or 39 when it reaches beyond, 0 when it could not be
-     * read. The title that started the process fixes it, so a program that needs
-     * the low 4 GB has to be opened from a forwarder that asks for 32 bits. */
+    /* The forwarder's host address-space width, or 0 if unavailable. */
     int address_space_bits;
-    /* This forwarder, and the ones beside it. A game that needs an address space
-     * this forwarder was not made with is started by asking the console for the
-     * forwarder that was: list_titles writes how many it found, launch_title
-     * returns nonzero when the console took the request. Both may be NULL. */
-    unsigned long long title_id;
-    int (*list_titles)( struct wine_nx_launcher_title *titles, int max );
-    int (*launch_title)( unsigned long long id );
-    /* Whether an application is still installed: the one named as the 32-bit
-     * forwarder may have been deleted since it was named. */
-    int (*title_installed)( unsigned long long id );
+    int low_window;
+    int four_cores_available;
+    int own_forwarder;
+    int reboot_requested;
     int (*schedule_restart)(void);
-    /* Build a forwarder for this program and install it. bits is 32 or 39;
-     * returns 0, leaving step pointing at what failed otherwise. */
-    unsigned int (*install_forwarder)( int bits, const char *name, unsigned long long *id, const char **step );
-    /* The id install_forwarder gives the forwarder it makes with these bits,
-     * to find one made before the launcher kept its id. May be NULL. */
-    unsigned long long (*forwarder_id)( int bits );
+    /* Install the 39-bit forwarder; returns 0 or the failing Result and step. */
+    unsigned int (*install_forwarder)( const char **step );
+    unsigned int (*install_game_forwarder)( const struct wine_nx_forwarder *request, const char **step );
+    const char *launch_error;
     /* The global settings on entry, as the user left them on return. The
      * runtime keeps them; the launcher only says what they became. */
     int verbose;
@@ -84,10 +64,10 @@ void wine_nx_runtime_trace( const char *msg );
  * LAUNCHER_STATUS_* bits for what it could read; the rest is left alone. */
 int launcher_platform_status( int *hour, int *minute, int *battery, int *charging );
 
+int launcher_platform_prompt( const char *header, const char *initial, char *out, size_t size );
 #ifndef __SWITCH__
 /* A host build (tests/launcher_host.c) supplies what the Switch build takes from libnx. */
 int launcher_platform_font( const void **data, size_t *size );
-int launcher_platform_prompt( const char *header, const char *initial, char *out, size_t size );
 #endif
 
 #endif

@@ -14,10 +14,23 @@
 #define HORIZON_THREAD_INFO_TERMINATED       0x02u       /* GET_THREAD_INFO_FLAG_TERMINATED */
 #define HORIZON_THREAD_INFO_LAST             0x04u       /* GET_THREAD_INFO_FLAG_LAST */
 #define HORIZON_THREAD_MAX_SUSPEND           127         /* MAXIMUM_SUSPEND_COUNT */
+#define HORIZON_THREAD_ALL_ACCESS            0x001fffffu
 #define HORIZON_THREADS_STATUS_ACCESS_DENIED     0xc0000022u
 #define HORIZON_THREADS_STATUS_MUTANT_NOT_OWNED  0xc0000046u
 #define HORIZON_THREADS_STATUS_SUSPEND_EXCEEDED  0xc000004au
-#define HORIZON_THREADS_STATUS_NOT_SUPPORTED     0xc00000bbu
+
+/* Generic mapping and implied query/set rights from server/thread.c. */
+static inline unsigned int horizon_thread_map_access( unsigned int access )
+{
+    if (access & 0x80000000u) access |= 0x00020048u;
+    if (access & 0x40000000u) access |= 0x00020437u;
+    if (access & 0x20000000u) access |= 0x00121800u;
+    if (access & 0x12000000u) access |= HORIZON_THREAD_ALL_ACCESS;
+    access &= ~0xf2000000u;
+    if (access & 0x0040u) access |= 0x0800u;
+    if (access & 0x0020u) access |= 0x0400u;
+    return access;
+}
 
 struct horizon_thread_state
 {
@@ -31,7 +44,7 @@ struct horizon_thread_state
     int exit_code;
     int started;     /* init_thread released it into Windows code */
     int terminated;  /* its request pipe closed; no Windows code can still run */
-    int suspend;     /* start-gate count; a running thread is never suspended */
+    int suspend;
     long long creation_time;
     long long exit_time;
 };
@@ -95,8 +108,6 @@ static inline unsigned int horizon_thread_suspend( struct horizon_thread_state *
 {
     *previous = thread->suspend;
     if (thread->terminated) return HORIZON_THREADS_STATUS_ACCESS_DENIED;
-    /* Stopping running code needs an interpreter-safe point; not claimed. */
-    if (thread->started) return HORIZON_THREADS_STATUS_NOT_SUPPORTED;
     if (thread->suspend >= HORIZON_THREAD_MAX_SUSPEND) return HORIZON_THREADS_STATUS_SUSPEND_EXCEEDED;
     thread->suspend++;
     return 0;

@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import sys
 
+from legacy_runtime import LEGACY_RUNTIME_DLLS
+
 probe = Path(__file__).resolve().parents[1]
 build = probe / 'build-switch-wow64-dynarec'
 tools = probe / 'tools'
@@ -98,7 +100,8 @@ FEAR_DLLS = ['d3dx9_27']
 # registration scripts in classes.reg. It asks for Vista's Game Explorer too,
 # which gameux serves.
 GH3_DLLS = 'd3dx9_35 msvcr80 msvcp80 powrprof pdh msxml3 msxml6 gameux'.split()
-GAME_DLLS = NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS + FEAR_DLLS + GH3_DLLS
+GAME_DLLS = (NFS_DLLS + FALLOUT_DLLS + SOURCE_DLLS + HALO_DLLS + SIMS2_DLLS + VULKAN_DLLS
+             + FEAR_DLLS + GH3_DLLS + list(LEGACY_RUNTIME_DLLS))
 pe = probe / 'build-wine-wow64-pe'
 toolchain = probe / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin'
 env = dict(os.environ, PATH=f'{toolchain}:/opt/homebrew/opt/bison/bin:' + os.environ['PATH'])
@@ -219,9 +222,8 @@ becomes 1280x720, and a maximum below that is raised to it. Nothing else in the
 file changes, and the file as it was is kept as Graphics Rules.sgr.original.
 
 The game is the newest expansion's executable, TSBin\\Sims2EP9.exe. It has no
-relocations and is linked for 0x400000, so it needs a 32-bit forwarder, and
-even then it only starts when nothing else has taken that address: a run that
-says "[IMAGE] this program cannot be moved" wants trying again.
+relocations and is linked for 0x400000, so it requires the 39-bit Autorun
+forwarder and the Atmosphere low-address patch.
 
 The game's own movies -- the intro, the EA logo, what plays on a television --
 are .movie files in Maxis' own format, which the game reads itself: they need no

@@ -22,11 +22,16 @@
 #include "wine/server.h"
 #include "unix_private.h"
 #include "horizon_private.h"
+#include "horizon_runtime_paths.h"
 #include "launcher.h"
+#include "low_window.h"
 #include "autorun_install.h"
 #include "forwarder.h"
+#include "forwarder_launch.h"
+#include "launcher_catalog.h"
 #include "launcher_list.h"
 #include "launcher_settings.h"
+#include "fex_options.h"
 #include "config_json.h"
 #include "pointer_cursor.h"
 #include "compositor.h"
@@ -34,6 +39,18 @@
 #include "std_stream_lines.h"
 #include "thread_profile.h"
 #include "dxvk_releases.h"
+#ifdef WINE_NX_SWAP_POC
+#include "swap_file.h"
+#include "horizon_swap.h"
+static struct swap_file game_swap;
+static int game_swap_open;
+#endif
+#ifdef WINE_NX_FEX
+#include "fex_jit.h"
+int wine_nx_fex_active;
+extern int wine_nx_fex_exception_attach(void);
+extern void wine_nx_fex_exception_detach(void);
+#endif
 #ifdef WINE_NX_MESA_SWITCH
 #include "graphics_config.h"
 #endif
@@ -58,7 +75,7 @@ u32 __nx_exception_ignoredebug = 1;
 
 #define WINE_ROOT "sdmc:/switch/wine"
 #define WINE_DRIVE_C WINE_ROOT "/drive_c"
-#define WINE_SYSTEM_DIR WINE_DRIVE_C "/windows/system32"
+#define WINE_SYSTEM_DIR WINE_NX_RUNTIME_SYSTEM32
 /* The profile shell32 resolves: it ignores %USERPROFILE% and builds every
  * CSIDL_Type_User folder as ProfilesDirectory + GetUserNameW(), which this
  * Wine answers "steamuser" (dlls/advapi32/advapi.c). A profile under any
@@ -72,7 +89,11 @@ u32 __nx_exception_ignoredebug = 1;
 #define CONFIG_DIR  RUNTIME_DIR "/config"
 #define CONFIG_FILE CONFIG_DIR "/settings.json"
 #define DEFAULT_TARGET WINE_DRIVE_C "/curl/curl.exe"
-#ifdef WINE_NX_AMD64
+#ifdef WINE_NX_SWAP_POC
+#define WINE_NX_RUNTIME_BUILD "nx-amd64-fex-2639"
+#elif defined(WINE_NX_FEX)
+#define WINE_NX_RUNTIME_BUILD "nx-amd64-fex-2639"
+#elif defined(WINE_NX_AMD64)
 #define WINE_NX_RUNTIME_BUILD "nx-amd64-box64-3"
 #elif defined(WINE_NX_BOX64_DYNAREC)
 #define WINE_NX_RUNTIME_BUILD "nx-wow64-dynarec-258"
@@ -210,6 +231,32 @@ static void runtime_alternate_clean(void)
  * hang looked like until now. */
 static void log_line( const char *fmt, ... ) __attribute__((format(printf,1,2)));
 
+#ifdef WINE_NX_SWAP_POC
+static void runtime_report_swap_io(void)
+{
+    const struct swap_file *file = &game_swap;
+    if (!__atomic_load_n( &game_swap_open, __ATOMIC_ACQUIRE )) return;
+    log_line( "[SWAP-IO] used_mb=%llu scan_k=%llu scan_ms=%llu no_run=%llu "
+              "writes=%llu write_mb=%llu write_ms=%llu max_write_ms=%llu "
+              "reads=%llu read_mb=%llu read_ms=%llu max_read_ms=%llu errors=%llu/%llu fs=0x%x",
+              (unsigned long long)(__atomic_load_n( &file->used_units, __ATOMIC_RELAXED ) * SWAP_FILE_UNIT) >> 20,
+              (unsigned long long)__atomic_load_n( &file->scan_units, __ATOMIC_RELAXED ) >> 10,
+              (unsigned long long)(armTicksToNs( __atomic_load_n( &file->scan_ticks, __ATOMIC_RELAXED ) ) / 1000000),
+              (unsigned long long)__atomic_load_n( &file->no_run, __ATOMIC_RELAXED ),
+              (unsigned long long)__atomic_load_n( &file->writes, __ATOMIC_RELAXED ),
+              (unsigned long long)__atomic_load_n( &file->write_bytes, __ATOMIC_RELAXED ) >> 20,
+              (unsigned long long)(armTicksToNs( __atomic_load_n( &file->write_ticks, __ATOMIC_RELAXED ) ) / 1000000),
+              (unsigned long long)(armTicksToNs( __atomic_load_n( &file->max_write_ticks, __ATOMIC_RELAXED ) ) / 1000000),
+              (unsigned long long)__atomic_load_n( &file->reads, __ATOMIC_RELAXED ),
+              (unsigned long long)__atomic_load_n( &file->read_bytes, __ATOMIC_RELAXED ) >> 20,
+              (unsigned long long)(armTicksToNs( __atomic_load_n( &file->read_ticks, __ATOMIC_RELAXED ) ) / 1000000),
+              (unsigned long long)(armTicksToNs( __atomic_load_n( &file->max_read_ticks, __ATOMIC_RELAXED ) ) / 1000000),
+              (unsigned long long)__atomic_load_n( &file->write_errors, __ATOMIC_RELAXED ),
+              (unsigned long long)__atomic_load_n( &file->read_errors, __ATOMIC_RELAXED ),
+              (unsigned int)__atomic_load_n( &file->store.fs_error, __ATOMIC_RELAXED ) );
+}
+#endif
+
 static volatile int stall_watch_quit;
 static int stall_watch_running;
 static Thread stall_watch_thread;
@@ -219,6 +266,7 @@ static Thread stall_watch_thread;
  * The same thread emits idle partial output lines and reports interpreter speed. */
 static int log_flusher_quit;
 static pthread_t log_flusher_thread;
+static int runtime_profile;
 
 static void *log_flusher( void *arg )
 {
@@ -229,7 +277,18 @@ static void *log_flusher( void *arg )
     {
         svcSleepThread( 200000000LL );
         runtime_tick_std_streams();
-        if (++ticks % 25 == 0) runtime_report_interpreter();
+        if (++ticks % 25 == 0)
+        {
+#ifdef WINE_NX_SWAP_POC
+            if (__atomic_load_n( &game_swap_open, __ATOMIC_ACQUIRE ))
+            {
+                horizon_swap_report();
+                runtime_report_swap_io();
+            }
+            if (runtime_profile) horizon_swap_native_profile();
+#endif
+            runtime_report_interpreter();
+        }
         if (ticks % 5 == 0)
         {
             extern int horizon_registry_flush(void);
@@ -337,7 +396,6 @@ static void log_line( const char *fmt, ... )
  * next run opens autorun_runtime.log afresh, and without this the run that
  * mattered is gone before it can be read off the card. */
 extern int wine_nx_runtime_verbose;
-static int runtime_profile;
 
 static void open_game_log( const char *target )
 {
@@ -429,10 +487,10 @@ void wine_nx_runtime_trace( const char *msg )
  * whole program down. Their call sites check this first; it is set from
  * sdmc:/switch/wine/verbose.txt containing 1. */
 int wine_nx_runtime_verbose;
-/* The sampling profiler's [PROF] lines (thread_profile.c): sdmc:/switch/wine/profile.txt
- * containing 1, which the launcher's X toggles like Y does verbose.txt. */
-static int runtime_profile;
 static int runtime_dxvk;
+static enum dxvk_source runtime_dxvk_source;
+static int runtime_fex;
+static int runtime_four_cores;
 static int runtime_dxvk_hud;
 static char runtime_vkd3d_version[32];
 static char runtime_dxvk_version[32];
@@ -1258,12 +1316,7 @@ static void runtime_report_interpreter(void)
 
     if (!wine_nx_runtime_verbose)
     {
-        /* Without verbose traces a white screen says nothing about whether a
-         * program is still loading, computing or drawing. Every 10 seconds, if
-         * anything changed: completed file reads and the time inside NtReadFile,
-         * the bytes they returned, read requests to the SD card, their time,
-         * the bytes they brought back, the reads the cache served and what it
-         * is holding, system calls, frames shown and dynarec entries. */
+        /* Report progress every 10 seconds, or a heartbeat every 30 when idle. */
         extern unsigned int wine_nx_file_reads __attribute__((weak));
         extern unsigned long long wine_nx_file_read_100ns __attribute__((weak));
         extern unsigned int wine_nx_syscalls __attribute__((weak));
@@ -1276,6 +1329,11 @@ static void runtime_report_interpreter(void)
                             wine_nx_sd_flush_end, wine_nx_sd_flush_close, wine_nx_sd_flush_timer;
         extern unsigned long long wine_nx_file_read_bytes __attribute__((weak));
         extern unsigned int wine_nx_sd_cache_mb( void );
+        extern unsigned int wine_nx_usb_reads __attribute__((weak));
+        extern unsigned int wine_nx_usb_sectors __attribute__((weak));
+        extern unsigned int wine_nx_usb_cache_hits __attribute__((weak));
+        extern unsigned int wine_nx_usb_failures __attribute__((weak));
+        extern unsigned long long wine_nx_usb_read_ns __attribute__((weak));
         extern unsigned int wine_nx_gl_swaps __attribute__((weak)), wine_nx_gl_calls __attribute__((weak));
         extern unsigned int wine_nx_vk_presents __attribute__((weak));
         extern unsigned int wine_nx_gl_persistent_failures __attribute__((weak));
@@ -1297,8 +1355,13 @@ static void runtime_report_interpreter(void)
         extern int wine_nx_gl_pinned_memory __attribute__((weak));
         extern unsigned int wine_nx_syscall_counts[] __attribute__((weak));
         static unsigned int calls, last_reads = ~0u, last_frames = ~0u;
+        static unsigned int last_usb_reads = ~0u, last_usb_hits = ~0u;
         static u64 start;
         unsigned int reads = &wine_nx_file_reads ? __atomic_load_n( &wine_nx_file_reads, __ATOMIC_RELAXED ) : 0;
+        unsigned int usb_reads = &wine_nx_usb_reads ?
+                                 __atomic_load_n( &wine_nx_usb_reads, __ATOMIC_RELAXED ) : 0;
+        unsigned int usb_hits = &wine_nx_usb_cache_hits ?
+                                __atomic_load_n( &wine_nx_usb_cache_hits, __ATOMIC_RELAXED ) : 0;
         unsigned int gl_frames = &wine_nx_gl_swaps ? __atomic_load_n( &wine_nx_gl_swaps, __ATOMIC_RELAXED ) : 0;
         unsigned int frames = __atomic_load_n( &wine_nx_fb_frames, __ATOMIC_RELAXED ) + gl_frames +
                               wine_nx_compositor_frames() +
@@ -1306,13 +1369,16 @@ static void runtime_report_interpreter(void)
         unsigned long long read_ms = &wine_nx_file_read_100ns
                                      ? __atomic_load_n( &wine_nx_file_read_100ns, __ATOMIC_RELAXED ) / 10000 : 0;
         unsigned int syscalls = &wine_nx_syscalls ? __atomic_load_n( &wine_nx_syscalls, __ATOMIC_RELAXED ) : 0;
-        char native[384] = "", gl[512] = "", audio[32] = "", systop[64] = "";
+        char native[384] = "", gl[512] = "", audio[32] = "", systop[64] = "", usb[128] = "";
 
         if (!start) start = now;
         if (++calls % 2) return;
-        if (reads == last_reads && frames == last_frames) return;
+        if (reads == last_reads && frames == last_frames && usb_reads == last_usb_reads &&
+            usb_hits == last_usb_hits && calls % 6) return;
         last_reads = reads;
         last_frames = frames;
+        last_usb_reads = usb_reads;
+        last_usb_hits = usb_hits;
         /* The three system calls made most since the last line, as id:calls: a
          * program's busy loop shows here without verbose traces. */
         if (wine_nx_syscall_counts)
@@ -1426,6 +1492,15 @@ static void runtime_report_interpreter(void)
         if (&wine_nx_audio_underruns && wine_nx_audio_underruns)
             snprintf( audio, sizeof(audio), " audio_under=%u",
                       __atomic_load_n( &wine_nx_audio_underruns, __ATOMIC_RELAXED ) );
+        if (usb_reads || usb_hits)
+            snprintf( usb, sizeof(usb), " usb_reads=%u usb_sectors=%u usb_ms=%llu usb_hits=%u usb_fail=%u",
+                      usb_reads,
+                      &wine_nx_usb_sectors ? __atomic_load_n( &wine_nx_usb_sectors, __ATOMIC_RELAXED ) : 0,
+                      &wine_nx_usb_read_ns ?
+                          __atomic_load_n( &wine_nx_usb_read_ns, __ATOMIC_RELAXED ) / 1000000 : 0,
+                      usb_hits,
+                      &wine_nx_usb_failures ?
+                          __atomic_load_n( &wine_nx_usb_failures, __ATOMIC_RELAXED ) : 0 );
         /* The libnx heap backs everything: Wine's guest memory, the GPU's
          * buffers and translated code. Under a 32-bit address space it is only
          * the heap region (1 GiB, or 2 GiB without the alias region). Free is
@@ -1442,7 +1517,7 @@ static void runtime_report_interpreter(void)
         log_line( "[PROGRESS] %llus reads=%u read_ms=%llu read_mb=%llu sd_reads=%u sd_ms=%llu sd_mb=%llu "
                   "sd_writes=%u sd_write_ms=%llu writes_held=%u sd_stats=%u stat_hits=%u flushes=%u/%u/%u/%u/%u "
                   "cache_hits=%u cache_mb=%u syscalls=%u "
-                  "frames=%u heap_used_mb=%llu heap_free_mb=%llu%s%s%s%s",
+                  "frames=%u heap_used_mb=%llu heap_free_mb=%llu%s%s%s%s%s",
                   (unsigned long long)(armTicksToNs( now - start ) / 1000000000ull), reads, read_ms,
                   &wine_nx_file_read_bytes
                       ? __atomic_load_n( &wine_nx_file_read_bytes, __ATOMIC_RELAXED ) >> 20 : 0,
@@ -1457,7 +1532,7 @@ static void runtime_report_interpreter(void)
                   wine_nx_sd_flush_jump, wine_nx_sd_flush_path, wine_nx_sd_flush_end,
                   wine_nx_sd_flush_close, wine_nx_sd_flush_timer,
                   __atomic_load_n( &wine_nx_sd_hits, __ATOMIC_RELAXED ), wine_nx_sd_cache_mb(), syscalls, frames,
-                  (unsigned long long)heap.uordblks >> 20, heap_free >> 20, systop, native, gl, audio );
+                  (unsigned long long)heap.uordblks >> 20, heap_free >> 20, systop, native, gl, audio, usb );
         {
             extern void wine_nx_thread_report( void );
             extern void horizon_memory_pool_stats( char *buffer, size_t size );
@@ -1644,6 +1719,11 @@ static unsigned int close_handle_object( HANDLE handle )
 static unsigned int runtime_init_process_done( BOOL *suspend )
 {
     unsigned int status;
+    struct teb_data *teb_data = get_teb_data( get_thread_data() );
+
+    teb_data->syscall_table = KeServiceDescriptorTable;
+    teb_data->syscall_trace = FALSE;
+    horizon_pin_current_thread( 0 );
 
     SERVER_START_REQ( init_process_done )
     {
@@ -1767,21 +1847,75 @@ static void put_process_string( WCHAR **cursor, UNICODE_STRING *string, const ch
  * profile is where programs keep saves and settings, and where DXVK keeps
  * its shader cache (LOCALAPPDATA); its directories are made at start-up. */
 static const char runtime_environment[] =
+    "ALLUSERSPROFILE=C:\\ProgramData\0"
     "APPDATA=C:\\users\\steamuser\\AppData\\Roaming\0"
+    "DXVK_ASYNC=1\0"
     "DXVK_CONFIG_FILE=C:\\users\\steamuser\\AppData\\Local\\Autorun\\dxvk.conf\0"
     "DXVK_HUD=0\0"
     "HOMEDRIVE=C:\0"
     "HOMEPATH=\\users\\steamuser\0"
     "LOCALAPPDATA=C:\\users\\steamuser\\AppData\\Local\0"
     "PATH=C:\\windows\\system32;C:\\windows\0"
+    "ProgramData=C:\\ProgramData\0"
+    "PUBLIC=C:\\users\\Public\0"
     "SystemDrive=C:\0"
     "SystemRoot=C:\\windows\0"
     "TEMP=C:\\windows\\temp\0"
     "TMP=C:\\windows\\temp\0"
     "USERNAME=steamuser\0"
+    "WINEUSERNAME=steamuser\0"
     "USERPROFILE=C:\\users\\steamuser\0"
+    "VKD3D_SHADER_CACHE_PATH=C:\\users\\steamuser\\AppData\\Local\\Autorun\0"
     "windir=C:\\windows\0"
     "WINE_D3D_CONFIG=cs_spin_count=64,explicit_buffer_flush=1\0";
+
+static size_t runtime_fex_environment( const char *target, char *buffer, size_t size )
+{
+    struct launcher_kv kv = {{0}, 0};
+    char path[768], configured[64];
+    size_t used = 0;
+    const char *tso = "0", *multiblock = "1", *maxinst = "1000";
+    int i;
+
+    if (!runtime_fex) return 0;
+    {
+        void *start, *limit;
+        static const char wide_host[] = "WINE_NX_FEX_WIDE_HOST=1";
+
+        horizon_get_address_space_limits( &start, &limit );
+        if ((uintptr_t)limit > 0x100000000ULL)
+        {
+            if (sizeof(wide_host) > size) return 0;
+            memcpy( buffer, wide_host, sizeof(wide_host) );
+            used = sizeof(wide_host);
+        }
+    }
+    if (target[1] != ':' &&
+        launcher_program_settings_path( RUNTIME_DIR, target, path, sizeof(path) ) &&
+        !launcher_kv_load( &kv, path ))
+    {
+        log_line( "[FEX] program settings are too large; using defaults" );
+        kv.size = 0;
+        kv.text[0] = 0;
+    }
+    for (i = 0; i < NX_FEX_OPTION_COUNT; i++)
+    {
+        const struct nx_fex_option *option = nx_fex_options + i;
+        const char *value = nx_fex_option_default( option );
+        int length;
+
+        if (launcher_kv_get( &kv, option->name, configured, sizeof(configured) ) &&
+            nx_fex_option_choice( option, configured ) >= 0) value = configured;
+        length = snprintf( buffer + used, size - used, "%s=%s", option->name, value );
+        if (length < 0 || (size_t)length + 1 > size - used) return 0;
+        used += length + 1;
+        if (option->id == NX_FEX_TSO) tso = option->values[nx_fex_option_choice( option, value )];
+        else if (option->id == NX_FEX_MULTIBLOCK) multiblock = option->values[nx_fex_option_choice( option, value )];
+        else if (option->id == NX_FEX_MAXINST) maxinst = option->values[nx_fex_option_choice( option, value )];
+    }
+    log_line( "[FEX] TSO=%s multiblock=%s maxinst=%s", tso, multiblock, maxinst );
+    return used;
+}
 
 /* Horizon has no console device: the standard handles are files next to the
  * runtime, copied into this log when the process exits. */
@@ -1807,33 +1941,40 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     RTL_USER_PROCESS_PARAMETERS *params;
     char nt_path[640], dll_path[1024], current_dir[512];
     char cmdline[1024], args_buf[896], args_path[512];
-    size_t chars, size, i;
+    char fex_environment[NX_FEX_OPTION_COUNT * 80];
+    size_t chars, size, i, fex_environment_size;
     WCHAR *cursor;
     const char *cmdline_str, *dxvk_hud = launcher_hud_values[runtime_dxvk_hud];
     char dxvk_dir[96], vkd3d_dir[96], vkd3d_path[104] = "", graphics_path[208] = "";
-    int dxvk_path = launcher_dxvk_version_directory( main_image_info.Machine, runtime_dxvk_version,
-                                                     dxvk_dir, sizeof(dxvk_dir) );
+    struct dxvk_version dxvk = {0}, vkd3d = {0};
+
+    if (runtime_dxvk)
+    {
+        dxvk_resolve_version( runtime_dxvk_source, RUNTIME_DIR, main_image_info.Machine, runtime_dxvk_version, &dxvk );
+        vkd3d_resolve_version( RUNTIME_DIR, main_image_info.Machine, runtime_vkd3d_version, &vkd3d );
+    }
 
     if (!target_to_dos_path( target, dos_path, dos_path_size )) return NULL;
+    fex_environment_size = runtime_fex_environment( target, fex_environment, sizeof(fex_environment) );
     dos_dirname( dos_path, current_dir, sizeof(current_dir) );
     snprintf( nt_path, sizeof(nt_path), "\\??\\%s", dos_path );
-    if (runtime_dxvk &&
-        launcher_vkd3d_version_directory( main_image_info.Machine, runtime_vkd3d_version,
-                                          vkd3d_dir, sizeof(vkd3d_dir) ) &&
-        vkd3d_release_installed( RUNTIME_DIR, main_image_info.Machine, runtime_vkd3d_version ))
+    if (vkd3d.installed &&
+        launcher_vkd3d_version_directory( main_image_info.Machine, vkd3d.bundled ? "" : vkd3d.version,
+                                          vkd3d_dir, sizeof(vkd3d_dir) ))
     {
         snprintf( vkd3d_path, sizeof(vkd3d_path), "C:\\%s;", vkd3d_dir );
         log_line( "[VKD3D] payload C:\\%s; application-local DLLs take priority", vkd3d_dir );
     }
     /* Keep native DXVK DLLs separate for each guest architecture. */
-    if (runtime_dxvk && dxvk_path &&
-        dxvk_release_installed( RUNTIME_DIR, main_image_info.Machine, runtime_dxvk_version ))
+    if (dxvk.installed &&
+        launcher_dxvk_version_directory( main_image_info.Machine, runtime_dxvk_source,
+                                         dxvk.bundled ? "" : dxvk.version,
+                                         dxvk_dir, sizeof(dxvk_dir) ))
     {
         snprintf( graphics_path, sizeof(graphics_path), "%sC:\\%s;", vkd3d_path, dxvk_dir );
-        if (runtime_dxvk_version[0])
+        if (dxvk.version[0])
             log_line( "[DXVK] %s payload C:\\%s (version %s); application-local DLLs take priority",
-                      main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ? "AMD64" : "x86", dxvk_dir,
-                      runtime_dxvk_version );
+                      main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ? "AMD64" : "x86", dxvk_dir, dxvk.version );
         else
             log_line( "[DXVK] %s bundled payload C:\\%s; application-local DLLs take priority",
                       main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ? "AMD64" : "x86", dxvk_dir );
@@ -1905,6 +2046,7 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     chars += strlen( dos_path ) + 1;
     chars += strlen( nt_path ) + 1;
     chars += sizeof(runtime_environment) + strlen( graphics_path ) + strlen( dxvk_hud ) - 1;
+    chars += fex_environment_size;
     size = sizeof(*params) + chars * sizeof(WCHAR);
 
     if (!(params = calloc( 1, size ))) return NULL;
@@ -1931,6 +2073,8 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
         const char *value = entry;
 
         if (!runtime_dxvk && !strncmp( entry, "DXVK_", 5 )) continue;
+        if (!strncmp( entry, "DXVK_ASYNC=", 11 ) &&
+            (runtime_dxvk_source != DXVK_SOURCE_GPLASYNC || !dxvk.installed)) continue;
         if (!strncmp( entry, "DXVK_HUD=", 9 ))
         {
             for (i = 0; i < 9; i++) *cursor++ = (unsigned char)*value++;
@@ -1943,6 +2087,7 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
         }
         do *cursor++ = (unsigned char)*value; while (*value++);
     }
+    for (i = 0; i < fex_environment_size; i++) *cursor++ = (unsigned char)fex_environment[i];
     *cursor++ = 0;
     params->EnvironmentSize = (cursor - (WCHAR *)params->Environment) * sizeof(WCHAR);
 
@@ -1963,6 +2108,7 @@ static void runtime_init_peb_process( TEB *teb, void *module,
 
     peb->ImageBaseAddress           = module;
     peb->ProcessParameters          = params;
+    peb->NumberOfProcessors         = cpu_count;
     peb->OSMajorVersion             = 10;
     peb->OSMinorVersion             = 0;
     peb->OSBuildNumber              = 19045;
@@ -2366,14 +2512,14 @@ static int launcher_machine( const char *path, unsigned short *machine )
 #ifdef WINE_NX_BOX64_INTERPRETER
 extern NTSTATUS wine_nx_init_wow64_peb( RTL_USER_PROCESS_PARAMETERS *, void * );
 extern NTSTATUS wine_nx_prepare_wow64_ntdll( HMODULE, HMODULE );
-extern NTSTATUS wine_nx_loader_prepare_wow64( HMODULE *, void ** );
+extern NTSTATUS wine_nx_loader_prepare_wow64( HMODULE *, void **, BOOL );
 
 static void *runtime_wow64_initialize;
 extern void (*wine_nx_wow64_thread_start)( PRTL_THREAD_START_ROUTINE, void *, BOOL, TEB * );
 
 static NTSTATUS runtime_init_x86_context( TEB *teb, void *entry, void *arg )
 {
-    I386_CONTEXT *ctx = get_cpu_area( IMAGE_FILE_MACHINE_I386 );
+    I386_CONTEXT *ctx = get_cpu_area( get_thread_data(), IMAGE_FILE_MACHINE_I386 );
     XMM_SAVE_AREA32 fx = {0};
     if (!ctx || !get_wow_teb(teb) || !pLdrSystemDllInitBlock ||
         !pLdrSystemDllInitBlock->pRtlUserThreadStart || (ULONG_PTR)entry > 0xffffffff ||
@@ -2421,10 +2567,10 @@ static NTSTATUS runtime_start_wow64( void *module, void *entry,
     status = wine_nx_loader_bootstrap( main_nt_name );
     log_line( "[WOW64] native loader bootstrap status=%08x", status );
     if (status) return status;
-    status = wine_nx_loader_prepare_wow64( &native, &initialize );
+    status = wine_nx_loader_prepare_wow64( &native, &initialize, runtime_fex );
     log_line( "[WOW64] native DLLs status=%08x", status );
     if (status) return status;
-    status = map_pe_image( WINE_DRIVE_C "/windows/syswow64/ntdll.dll", (void **)&guest, &size );
+    status = map_pe_image( WINE_NX_RUNTIME_SYSWOW64 "/ntdll.dll", (void **)&guest, &size );
     if (status) return status;
     /* ntdll cannot relocate itself (cf. load_wow64_ntdll); the main image is
      * relocated by the x86 loader because it is the PEB's ImageBaseAddress. */
@@ -2439,7 +2585,7 @@ static NTSTATUS runtime_start_wow64( void *module, void *entry,
     if (status) return status;
     status = runtime_init_x86_context( teb, entry, wow_peb );
     if (status) return status;
-    ctx = get_cpu_area( IMAGE_FILE_MACHINE_I386 );
+    ctx = get_cpu_area( get_thread_data(), IMAGE_FILE_MACHINE_I386 );
     runtime_wow64_initialize = initialize;
     wine_nx_wow64_thread_start = runtime_start_x86_thread;
     log_line( "[WOW64] loader ready: TEB32=%p stack=%08x entry=%08x", get_wow_teb(teb), ctx->Esp, ctx->Eax );
@@ -2511,7 +2657,9 @@ static NTSTATUS runtime_create_registry_path( const char *path, HANDLE *key )
 static NTSTATUS runtime_prepare_arm64ec(void)
 {
     static const char key_path[] = "\\Registry\\Machine\\Software\\Microsoft\\Wow64\\amd64";
-    static const WCHAR cpu_name[] = {'w','i','n','e','b','o','x','6','4','e','c','.','d','l','l',0};
+    WCHAR cpu_name[32];
+    const char *cpu_module = runtime_fex ? "libarm64ecfex.dll" : "winebox64ec.dll";
+    unsigned int i;
     UNICODE_STRING value = {0};
     HMODULE ntdll = NULL;
     HANDLE key;
@@ -2523,7 +2671,9 @@ static NTSTATUS runtime_prepare_arm64ec(void)
     status = runtime_create_registry_path( key_path, &key );
     log_line( "[AMD64] CPU registry status=%08x", status );
     if (status) return status;
-    status = NtSetValueKey( key, &value, 0, REG_SZ, cpu_name, sizeof(cpu_name) );
+    for (i = 0; cpu_module[i]; i++) cpu_name[i] = cpu_module[i];
+    cpu_name[i] = 0;
+    status = NtSetValueKey( key, &value, 0, REG_SZ, cpu_name, (i + 1) * sizeof(WCHAR) );
     NtClose( key );
     if (status) return status;
 
@@ -2592,10 +2742,7 @@ static int runtime_describe_image( void *module, SIZE_T size, void **entry )
               module, (unsigned long)size,
               (unsigned long long)IMAGE_FIELD(ImageBase),
               IMAGE_FIELD(AddressOfEntryPoint), nt->FileHeader.Machine );
-    /* A program with no relocations only works at the address it was linked for.
-     * The low addresses belong to this runtime unless Horizon gave the process a
-     * 32-bit address space, which is what the forwarders are for; started any
-     * other way the program reads and writes the wrong addresses and dies. */
+    /* A program with no relocations only works at the address it was linked for. */
     {
         const IMAGE_DATA_DIRECTORY *relocs = guest32 ?
             &nt32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC] :
@@ -2603,13 +2750,10 @@ static int runtime_describe_image( void *module, SIZE_T size, void **entry )
 
         if ((ULONG_PTR)module != (ULONG_PTR)IMAGE_FIELD(ImageBase) && !relocs->Size &&
             !(IMAGE_FIELD(DllCharacteristics) & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE))
-            log_line( "[IMAGE] this program cannot be moved: no relocations, linked for 0x%llx, mapped at %p. "
-                      "It needs Wine-NX started through a 32-bit forwarder.",
+            log_line( "[IMAGE] this program cannot be moved: no relocations, linked for 0x%llx, mapped at %p.",
                       (unsigned long long)IMAGE_FIELD(ImageBase), module );
     }
-    /* Whether this program is tied to its own address: one that is not can run
-     * outside a 32-bit forwarder, where the address space is 512 GB instead of
-     * 4 GB and the dynarec has room for all the code it translates. */
+    /* Fixed-address images still need their preferred guest address. */
     {
         const IMAGE_DATA_DIRECTORY *relocs = guest32 ?
             &nt32->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC] :
@@ -2619,8 +2763,7 @@ static int runtime_describe_image( void *module, SIZE_T size, void **entry )
                   IMAGE_FIELD(Subsystem), IMAGE_FIELD(DllCharacteristics),
                   imports->VirtualAddress, imports->Size, nt->FileHeader.NumberOfSections,
                   relocs->VirtualAddress, relocs->Size,
-                  relocs->Size ? "can be moved: the 32-bit forwarder is not needed for it"
-                               : "cannot be moved: it needs the 32-bit forwarder" );
+                  relocs->Size ? "relocatable" : "fixed-address image" );
     }
     return 1;
 #undef IMAGE_FIELD
@@ -3266,8 +3409,8 @@ static void release_thread_local_pages( void )
  * version. The mark is kept with the registry it wrote to, so a card whose
  * registry was reset runs it again. */
 #define COMPONENTS_VERSION 1
-#define COMPONENTS_SETUP   RUNTIME_DIR "/drive_c/windows/autorun-setup.exe"
-#define COMPONENTS_DONE    RUNTIME_DIR "/registry/components-1.done"
+#define COMPONENTS_SETUP   WINE_NX_RUNTIME_WINDOWS "/autorun-setup.exe"
+#define COMPONENTS_DONE    WINE_NX_RUNTIME_ROOT "/registry/components-1.done"
 static int runtime_components_run;
 
 /* The exit code the program gave NtTerminateProcess (dlls/ntdll/unix/process.c);
@@ -3290,7 +3433,7 @@ static void run_components_first( char *target, size_t size )
                   "%s goes first", name ? name + 1 : target );
         return;
     }
-    if (!write_line( RUNTIME_DIR "/run-next.txt", target ))
+    if (!write_line( WINE_NX_RUNTIME_ROOT "/run-next.txt", target ))
     {
         log_line( "[SETUP] could not write run-next.txt; the components setup waits for the next program" );
         return;
@@ -3316,6 +3459,12 @@ static int return_to_launcher( void )
     }
     wine_nx_compositor_stop();
     wine_nx_profile_stop();
+#ifdef WINE_NX_USB_STORAGE
+    {
+        extern void wine_nx_usb_stop(void);
+        wine_nx_usb_stop();
+    }
+#endif
     release_thread_local_pages();
     /* Mesa's worker threads outlive the program that made work for them. */
     run_closing_step( stop_mesa_workers, 5, "ending the graphics library's worker threads" );
@@ -3383,8 +3532,25 @@ static int return_to_launcher( void )
                       joined, memory_left_behind( 0 ) );
         }
     }
+#ifdef WINE_NX_FEX
+    if (wine_nx_fex_active)
+    {
+        size_t retained = wine_nx_fex_jit_release();
+        wine_nx_fex_exception_detach();
+        log_line( "[FEX] code memory retained at exit: %zu bytes", retained );
+    }
+#endif
     socketExit();
     stop_log_flusher();
+#ifdef WINE_NX_SWAP_POC
+    if (game_swap_open)
+    {
+        horizon_swap_report();
+        runtime_report_swap_io();
+        if (runtime_profile) horizon_swap_native_profile();
+        horizon_swap_configure( NULL );
+    }
+#endif
     {
         /* Wine's code mappings outlive its threads; the loader must not find them. */
         extern void horizon_release_code_mappings( unsigned int *released, unsigned int *failed )
@@ -3401,6 +3567,13 @@ static int return_to_launcher( void )
      * pages the loader itself lent out before this program started. */
     release_lent_memory();
     clear_heap_attributes();
+#ifdef WINE_NX_SWAP_POC
+    if (game_swap_open)
+    {
+        swap_file_close( &game_swap );
+        __atomic_store_n( &game_swap_open, 0, __ATOMIC_RELEASE );
+    }
+#endif
     {
         int mine = 0, left = memory_left_behind_ex( 1, &mine );
 
@@ -3420,21 +3593,6 @@ static int return_to_launcher( void )
             still_lent = 1;
         }
     }
-    /* Two ways out, and which one works is the loader's business, not ours.
-     *
-     * Through the loader: it unloads this program and starts it again, which
-     * opens the launcher without leaving the console. It is what
-     * switch/wine/reload-launcher.txt asks for. sphaira's forwarder cannot do
-     * it: its loader checks the result of svcBreak, a system call that returns
-     * nothing at all (svc 0x26 is declared void in the kernel's own table), so
-     * it reads whatever the register happens to hold and stops the console with
-     * it -- the crash report says 2001-0106 whatever this program leaves behind,
-     * with a clean heap as readily as with a dirty one. Upstream nx-hbloader
-     * makes the same four svcBreak calls without looking at any of them.
-     *
-     * Otherwise: close the application the way the HOME menu does, through
-     * libnx's applet exit. The console goes back to the menu with no error, and
-     * the launcher is one press away. */
     if (runtime_components_run)
     {
         char done[64];
@@ -3448,7 +3606,7 @@ static int return_to_launcher( void )
     }
     /* A program waiting in run-next.txt (after the components setup) is started
      * by the runtime started again, whether or not the launcher would be. */
-    if (!still_lent && (runtime_reopen_launcher || !access( RUNTIME_DIR "/run-next.txt", F_OK )) &&
+    if (!still_lent && (runtime_reopen_launcher || !access( WINE_NX_RUNTIME_ROOT "/run-next.txt", F_OK )) &&
         envHasNextLoad() && own_nro[0] && R_SUCCEEDED( envSetNextLoad( own_nro, own_nro ) ))
     {
         log_step( "starting this program again for the launcher" );
@@ -3459,9 +3617,7 @@ static int return_to_launcher( void )
     return 0;
 }
 
-/* What the kernel left this process to map things in. A 32-bit address space is
- * the low 4 GB and nothing else, which is the only place a program linked for a
- * fixed low address can go. */
+/* The host address-space width is fixed when Horizon creates the process. */
 static int runtime_address_space_bits( void )
 {
     u64 base = 0, size = 0, limit;
@@ -3473,44 +3629,6 @@ static int runtime_address_space_bits( void )
     if (limit <= 0x100000000ull) return 32;
     if (limit <= 0x1000000000ull) return 36;
     return 39;
-}
-
-/* The applications installed beside this one. The forwarders a user made for
- * Wine-NX are among them, which is how a game can be sent to the one with the
- * address space it needs. */
-static int launcher_titles( struct wine_nx_launcher_title *titles, int max )
-{
-    NsApplicationRecord *records = calloc( max, sizeof(*records) );
-    NsApplicationControlData *control = calloc( 1, sizeof(*control) );
-    s32 found = 0;
-    int written = 0;
-
-    if (records && control && R_SUCCEEDED( nsInitialize() ))
-    {
-        if (R_SUCCEEDED( nsListApplicationRecord( records, max, 0, &found ) ))
-        {
-            for (s32 i = 0; i < found && written < max; i++)
-            {
-                NacpLanguageEntry *entry = NULL;
-                u64 size = 0;
-
-                titles[written].id = records[i].application_id;
-                /* Its name when the console has one, its id when it does not. */
-                snprintf( titles[written].name, sizeof(titles[written].name), "%016llX",
-                          (unsigned long long)records[i].application_id );
-                if (R_SUCCEEDED( nsGetApplicationControlData( NsApplicationControlSource_Storage,
-                                                              records[i].application_id, control,
-                                                              sizeof(*control), &size ) ) &&
-                    R_SUCCEEDED( nacpGetLanguageEntry( &control->nacp, &entry ) ) && entry && entry->name[0])
-                    snprintf( titles[written].name, sizeof(titles[written].name), "%s", entry->name );
-                written++;
-            }
-        }
-        nsExit();
-    }
-    free( records );
-    free( control );
-    return written;
 }
 
 /* Which system memory the console booted from. Atmosphere answers through a
@@ -3530,80 +3648,79 @@ static int runtime_on_emummc( void )
     return result;
 }
 
-/* Build a forwarder that starts this NRO in the address space bits asks for,
- * and install it, so a game that needs the low 4 GB has somewhere to go. */
 /* What the forwarder installer has to say, as it says it. */
 static void log_line_plain( const char *line )
 {
     log_line( "%s", line );
 }
 
-static unsigned int launcher_install_forwarder( int bits, const char *name, unsigned long long *id,
-                                                const char **step )
+static unsigned int launcher_install_forwarder( const char **step )
 {
     struct wine_nx_forwarder request =
     {
-        .nro_path = own_nro,
+        .nro_path = RUNTIME_DIR "/wine-nx-runtime.nro",
         .args = NULL,
-        .name = name,
+        .name = "Autorun",
         .author = "ticoverse.com",
-        .address_space = bits == 32 ? WINE_NX_SPACE_32BIT_NO_ALIAS : WINE_NX_SPACE_39BIT,
-        .icon = bits == 32 ? wine_nx_icon_32bit : wine_nx_icon_any,
-        .icon_size = bits == 32 ? wine_nx_icon_32bit_size : wine_nx_icon_any_size,
+        .icon = wine_nx_icon_any,
+        .icon_size = wine_nx_icon_any_size,
     };
     unsigned int rc;
 
     wine_nx_forwarder_report = log_line_plain;
-    if (id) *id = wine_nx_forwarder_title_id( own_nro, NULL, request.address_space );
     rc = wine_nx_forwarder_install( &request, step );
-    log_line( "[LAUNCHER] %d-bit forwarder %016llx: rc=0x%x%s%s", bits,
-              id ? *id : 0ull, rc, rc && step && *step ? " at " : "", rc && step && *step ? *step : "" );
+    log_line( "[LAUNCHER] forwarder %016llx: rc=0x%x%s%s",
+              wine_nx_forwarder_title_id( request.nro_path, NULL ), rc,
+              rc && step && *step ? " at " : "", rc && step && *step ? *step : "" );
     return rc;
 }
 
-static unsigned long long launcher_forwarder_id( int bits )
+static unsigned int launcher_install_game_forwarder( const struct wine_nx_forwarder *request, const char **step )
 {
-    return wine_nx_forwarder_title_id( own_nro, NULL, bits == 32 ? WINE_NX_SPACE_32BIT_NO_ALIAS
-                                                                  : WINE_NX_SPACE_39BIT );
+    bool installed = false;
+    Result rc;
+    *step = "reading " AUTORUN_NRO;
+    if (access( AUTORUN_NRO, R_OK )) return MAKERESULT( Module_Libnx, LibnxError_NotFound );
+    *step = "checking the Autorun forwarder";
+    if (R_FAILED( rc = nsInitialize() )) return rc;
+    rc = nsIsAnyApplicationEntityInstalled( AUTORUN_TITLE_ID, &installed );
+    nsExit();
+    if (R_FAILED( rc )) return rc;
+    if (!installed && (rc = launcher_install_forwarder( step ))) return rc;
+    wine_nx_forwarder_report = log_line_plain;
+    return wine_nx_forwarder_install( request, step );
 }
 
-/* Whether an application is still installed. The records alone answer it, so
- * this does not ask the console for every application's name as the listing
- * above does. */
-static int launcher_title_installed( unsigned long long id )
+static int runtime_forwarded_game( char *target, size_t size )
 {
-    NsApplicationRecord *records;
-    const int page = 64;
-    s32 offset = 0, found = 0;
-    int installed = 0;
+    struct autorun_game_launch launch = {0};
+    struct launcher_catalog *catalog;
+    AppletStorage storage;
+    s64 bytes = 0;
+    Result rc;
+    int found = 0, i;
 
-    if (!id) return 0;
-    if (!(records = calloc( page, sizeof(*records) ))) return 0;
-    if (R_SUCCEEDED( nsInitialize() ))
-    {
-        do
-        {
-            if (R_FAILED( nsListApplicationRecord( records, page, offset, &found ) )) break;
-            for (s32 i = 0; i < found && !installed; i++)
-                if (records[i].application_id == id) installed = 1;
-            offset += found;
-        } while (found == page && !installed);
-        nsExit();
-    }
-    free( records );
-    return installed;
+    if (R_FAILED( appletPopLaunchParameter( &storage, AppletLaunchParameterKind_UserChannel ) )) return 0;
+    rc = appletStorageGetSize( &storage, &bytes );
+    if (R_SUCCEEDED( rc ) && bytes == sizeof(launch)) rc = appletStorageRead( &storage, 0, &launch, sizeof(launch) );
+    appletStorageClose( &storage );
+    if (R_FAILED( rc ) || !autorun_game_launch_valid( &launch, bytes )) return -1;
+    if (!(catalog = malloc( sizeof(*catalog) ))) return -1;
+    if (launcher_catalog_load( catalog, RUNTIME_DIR "/" LAUNCHER_CATALOG_FILE ) == LAUNCHER_CATALOG_OK)
+        for (i = 0; i < catalog->count; i++)
+            if (catalog->entries[i].id == launch.game_id)
+            {
+                if (strlen( catalog->entries[i].path ) < size)
+                {
+                    strcpy( target, catalog->entries[i].path );
+                    found = 1;
+                }
+                break;
+            }
+    free( catalog );
+    return found ? 1 : -1;
 }
 
-/* Asks the console to close this application and open that one. */
-static int launcher_launch_title( unsigned long long id )
-{
-    Result rc = appletRequestLaunchApplication( id, NULL );
-
-    if (R_FAILED( rc )) log_line( "[LAUNCHER] could not start %016llx: rc=0x%x", id, (unsigned)rc );
-    return R_SUCCEEDED( rc );
-}
-
-/* This forwarder's own application id, to tell it from the others in the list. */
 static unsigned long long runtime_title_id( void )
 {
     u64 id = 0;
@@ -3619,21 +3736,27 @@ int main( int argc, char **argv )
     void *module = NULL;
     void *entry = NULL;
     SIZE_T view_size = 0;
-    struct runtime_module *main_module;
+    struct runtime_module *registered_main;
     RTL_USER_PROCESS_PARAMETERS *params;
     UNICODE_STRING main_nt_name;
     char dos_path[512];
     unsigned int status;
     unsigned int ldr_status = STATUS_INVALID_IMAGE_FORMAT;
     unsigned int attach_status = STATUS_INVALID_IMAGE_FORMAT;
-    int autorun, handed_over = 0;
+    int autorun, resumed_program = 0, forwarded_game;
+    const char *launch_error = NULL;
+    int low_window_available;
     USHORT target_machine;
     int sd_cache = wine_nx_sd_cache_install();  /* before any file on the card is opened */
+
+#ifdef WINE_NX_SWAP_POC
+    if (wine_nx_fex_exception_attach()) return 1;
+#endif
 
     log_main_thread = pthread_self();
     log_main_thread_set = 1;
     if (argc > 0 && argv[0] && strstr( argv[0], ".nro" )) snprintf( own_nro, sizeof(own_nro), "%s", argv[0] );
-    else snprintf( own_nro, sizeof(own_nro), "%s", RUNTIME_DIR "/wine-nx-runtime.nro" );
+    else snprintf( own_nro, sizeof(own_nro), "%s", WINE_NX_RUNTIME_NRO );
     /* Before the console, whose framebuffer is lent to the graphics driver:
      * what is lent now is the loader's, and everything after it is ours. */
     note_loader_lent_memory();
@@ -3644,14 +3767,19 @@ int main( int argc, char **argv )
     mkdir( "sdmc:/switch", 0777 );
     mkdir( RUNTIME_DIR, 0777 );
     mkdir( WINE_DRIVE_C, 0777 );
-    mkdir( WINE_DRIVE_C "/windows", 0777 );
-    mkdir( WINE_DRIVE_C "/windows/temp", 0777 );
+    mkdir( WINE_NX_RUNTIME_WINDOWS, 0777 );
+    mkdir( WINE_NX_RUNTIME_WINDOWS "/temp", 0777 );
     mkdir( WINE_SYSTEM_DIR, 0777 );
+    mkdir( WINE_DRIVE_C "/ProgramData", 0777 );
     mkdir( WINE_DRIVE_C "/users", 0777 );
+    mkdir( WINE_DRIVE_C "/users/Public", 0777 );
+    mkdir( WINE_DRIVE_C "/users/Public/Documents", 0777 );
+    mkdir( WINE_DRIVE_C "/users/Public/Documents/Steam", 0777 );
     mkdir( WINE_USER_DIR, 0777 );
     mkdir( WINE_USER_DIR "/AppData", 0777 );
     mkdir( WINE_USER_DIR "/AppData/Local", 0777 );
     mkdir( WINE_USER_DIR "/AppData/LocalLow", 0777 );
+    mkdir( WINE_USER_DIR "/AppData/Local/Autorun", 0777 );
     mkdir( WINE_USER_DIR "/AppData/Roaming", 0777 );
     /* SHGetFolderPath refuses a folder that is not there unless the caller
      * asked for it to be created, and a game that ignores that failure reads
@@ -3682,6 +3810,8 @@ int main( int argc, char **argv )
      * like one from the new one. */
     log_line( "[BUILD] %s from %s (address space %d bits)", WINE_NX_RUNTIME_BUILD, own_nro,
               runtime_address_space_bits() );
+    log_line( "[LOWVA] forwarder title %016llx", runtime_title_id() );
+    low_window_available = wine_nx_low_window_probe( log_line_plain );
     {
         int recovered = autorun_install_recover( RUNTIME_DIR, strstr( own_nro, "/updates/previous.nro" ) != NULL );
         if (recovered < 0)
@@ -3784,38 +3914,33 @@ int main( int argc, char **argv )
         wine_nx_usb_wait();
     }
 #endif
-    /* A launcher in another forwarder sent this game here, because it needs the
-     * address space this forwarder was made with and that one was not. It is
-     * ours to start once: the file goes before the game does, so a game that
-     * cannot start does not meet the same handoff on the way back. */
+    forwarded_game = runtime_forwarded_game( target, sizeof(target) );
+    if (forwarded_game < 0) launch_error = "This shortcut no longer matches a game in the library. Create it again from the game's Library settings.";
+    else if (forwarded_game > 0 && access( target, R_OK ))
     {
-        char handoff[512];
-
-        if (read_first_line( RUNTIME_DIR "/run-next.txt", handoff, sizeof(handoff) ) && handoff[0])
-        {
-            remove( RUNTIME_DIR "/run-next.txt" );
-            snprintf( target, sizeof(target), "%s", handoff );
-            autorun = handed_over = 1;
-            log_line( "[LAUNCHER] handed over in run-next.txt: %s", target );
-        }
+        launch_error = "The shortcut's game is unavailable. Connect its USB drive or use Locate executable in the game's Library settings.";
+        forwarded_game = -1;
     }
-    if (handed_over || (argc > 1 && argv[1] && argv[1][0]))
+    if (!forwarded_game && read_first_line( WINE_NX_RUNTIME_ROOT "/run-next.txt", target, sizeof(target) ) && target[0])
+    {
+        remove( WINE_NX_RUNTIME_ROOT "/run-next.txt" );
+        autorun = resumed_program = 1;
+        log_line( "[SETUP] resuming %s", target );
+    }
+    if (forwarded_game > 0 || resumed_program || (!forwarded_game && argc > 1 && argv[1] && argv[1][0]))
     {
         const char *name;
 
-        if (!handed_over) snprintf( target, sizeof(target), "%s", argv[1] );
+        autorun = 1;
+        if (!resumed_program && !forwarded_game) snprintf( target, sizeof(target), "%s", argv[1] );
         name = strrchr( target, '/' );
-        /* The one thing the screen is told, before the game has it. */
-        wine_nx_console_quiet = 0;
         log_line( "[TARGET] starting %s", name ? name + 1 : target );
-        wine_nx_console_quiet = 1;
     }
     else
     {
         struct wine_nx_launcher_options options =
         {
             .runtime_dir = RUNTIME_DIR,
-            .nro_path = own_nro,
             .emummc = runtime_on_emummc(),
             .build = WINE_NX_RUNTIME_BUILD,
             .machine_of = launcher_machine,
@@ -3823,14 +3948,14 @@ int main( int argc, char **argv )
             .list_usb = wine_nx_usb_list,
 #endif
             .address_space_bits = runtime_address_space_bits(),
+            .low_window = low_window_available,
+            .four_cores_available = wine_nx_four_cores_available(),
+            .own_forwarder = runtime_title_id() == wine_nx_forwarder_title_id( RUNTIME_DIR "/wine-nx-runtime.nro", NULL ),
             .reopen_launcher = runtime_reopen_launcher,
             .dxvk_on_add = runtime_dxvk_on_add,
-            .title_id = runtime_title_id(),
-            .list_titles = launcher_titles,
-            .launch_title = launcher_launch_title,
-            .title_installed = launcher_title_installed,
             .install_forwarder = launcher_install_forwarder,
-            .forwarder_id = launcher_forwarder_id,
+            .install_game_forwarder = launcher_install_game_forwarder,
+            .launch_error = launch_error,
             .schedule_restart = envHasNextLoad() ? launcher_schedule_restart : NULL,
 #ifdef WINE_NX_MESA_SWITCH
             .vulkan = 1,
@@ -3882,6 +4007,17 @@ int main( int argc, char **argv )
         if (!chosen)
         {
             log_line( "[LAUNCHER] closed without starting a program" );
+            if (options.reboot_requested)
+            {
+                Result rc = bpcInitialize();
+                if (R_SUCCEEDED( rc ))
+                {
+                    fflush( NULL );
+                    rc = bpcRebootSystem();
+                    bpcExit();
+                }
+                log_line( "[SETUP] Console restart returned 0x%x; restart from the HOME menu if needed", rc );
+            }
             consoleExit( NULL );
             leave_cleanly();
             return 0;
@@ -3902,7 +4038,11 @@ int main( int argc, char **argv )
         char settings_path[520];
 
         runtime_dxvk = 0;
+        runtime_dxvk_source = DXVK_SOURCE_OFFICIAL;
         runtime_dxvk_hud = 0;
+        runtime_fex = 0;
+        runtime_four_cores = 0;
+        horizon_fast_sync_enabled = 0;
 #ifdef WINE_NX_MESA_SWITCH
         wine_nx_graphics_configure( 0, 1 );
         wine_nx_upscaling_configure( 0, 0.4f );
@@ -3917,11 +4057,15 @@ int main( int argc, char **argv )
             launcher_kv_load( &kv, settings_path ) && kv.size)
         {
             launcher_settings_read( &kv, &settings );
+            horizon_fast_sync_enabled = settings.fast_sync;
+            runtime_fex = settings.fex;
+            runtime_four_cores = settings.four_cores;
             if (settings.verbose >= 0) wine_nx_runtime_verbose = settings.verbose;
             if (settings.profile >= 0) runtime_profile = settings.profile;
             if (settings.framebuffer >= 0) wine_nx_compositor_mode = !settings.framebuffer;
 #ifdef WINE_NX_MESA_SWITCH
             runtime_dxvk = settings.dxvk;
+            runtime_dxvk_source = settings.dxvk_source;
             runtime_dxvk_hud = settings.dxvk_hud;
             wine_nx_graphics_configure( launcher_frame_limits[settings.frame_limit], settings.vsync );
             wine_nx_upscaling_configure( settings.upscaling, launcher_sharpness_values[settings.upscaling_sharpness] );
@@ -3934,7 +4078,6 @@ int main( int argc, char **argv )
             {
                 struct launcher_kv graphics;
 
-                mkdir( WINE_USER_DIR "/AppData/Local/Autorun", 0777 );
                 if (!launcher_dxvk_config( &settings, graphics.text, sizeof(graphics.text) ))
                     return return_to_launcher();
                 {
@@ -3976,9 +4119,12 @@ int main( int argc, char **argv )
         }
     }
 
+    horizon_server_profile_enabled = runtime_profile;
     open_game_log( target );
     log_line( "wine-nx-runtime: generic Wine ntdll PE loader path" );
     log_line( "[BUILD] %s", WINE_NX_RUNTIME_BUILD );
+    log_line( "[SYNC] %s", horizon_fast_sync_enabled ? "Horizon queued waits" : "Standard" );
+    wine_nx_thread_configure_cores( runtime_four_cores );
     log_line( "[SDCACHE] %s", sd_cache ? "sdmc reads cached: 128 KB chunks, 8 per file, 32 to 192 MB in all"
                                       : "no sdmc device; reads are not cached" );
     log_line( "[INIT] verbose traces %s (verbose.txt)", wine_nx_runtime_verbose ? "on" : "off" );
@@ -3993,6 +4139,32 @@ int main( int argc, char **argv )
         park_forever();
     }
     main_image_info.Machine = target_machine;
+    if (runtime_fex)
+    {
+#ifdef WINE_NX_FEX
+        const char *cpu_module = target_machine == IMAGE_FILE_MACHINE_AMD64 ?
+                                 WINE_SYSTEM_DIR "/libarm64ecfex.dll" :
+                                 WINE_SYSTEM_DIR "/libwow64fex.dll";
+
+        if ((target_machine != IMAGE_FILE_MACHINE_AMD64 && target_machine != IMAGE_FILE_MACHINE_I386) ||
+            access( cpu_module, R_OK ))
+        {
+            log_line( "[FAIL] FEX CPU module missing or unsupported target: %04x (%s)", target_machine, cpu_module );
+            return return_to_launcher();
+        }
+        if (wine_nx_fex_exception_attach())
+        {
+            log_line( "[FAIL] FEX exception setup failed" );
+            return return_to_launcher();
+        }
+        wine_nx_fex_active = 1;
+#else
+        log_line( "[FAIL] this runtime was built without FEX" );
+        return return_to_launcher();
+#endif
+    }
+    log_line( "[CPU] %s", target_machine == IMAGE_FILE_MACHINE_ARM64 ? "Native ARM64" :
+                         runtime_fex ? "FEX-2609" : "Box64" );
 #ifdef WINE_NX_AMD64
     if (target_machine == IMAGE_FILE_MACHINE_AMD64)
     {
@@ -4003,6 +4175,29 @@ int main( int argc, char **argv )
         {
             log_line( "[FAIL] AMD64 requires the 39-bit forwarder; current address space %p-%p", start, end );
             park_forever();
+        }
+    }
+#endif
+#ifdef WINE_NX_SWAP_POC
+    {
+        struct launcher_kv kv;
+        if (launcher_kv_load( &kv, RUNTIME_DIR "/launcher.txt" ) &&
+            launcher_kv_get_int( &kv, "swap-mb", 0 ))
+        {
+            unsigned int size = launcher_kv_get_int( &kv, "swap-mb", 0 );
+            u64 bits = 0;
+            svcGetInfo( &bits, InfoType_AslrRegionSize, CUR_PROCESS_HANDLE, 0 );
+            if (bits < (UINT64_C(1) << 36) || swap_file_open( &game_swap, RUNTIME_DIR "/swap-poc", size ))
+            {
+                log_line( "[SWAP-GAME] startup failed: check SD swap files and the 39-bit forwarder (errno=%d fs=0x%x)",
+                          errno, game_swap.store.fs_error );
+                return return_to_launcher();
+            }
+            struct horizon_swap_storage storage = { &game_swap, swap_file_save, swap_file_load,
+                                                    swap_file_discard, game_swap.store.size };
+            horizon_swap_configure( &storage );
+            __atomic_store_n( &game_swap_open, 1, __ATOMIC_RELEASE );
+            log_line( "[SWAP-GAME] enabled capacity=%uMiB reserve=128MiB path=" RUNTIME_DIR "/swap-poc", size );
         }
     }
 #endif
@@ -4020,21 +4215,20 @@ int main( int argc, char **argv )
         extern void wine_nx_profile_start( void );
         wine_nx_profile_start();
     }
+    server_init_process( virtual_alloc_first_thread_data() );
+    log_line( "[INIT] server process initialized" );
 
-    /* TEMPORARY: verify __libnx_exception_handler wiring. Set to 0 to disable. */
-#define WINE_NX_TEST_FAULT 0
-#if WINE_NX_TEST_FAULT
-    log_line( "[TEST] about to deliberately deref NULL to verify exception handler" );
-    fflush( log_file );
-    {
-        volatile int *null_ptr = (volatile int *)(uintptr_t)0;
-        volatile int observed = *null_ptr;
-        log_line( "[TEST] NULL deref did NOT fault, value=%d (handler not wired correctly)", observed );
-    }
-#endif
     wine_nx_runtime_environment_init();
     log_line( "[INIT] Wine NLS/environment ready" );
-    teb = virtual_alloc_first_teb();
+    status = map_pe_image( target, &module, &view_size );
+    if (status || !runtime_describe_image( module, view_size, &entry ))
+    {
+        log_line( "[FAIL] map target status=%08x", status );
+        park_forever();
+    }
+    main_module = module;
+    virtual_alloc_first_teb();
+    teb = NtCurrentTeb();
     if (!teb || NtCurrentTeb() != teb || !teb->Peb)
     {
         log_line( "[FAIL] virtual_alloc_first_teb" );
@@ -4043,19 +4237,27 @@ int main( int argc, char **argv )
     /* Upstream's start_main_thread does this; without it the PEB (and the
      * WoW64 PEB copied from it) reports zero processors to GetSystemInfo. */
     init_cpu_info();
+    teb->Peb->NumberOfProcessors = cpu_count;
     /* Upstream's dbg_init also copies the debug channels to the page after
      * the WoW64 PEB, where the Windows-side ntdlls look them up. Left zeroed,
      * every channel is off there, so loader errors such as a missing DLL never
-     * reach the log. Only the default entry is written: errors, and fixmes
-     * with verbose traces. dbg_init itself is not called because it moves the
+     * reach the log. dbg_init itself is not called because it moves the
      * unix-side debug buffers into TEBs, which the runtime's threads lack. */
     {
         struct __wine_debug_channel *options = (void *)((char *)teb->Peb + 2 * page_size);
+        static const char channels[][15] = { "iphlpapi", "secur32", "winsock" };
+        unsigned int i = 0;
 
-        options[0].name[0] = 0;
+        for (; wine_nx_runtime_verbose && i < ARRAY_SIZE(channels); i++)
+        {
+            memcpy( options[i].name, channels[i], sizeof(channels[i]) );
+            options[i].flags = (1 << __WINE_DBCL_ERR) | (1 << __WINE_DBCL_WARN) |
+                               (1 << __WINE_DBCL_FIXME) | (1 << __WINE_DBCL_TRACE);
+        }
+        options[i].name[0] = 0;
         /* Wine reports a good deal at warning level and returns quietly after
          * it, which is where wined3d refuses to start, so verbose runs want it. */
-        options[0].flags = (1 << __WINE_DBCL_ERR) |
+        options[i].flags = (1 << __WINE_DBCL_ERR) |
                            (wine_nx_runtime_verbose ? (1 << __WINE_DBCL_FIXME) | (1 << __WINE_DBCL_WARN) : 0);
     }
     {
@@ -4068,8 +4270,6 @@ int main( int argc, char **argv )
     wine_nx_start_user_shared_data_clock();
     log_line( "[INIT] shared data clock initialized" );
 
-    server_init_process();
-    log_line( "[INIT] server process initialized" );
 #ifdef WINE_NX_AMD64
     if (target_machine != IMAGE_FILE_MACHINE_AMD64)
 #endif
@@ -4082,17 +4282,9 @@ int main( int argc, char **argv )
         }
     }
 
-    status = map_pe_image( target, &module, &view_size );
-    if (status)
-    {
-        log_line( "[FAIL] map target status=%08x", status );
-        park_forever();
-    }
-
     /* With the image mapped, so no thread-local page can be put where it has
      * to go, and before the program runs or makes a thread of its own. */
     hold_thread_local_pages();
-    if (runtime_describe_image( module, view_size, &entry ))
     {
         params = runtime_create_process_params( target, &main_nt_name, dos_path, sizeof(dos_path) );
         if (!params)
@@ -4129,8 +4321,8 @@ int main( int argc, char **argv )
             park_forever();
         }
 #endif
-        main_module = register_module( target, module, view_size, 1 );
-        if (main_module)
+        registered_main = register_module( target, module, view_size, 1 );
+        if (registered_main)
         {
             status = wine_nx_loader_bootstrap( &main_nt_name );
             log_line( "[LDR] bootstrap status=%08x", status );

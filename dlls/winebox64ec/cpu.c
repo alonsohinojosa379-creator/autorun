@@ -195,7 +195,6 @@ static void __attribute__((used)) winebox64ec_run_context_returning( CHPE_V2_CPU
     fpcr = fpcsr;
     fpsr = fpcsr >> 32;
     __asm__ volatile( "msr fpcr, %0; msr fpsr, %1" :: "r" (fpcr), "r" (fpsr) );
-    if (area->SuspendDoorbell && *area->SuspendDoorbell) NtYieldExecution();
 }
 
 NTSTATUS WINAPI ProcessInit(void)
@@ -561,11 +560,11 @@ __ASM_GLOBAL_FUNC( winebox64ec_bridge_ec,
                    "mov x17, x9\n\t"
                    "mov w16, #0x0200\n\t"
                    "movk w16, #0xd63f, lsl #16\n\t"
-                   "ldursw x23, [x17, #-4]\n\t"
-                   "cmp w23, w16\n\t"
+                   "ldursw x15, [x17, #-4]\n\t"
+                   "cmp w15, w16\n\t"
                    "b.eq 2f\n\t"
-                   "and x23, x23, #-4\n\t"
-                   "add x17, x17, x23\n\t"
+                   "and x15, x15, #-4\n\t"
+                   "add x17, x17, x15\n\t"
                    "mov x4, sp\n\t"
                    "tbz x4, #3, 1f\n\t"
                    "ldr lr, [x4], #8\n\t"

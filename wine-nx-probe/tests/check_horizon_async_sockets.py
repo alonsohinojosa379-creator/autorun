@@ -48,7 +48,7 @@ defines = '\n'.join(line for line in source.splitlines()
 select = definition('horizon_server_handle_select')
 assert select.index('horizon_server_async_result_locked') < select.index('for (int initial')
 assert select.index('horizon_server_async_apc_locked') < select.index('HORIZON_SELECT_ALERTABLE')
-assert '!(initial && signals)' in select
+assert select.index('horizon_server_signal_object_locked') < select.index('horizon_server_async_apc_locked')
 # Closing a socket cancels what waits on it; the ioctl handler tells what ends at once.
 assert 'horizon_async_cancel( &horizon_asyncs, handle' in definition('horizon_server_close_object_handle')
 ioctl = definition('horizon_server_handle_ioctl')
@@ -61,7 +61,8 @@ assert 'horizon_server_find_io_object_locked' in definition('horizon_server_hand
 
 functions = '\n\n'.join(definition(name) for name in (
     'horizon_sock_errno_status', 'horizon_ws_sockaddr_to_unix_for', 'horizon_ws_sockaddr_from_unix_as',
-    'horizon_server_get_sock_fd', 'horizon_sock_ioctl_create', 'horizon_sock_ioctl_connect',
+    'horizon_server_get_sock_fd', 'horizon_sock_ioctl_create',
+    'horizon_sock_ioctl_connect',
     'horizon_sock_ioctl_family',
     'horizon_server_async_create_locked', 'horizon_server_async_free_locked',
     'horizon_server_accepted_sock_locked', 'horizon_sock_accept_output_locked',
@@ -83,6 +84,10 @@ fixture = r'''
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#if defined(__linux__) || defined(__CYGWIN__)
+#define sin_len sin_zero[0]
+#endif
 
 @DEFINES@
 #define HORIZON_FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 0x1
@@ -129,11 +134,12 @@ static struct { unsigned int tid; unsigned char call[64]; } user_apcs[4];
 static int nuser_apcs;
 
 static void horizon_trace( const char *format, ... ) { (void)format; }
+static void wine_nx_runtime_trace( const char *message ) { (void)message; }
 static void horizon_report_async( const char *what, const struct horizon_async *async, unsigned int status )
 { (void)what; (void)async; (void)status; }
 static unsigned long long horizon_async_now( void ) { return fake_now; }
 static void horizon_sock_poller_start( void ) {}
-static void horizon_server_signal_changed_locked( void ) { woken++; }
+static void horizon_sync_notify_object_locked(struct horizon_server_object *o, int satisfy) { (void)o; (void)satisfy; woken++; }
 static void horizon_server_free_object( struct horizon_server_object *object ) { (void)object; freed++; }
 static void horizon_client_forget_fd( unsigned int handle ) { forgotten[nforgotten++] = handle; }
 
@@ -551,10 +557,33 @@ int main( void )
         close( entries[into_h].object->file_fd );
     }
 
+    /* A nonblocking connect must return to ws2_32 while it is in progress. */
+    {
+        struct sockaddr_in connect_addr;
+        unsigned char connect4[8 + 16] = {0};
+        unsigned int connect_h, connect_listener_h;
+        int addr_len = 16;
+
+        connect_listener_h = new_sock( 1, &connect_addr );
+        entries[connect_listener_h].object->sock_bound = 1;
+        assert( !listen( entries[connect_listener_h].object->file_fd, 1 ) );
+        connect_h = new_sock( 0, NULL );
+        entries[connect_h].object->sock_nonblocking = 1;
+        memcpy( connect4, &addr_len, sizeof(addr_len) );
+        connect4[8] = HORIZON_WS_AF_INET;
+        memcpy( connect4 + 10, &connect_addr.sin_port, sizeof(connect_addr.sin_port) );
+        connect4[12] = 127;
+        connect4[15] = 1;
+        assert( horizon_sock_ioctl_connect( connect_h, connect4, sizeof(connect4) ) ==
+                HORIZON_STATUS_DEVICE_NOT_READY );
+        close( entries[connect_h].object->file_fd );
+        close( entries[connect_listener_h].object->file_fd );
+    }
+
     assert( !horizon_asyncs.head && port->refs == 3 );
     close( client ); close( client2 ); close( client3 );
     printf( "overlapped sockets: AcceptEx, accept, pending recv, completion routine, cancel and ConnectEx "
-            "end on the port as Windows ends them; IPv6 sockets reach IPv4 as DirtySock's does\n" );
+            "end on the port as Windows ends them; IPv6 and nonblocking connect semantics passed\n" );
     return 0;
 }
 '''
@@ -562,7 +591,7 @@ int main( void )
 fixture = (fixture.replace('@DEFINES@', defines)
                   .replace('@HEADER@', header)
                   .replace('@SOCKADDR@', sockaddr_header)
-                  .replace('@SELECT@', struct('horizon_select_request'))
+                  .replace('@SELECT@', struct('horizon_select_request') + '\n' + struct('horizon_select_signal_and_wait_op'))
                   .replace('@FUNCTIONS@', functions))
 
 with tempfile.TemporaryDirectory(prefix='wine-nx-async-sockets-') as tmp:

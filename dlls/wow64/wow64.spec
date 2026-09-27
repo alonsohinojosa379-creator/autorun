@@ -22,10 +22,10 @@
 @ stub Wow64ShallowThunkAllocSecurityQualityOfService32TO64_FNC
 @ stub Wow64ShallowThunkSIZE_T32TO64
 @ stub Wow64ShallowThunkSIZE_T64TO32
-@ stdcall Wow64SuspendLocalThread(long ptr)
+@ stub Wow64SuspendLocalThread
 @ stdcall -norelay Wow64SystemServiceEx(long ptr)
 @ stub Wow64ValidateUserCallTarget
 @ stub Wow64ValidateUserCallTargetFilter
 
 # Private handshake for the native Horizon bootstrap; does not change defaults.
-@ extern -private -arch=aarch64 __wine_switch_cpu_backend
+@ extern -private -arch=aarch64 __wine_switch_cpu_dll

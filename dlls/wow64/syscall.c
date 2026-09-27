@@ -22,7 +22,6 @@
 #include <setjmp.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winnt.h"
@@ -111,8 +110,6 @@ static BOOLEAN  (WINAPI *pBTCpuIsProcessorFeaturePresent)(UINT);
 static void     (WINAPI *pBTCpuProcessInit)(void);
 static NTSTATUS (WINAPI *pBTCpuSetContext)(HANDLE,HANDLE,void *,void *);
 static void     (WINAPI *pBTCpuThreadInit)(void);
-static void     (WINAPI *pBTCpuSimulate)(void) __attribute__((used));
-static NTSTATUS (WINAPI *pBTCpuSuspendLocalThread)(HANDLE,ULONG *);
 static void *   (WINAPI *p__wine_get_unix_opcode)(void);
 static void *   (WINAPI *pKiRaiseUserExceptionDispatcher)(void);
 void     (WINAPI *pBTCpuFlushInstructionCache2)( const void *, SIZE_T ) = NULL;
@@ -122,10 +119,12 @@ void     (WINAPI *pBTCpuNotifyMemoryAlloc)( void *, SIZE_T, ULONG, ULONG, BOOL, 
 void     (WINAPI *pBTCpuNotifyMemoryDirty)( void *, SIZE_T ) = NULL;
 void     (WINAPI *pBTCpuNotifyMemoryFree)( void *, SIZE_T, ULONG, BOOL, NTSTATUS ) = NULL;
 void     (WINAPI *pBTCpuNotifyMemoryProtect)( void *, SIZE_T, ULONG, BOOL, NTSTATUS ) = NULL;
+void     (WINAPI *pBTCpuNotifyProcessExecuteFlagsChange)(ULONG) = NULL;
 void     (WINAPI *pBTCpuNotifyReadFile)( HANDLE, void *, SIZE_T, BOOL, NTSTATUS ) = NULL;
 void     (WINAPI *pBTCpuNotifyUnmapViewOfSection)( void *, BOOL, NTSTATUS ) = NULL;
 NTSTATUS (WINAPI *pBTCpuResetToConsistentState)( EXCEPTION_POINTERS * ) = NULL;
 void     (WINAPI *pBTCpuUpdateProcessorInformation)( SYSTEM_CPU_INFORMATION * ) = NULL;
+void     (WINAPI *pBTCpuSimulate)(void);
 void     (WINAPI *pBTCpuProcessTerm)( HANDLE, BOOL, NTSTATUS ) = NULL;
 void     (WINAPI *pBTCpuThreadTerm)( HANDLE, LONG ) = NULL;
 
@@ -474,6 +473,173 @@ NTSTATUS WINAPI wow64_NtAllocateUuids( UINT *args )
     return NtAllocateUuids( time, delta, sequence, seed );
 }
 
+/**********************************************************************
+ *           wow64_NtAlpcAcceptConnectPort
+ */
+NTSTATUS WINAPI wow64_NtAlpcAcceptConnectPort( UINT *args )
+{
+    ULONG *communication_port_ptr = get_ptr( &args );
+    HANDLE connection_port = get_handle( &args );
+    ULONG flags = get_ulong( &args );
+    OBJECT_ATTRIBUTES32 *attr32 = get_ptr( &args );
+    ALPC_PORT_ATTRIBUTES32 *port_attr32 = get_ptr( &args );
+    void *context = get_ptr( &args );
+    ALPC_PORT_MESSAGE32 *msg32 = get_ptr( &args );
+    ALPC_MESSAGE_ATTRIBUTES32 *msg_attr32 = get_ptr( &args );
+    BOOLEAN accept = get_ulong( &args );
+    NTSTATUS status;
+
+    HANDLE communication_port = 0;
+    struct object_attr64 attr;
+    ALPC_PORT_ATTRIBUTES port_attr;
+    ALPC_PORT_MESSAGE *msg;
+    ALPC_MESSAGE_ATTRIBUTES *msg_attr;
+
+    status = NtAlpcAcceptConnectPort( communication_port_ptr ? &communication_port : NULL,
+                                      connection_port, flags, objattr_32to64( &attr, attr32 ),
+                                      alpc_port_attributes_32to64( &port_attr, port_attr32 ), context,
+                                      alpc_port_message_32to64( &msg, msg32 ? (sizeof(*msg) + msg32->DataLength) : 0, msg32, TRUE ),
+                                      alpc_port_message_attributes_32to64( &msg_attr, msg_attr32, TRUE ),
+                                      accept);
+    if (status == STATUS_SUCCESS && accept && communication_port_ptr)
+        put_handle( communication_port_ptr, communication_port );
+    return status;
+}
+
+/**********************************************************************
+ *           wow64_NtAlpcConnectPort
+ */
+NTSTATUS WINAPI wow64_NtAlpcConnectPort( UINT *args )
+{
+    ULONG *handle_ptr = get_ptr( &args );
+    UNICODE_STRING32 *str32 = get_ptr( &args );
+    OBJECT_ATTRIBUTES32 *attr32 = get_ptr( &args );
+    ALPC_PORT_ATTRIBUTES32 *port_attr32 = get_ptr( &args );
+    ULONG flags = get_ulong( &args );
+    SID *sid = get_ptr( &args );
+    ALPC_PORT_MESSAGE32 *msg32 = get_ptr( &args );
+    ULONG *size32 = get_ptr( &args );
+    ALPC_MESSAGE_ATTRIBUTES32 *send_msg_attr32 = get_ptr( &args );
+    ALPC_MESSAGE_ATTRIBUTES32 *recv_msg_attr32 = get_ptr( &args );
+    LARGE_INTEGER *timeout = get_ptr( &args );
+    NTSTATUS status;
+
+    HANDLE handle = 0;
+    UNICODE_STRING str;
+    struct object_attr64 attr;
+    ALPC_PORT_ATTRIBUTES port_attr;
+    ALPC_PORT_MESSAGE *msg;
+    SIZE_T size = size32 ? (*size32 + sizeof(ALPC_PORT_MESSAGE) - sizeof(ALPC_PORT_MESSAGE32)) : 65535;
+    ALPC_MESSAGE_ATTRIBUTES *send_msg_attr;
+    ALPC_MESSAGE_ATTRIBUTES *recv_msg_attr;
+
+    if (!handle_ptr) return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    if (port_attr32 && (!port_attr32->MaxMessageLength
+                        || port_attr32->MaxMessageLength > (65535 - (sizeof(ALPC_PORT_MESSAGE) - sizeof(ALPC_PORT_MESSAGE32)))))
+        return STATUS_INVALID_PARAMETER;
+
+    status = NtAlpcConnectPort( &handle, unicode_str_32to64( &str, str32 ), objattr_32to64( &attr, attr32 ),
+                                alpc_port_attributes_32to64( &port_attr, port_attr32 ), flags, sid,
+                                alpc_port_message_32to64( &msg, size, msg32, TRUE ), &size,
+                                alpc_port_message_attributes_32to64( &send_msg_attr, send_msg_attr32, TRUE ),
+                                alpc_port_message_attributes_32to64( &recv_msg_attr, recv_msg_attr32, FALSE ), timeout);
+    if (status == STATUS_SUCCESS)
+    {
+        put_handle( handle_ptr, handle );
+        alpc_port_message_64to32( msg32, msg );
+        alpc_port_message_attributes_64to32( recv_msg_attr32, recv_msg_attr );
+    }
+    else if (status == STATUS_BUFFER_TOO_SMALL && size32)
+    {
+        put_size( size32, size - (sizeof(ALPC_PORT_MESSAGE) - sizeof(ALPC_PORT_MESSAGE32)));
+    }
+    return status;
+}
+
+/**********************************************************************
+ *           wow64_NtAlpcCreatePort
+ */
+NTSTATUS WINAPI wow64_NtAlpcCreatePort( UINT *args )
+{
+    ULONG *handle_ptr = get_ptr( &args );
+    OBJECT_ATTRIBUTES32 *attr32 = get_ptr( &args );
+    ALPC_PORT_ATTRIBUTES32 *port_attr32 = get_ptr( &args );
+    NTSTATUS status;
+
+    struct object_attr64 attr;
+    ALPC_PORT_ATTRIBUTES port_attr;
+    HANDLE handle = 0;
+
+    if (!handle_ptr) return STATUS_ACCESS_VIOLATION;
+
+    status = NtAlpcCreatePort( &handle, objattr_32to64( &attr, attr32 ),
+                               alpc_port_attributes_32to64( &port_attr, port_attr32 ) );
+    if (!status) put_handle( handle_ptr, handle );
+    return status;
+}
+
+/**********************************************************************
+ *           wow64_NtAlpcDisconnectPort
+ */
+NTSTATUS WINAPI wow64_NtAlpcDisconnectPort( UINT *args )
+{
+    HANDLE handle = get_handle( &args );
+    ULONG flags = get_ulong( &args );
+
+    return NtAlpcDisconnectPort( handle, flags );
+}
+
+/**********************************************************************
+ *           wow64_NtAlpcImpersonateClientOfPort
+ */
+NTSTATUS WINAPI wow64_NtAlpcImpersonateClientOfPort( UINT *args )
+{
+    HANDLE handle = get_handle( &args );
+    ALPC_PORT_MESSAGE32 *msg32 = get_ptr( &args );
+    void *reserved = get_ptr( &args );
+
+    ALPC_PORT_MESSAGE *msg;
+
+    return NtAlpcImpersonateClientOfPort( handle, alpc_port_message_32to64( &msg, msg32 ? (sizeof(*msg) + msg32->DataLength) : 0, msg32, TRUE ), reserved );
+}
+
+/**********************************************************************
+ *           wow64_NtAlpcSendWaitReceivePort
+ */
+NTSTATUS WINAPI wow64_NtAlpcSendWaitReceivePort( UINT *args )
+{
+    HANDLE handle = get_handle( &args );
+    ULONG flags = get_ulong( &args );
+    ALPC_PORT_MESSAGE32 *send_msg32 = get_ptr( &args );
+    ALPC_MESSAGE_ATTRIBUTES32 *send_msg_attr32 = get_ptr( &args );
+    ALPC_PORT_MESSAGE32 *recv_msg32 = get_ptr( &args );
+    ULONG *size32 = get_ptr( &args );
+    ALPC_MESSAGE_ATTRIBUTES32 *recv_msg_attr32 = get_ptr( &args );
+    LARGE_INTEGER *timeout = get_ptr( &args );
+    NTSTATUS status;
+
+    ALPC_PORT_MESSAGE *send_msg;
+    ALPC_MESSAGE_ATTRIBUTES *send_msg_attr;
+    ALPC_PORT_MESSAGE *recv_msg;
+    ALPC_MESSAGE_ATTRIBUTES *recv_msg_attr;
+    SIZE_T size = size32 ? (*size32 + sizeof(ALPC_PORT_MESSAGE) - sizeof(ALPC_PORT_MESSAGE32)) : 65535;
+
+    status = NtAlpcSendWaitReceivePort( handle, flags, alpc_port_message_32to64( &send_msg, send_msg32 ? (sizeof(*send_msg) + send_msg32->DataLength) : 0, send_msg32, TRUE ),
+                                        alpc_port_message_attributes_32to64( &send_msg_attr, send_msg_attr32, TRUE ),
+                                        alpc_port_message_32to64( &recv_msg, size, recv_msg32, FALSE ), &size,
+                                        alpc_port_message_attributes_32to64( &recv_msg_attr, recv_msg_attr32, FALSE ), timeout );
+    if (status == STATUS_SUCCESS)
+    {
+        alpc_port_message_64to32( recv_msg32, recv_msg );
+        alpc_port_message_attributes_64to32( recv_msg_attr32, recv_msg_attr );
+    }
+    else if (status == STATUS_BUFFER_TOO_SMALL && size32)
+    {
+        put_size( size32, size - (sizeof(ALPC_PORT_MESSAGE) - sizeof(ALPC_PORT_MESSAGE32)) );
+    }
+    return status;
+}
 
 /***********************************************************************
  *           wow64_NtCallbackReturn
@@ -575,13 +741,8 @@ NTSTATUS WINAPI wow64_NtGetContextThread( UINT *args )
 {
     HANDLE handle = get_handle( &args );
     WOW64_CONTEXT *context = get_ptr( &args );
-    NTSTATUS status;
-    ULONG count;
 
-    if (wow64info->CpuFlags & WOW64_CPUFLAGS_SOFTWARE) RtlWow64SuspendThread( handle, &count );
-    status = RtlWow64GetThreadContext( handle, context );
-    if (wow64info->CpuFlags & WOW64_CPUFLAGS_SOFTWARE) NtResumeThread( handle, &count );
-    return status;
+    return RtlWow64GetThreadContext( handle, context );
 }
 
 
@@ -755,9 +916,7 @@ static HMODULE load_64bit_module( const WCHAR *name )
  *           get_cpu_dll_name
  */
 #ifdef __aarch64__
-/* Explicit Switch bootstrap selection. Zero preserves Wine's normal registry
- * lookup/default; the native Switch loader sets this before process_init. */
-ULONG __wine_switch_cpu_backend;
+const WCHAR *__wine_switch_cpu_dll;
 #endif
 
 static const WCHAR *get_cpu_dll_name(void)
@@ -774,12 +933,11 @@ static const WCHAR *get_cpu_dll_name(void)
     {
     case IMAGE_FILE_MACHINE_I386:
 #ifdef __aarch64__
-        if (native_machine == IMAGE_FILE_MACHINE_ARM64 &&
-            __wine_switch_cpu_backend == IMAGE_FILE_MACHINE_I386)
-            return L"winebox64.dll";
+        if (native_machine == IMAGE_FILE_MACHINE_ARM64 && __wine_switch_cpu_dll)
+            return __wine_switch_cpu_dll;
 #endif
         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86" );
-        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"libwow64fex.dll" : L"wow64cpu.dll");
+        ret = (native_machine == IMAGE_FILE_MACHINE_ARM64 ? L"xtajit.dll" : L"wow64cpu.dll");
         break;
     case IMAGE_FILE_MACHINE_ARMNT:
         RtlInitUnicodeString( &nameW, L"\\Registry\\Machine\\Software\\Microsoft\\Wow64\\arm" );
@@ -796,12 +954,7 @@ static const WCHAR *get_cpu_dll_name(void)
     if (!NtQueryValueKey( key, &nameW, KeyValuePartialInformation, buffer, size, &size ) && info->Type == REG_SZ)
     {
         ((WCHAR *)info->Data)[info->DataLength / sizeof(WCHAR)] = 0;
-        if ((native_machine == IMAGE_FILE_MACHINE_AMD64 && (!wcscmp( (WCHAR *)info->Data, L"libwow64fex.dll")
-                                                            || !wcscmp( (WCHAR *)info->Data, L"xtajit64.dll")))
-            || (native_machine == IMAGE_FILE_MACHINE_ARM64 && !wcscmp( (WCHAR *)info->Data, L"wow64cpu.dll")))
-            ERR( "cpu dll is wrong for native_machine %#x, using default.\n", native_machine );
-        else
-            ret = (WCHAR *)info->Data;
+        ret = (WCHAR *)info->Data;
     }
     NtClose( key );
     return ret;
@@ -879,7 +1032,6 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
     GET_PTR( BTCpuProcessInit );
     GET_PTR( BTCpuThreadInit );
     GET_PTR( BTCpuResetToConsistentState );
-    GET_PTR( BTCpuSuspendLocalThread );
     GET_PTR( BTCpuSetContext );
     GET_PTR( BTCpuSimulate );
     GET_PTR( BTCpuFlushInstructionCache2 );
@@ -889,6 +1041,7 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
     GET_PTR( BTCpuNotifyMemoryDirty );
     GET_PTR( BTCpuNotifyMemoryFree );
     GET_PTR( BTCpuNotifyMemoryProtect );
+    GET_PTR( BTCpuNotifyProcessExecuteFlagsChange );
     GET_PTR( BTCpuNotifyReadFile );
     GET_PTR( BTCpuNotifyUnmapViewOfSection );
     GET_PTR( BTCpuUpdateProcessorInformation );
@@ -930,8 +1083,10 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
 /**********************************************************************
  *           thread_init
  */
-static void thread_init(void)
+static NTSTATUS thread_init(void)
 {
+    NTSTATUS status;
+
     NtCurrentTeb32()->WOW32Reserved = PtrToUlong( pBTCpuGetBopCode() );
     NtCurrentTeb()->TlsSlots[WOW64_TLS_WOW64INFO] = wow64info;
     if (pBTCpuThreadInit) pBTCpuThreadInit();
@@ -944,7 +1099,8 @@ static void thread_init(void)
             I386_CONTEXT *ctx_ptr, ctx = { CONTEXT_I386_FULL };
             ULONG *stack;
 
-            pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
+            if ((status = pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx ))) return status;
+            if (ctx.Esp < sizeof(*ctx_ptr) + 5 * sizeof(*stack)) return STATUS_BAD_INITIAL_STACK;
             ctx_ptr = (I386_CONTEXT *)ULongToPtr( ctx.Esp ) - 1;
             *ctx_ptr = ctx;
             stack = (ULONG *)ctx_ptr;
@@ -955,7 +1111,7 @@ static void thread_init(void)
             *(--stack) = 0xdeadbabe;
             ctx.Esp = PtrToUlong( stack );
             ctx.Eip = pLdrSystemDllInitBlock->pLdrInitializeThunk;
-            pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
+            if ((status = pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx ))) return status;
         }
         break;
 
@@ -963,21 +1119,23 @@ static void thread_init(void)
         {
             ARM_CONTEXT *ctx_ptr, ctx = { CONTEXT_ARM_FULL };
 
-            pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
+            if ((status = pBTCpuGetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx ))) return status;
+            if ((ctx.Sp & ~15) < sizeof(*ctx_ptr)) return STATUS_BAD_INITIAL_STACK;
             ctx_ptr = (ARM_CONTEXT *)ULongToPtr( ctx.Sp & ~15 ) - 1;
             *ctx_ptr = ctx;
 
             ctx.R0 = PtrToUlong( ctx_ptr );
             ctx.Sp = PtrToUlong( ctx_ptr );
             ctx.Pc = pLdrSystemDllInitBlock->pLdrInitializeThunk;
-            pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
+            if ((status = pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx ))) return status;
         }
         break;
 
     default:
         ERR( "not supported machine %x\n", current_machine );
-        NtTerminateProcess( GetCurrentProcess(), STATUS_INVALID_IMAGE_FORMAT );
+        return STATUS_INVALID_IMAGE_FORMAT;
     }
+    return STATUS_SUCCESS;
 }
 
 
@@ -1303,12 +1461,9 @@ NTSTATUS WINAPI Wow64KiUserCallbackDispatcher( ULONG id, void *args, ULONG len,
             ctx.Eip = pLdrSystemDllInitBlock->pKiUserCallbackDispatcher;
             pBTCpuSetContext( GetCurrentThread(), GetCurrentProcess(), NULL, &ctx );
 
-            /* NtCallbackReturn is an internal non-local return to this frame. The
-             * Wine-NX backend crosses PE, Unix and generated-code frames, so an
-             * ARM64 unwind cannot reliably walk back to this callback frame. A
-             * NULL unwind frame makes ntdll restore the saved registers directly. */
+            /* Box64's native JIT frames require a register-only callback return. */
 #ifdef __aarch64__
-            if (__wine_switch_cpu_backend == IMAGE_FILE_MACHINE_I386)
+            if (__wine_switch_cpu_dll && !wcscmp( __wine_switch_cpu_dll, L"winebox64.dll" ))
             {
                 if (!wow64_setjmpex( frame.jmpbuf, NULL ))
                     cpu_simulate();
@@ -1366,9 +1521,14 @@ NTSTATUS WINAPI Wow64KiUserCallbackDispatcher( ULONG id, void *args, ULONG len,
 void WINAPI Wow64LdrpInitialize( CONTEXT *context )
 {
     static RTL_RUN_ONCE init_done;
+    NTSTATUS status;
 
     RtlRunOnceExecuteOnce( &init_done, process_init, NULL, NULL );
-    thread_init();
+    if ((status = thread_init()))
+    {
+        ERR( "CPU thread initialization failed, status %#lx\n", status );
+        RtlRaiseStatus( status );
+    }
     cpu_simulate();
 }
 
@@ -1592,12 +1752,4 @@ NTSTATUS WINAPI Wow64RaiseException( int code, EXCEPTION_RECORD *rec )
     raise_exception( &rec32, &ctx32, first_chance, rec );
 
     return STATUS_SUCCESS;
-}
-
-/**********************************************************************
- *            Wow64SuspendLocalThread (wow64.@)
- */
-NTSTATUS WINAPI Wow64SuspendLocalThread( HANDLE thread, ULONG *count )
-{
-    return pBTCpuSuspendLocalThread( thread, count );
 }

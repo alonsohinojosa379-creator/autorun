@@ -18,6 +18,7 @@
 #if defined(__SWITCH__) && defined(WINE_NX_MESA_SWITCH)
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -50,10 +51,33 @@ extern VkResult wine_nx_vkCreateViSurfaceNN( VkInstance instance, const struct n
                                              const VkAllocationCallbacks *allocator, VkSurfaceKHR *surface )
     __asm__("vkCreateViSurfaceNN");
 
-struct nx_vk_surface
+extern VkResult nvk_switch_allocate_shared_memory(
+    VkDevice device, const VkMemoryAllocateInfo *allocate_info,
+    const VkAllocationCallbacks *allocator, uint32_t nvmap_id,
+    VkDeviceMemory *memory_out );
+extern bool nvk_switch_export_memory( VkDeviceMemory memory,
+                                      uint32_t *nvmap_id_out,
+                                      void **reference_out );
+extern void nvk_switch_release_memory_reference( void *reference );
+
+VkResult wine_nx_vk_allocate_shared_memory(
+    VkDevice device, const VkMemoryAllocateInfo *allocate_info,
+    uint32_t nvmap_id, VkDeviceMemory *memory_out )
 {
-    struct client_surface client;
-};
+    return nvk_switch_allocate_shared_memory( device, allocate_info, NULL,
+                                               nvmap_id, memory_out );
+}
+
+BOOL wine_nx_vk_export_memory( VkDeviceMemory memory, uint32_t *nvmap_id,
+                               void **reference )
+{
+    return nvk_switch_export_memory( memory, nvmap_id, reference );
+}
+
+void wine_nx_vk_release_memory_reference( void *reference )
+{
+    nvk_switch_release_memory_reference( reference );
+}
 
 static void nx_log( const char *format, ... )
 {
@@ -67,68 +91,31 @@ static void nx_log( const char *format, ... )
     wine_nx_runtime_trace( buffer );
 }
 
-/* The last reference is gone: the host surface was destroyed before it, so the
- * compositor or the framebuffer can have the NWindow back. */
-static void nx_vk_surface_destroy( struct client_surface *client )
-{
-    TRACE( "client %p\n", client );
-    wine_nx_gl_release_window();
-}
-
-static void nx_vk_surface_detach( struct client_surface *client )
-{
-    TRACE( "client %p\n", client );
-}
-
-static void nx_vk_surface_update( struct client_surface *client )
-{
-    TRACE( "client %p\n", client );
-}
-
-static void nx_vk_surface_present( struct client_surface *client, HDC hdc )
-{
-    TRACE( "client %p, hdc %p\n", client, hdc );
-}
-
-static const struct client_surface_funcs nx_vk_surface_funcs =
-{
-    .destroy = nx_vk_surface_destroy,
-    .detach = nx_vk_surface_detach,
-    .update = nx_vk_surface_update,
-    .present = nx_vk_surface_present,
-};
-
 /* Like an OpenGL window surface, a Vulkan surface covers the whole screen: the
  * Switch has one NWindow, and other windows are not shown meanwhile. */
-static VkResult nx_vulkan_surface_create( HWND hwnd, BOOL raw, const struct vulkan_instance *instance,
-                                          VkSurfaceKHR *handle, struct client_surface **client )
+static VkResult nx_vulkan_surface_create( struct client_surface *client, const struct vulkan_instance *instance,
+                                          VkSurfaceKHR *handle )
 {
     struct nx_vi_surface_create_info info = { .sType = NX_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN };
-    struct nx_vk_surface *surface;
+    HWND hwnd = client->hwnd;
     VkResult res;
 
-    TRACE( "hwnd %p, raw %u, instance %p\n", hwnd, raw, instance );
+    TRACE( "hwnd %p, raw %u, instance %p\n", hwnd, client->raw, instance );
 
     if (!(info.window = wine_nx_gl_acquire_window()))
     {
         ERR( "hwnd %p: the screen already has an OpenGL or Vulkan surface\n", hwnd );
         return VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
     }
-    if (!(surface = client_surface_create( sizeof(*surface), &nx_vk_surface_funcs, hwnd )))
-    {
-        wine_nx_gl_release_window();
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
-    }
     if ((res = wine_nx_vkCreateViSurfaceNN( instance->host.instance, &info, NULL, handle )))
     {
         ERR( "hwnd %p: vkCreateViSurfaceNN failed, res %d\n", hwnd, res );
         nx_log( "[NXVK] hwnd %p: vkCreateViSurfaceNN failed, res %d", hwnd, res );
-        client_surface_release( &surface->client );  /* gives the screen back */
+        wine_nx_gl_release_window();
         return res;
     }
 
     nx_log( "[NXVK] hwnd %p: a Vulkan surface has the screen", hwnd );
-    *client = &surface->client;
     return VK_SUCCESS;
 }
 
@@ -147,8 +134,10 @@ static void nx_map_instance_extensions( struct vulkan_instance_extensions *exten
 
 static void nx_map_device_extensions( struct vulkan_device_extensions *extensions )
 {
-    nx_log( "[NXVK] device extensions through the Switch driver: VK_KHR_swapchain %u, VK_EXT_external_memory_host %u",
-            extensions->has_VK_KHR_swapchain, extensions->has_VK_EXT_external_memory_host );
+    if (extensions->has_VK_EXT_external_memory_host)
+        extensions->has_VK_KHR_external_memory_win32 = 1;
+    if (extensions->has_VK_KHR_external_memory_win32)
+        extensions->has_VK_EXT_external_memory_host = 1;
 }
 
 static const struct vulkan_driver_funcs nx_vulkan_driver_funcs =

@@ -5,6 +5,7 @@
 # returned. Screenshots go to $LAUNCHER_SHOTS when it is set.
 # Needs Homebrew's sdl2 (sdl2-compat), sdl3, sdl2_ttf and libpng.
 set -eu
+export SDL_AUDIODRIVER=dummy
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 probe="$root/wine-nx-probe"
 # Two programs to stand in for games, out of whichever stage the card was last
@@ -43,18 +44,33 @@ if [ -n "$npdm" ]; then
         -fsanitize=address,undefined -fno-omit-frame-pointer \
         -I "$probe/tests" -I "$build/switch-shim" \
         "$probe/tests/forwarder_build.c" -o "$build/forwarder_build"
-    "$build/forwarder_build" "$npdm" "$probe/assets/autorun-32.jpg" "$build/ncas"
+    "$build/forwarder_build" "$npdm" "$probe/assets/autorun.jpg" "$build/ncas"
 else
     echo "forwarder: skipped, no hbl-main.npdm in any build directory"
 fi
 "$build/launcher_catalog"
 
+clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined \
+    $(sdl2-config --cflags) "$probe/tests/launcher_audio.c" $(sdl2-config --libs) -lm -o "$build/launcher_audio"
+"$build/launcher_audio"
+
+clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+    $(sdl2-config --cflags) -I/opt/homebrew/include \
+    "$probe/tests/launcher_image.c" "$probe/source/launcher_image.c" \
+    $(sdl2-config --libs) -L/opt/homebrew/lib -lpng -lturbojpeg -o "$build/launcher_image"
+"$build/launcher_image" "$probe/assets/logo.png" "$probe/assets/autorun.jpg"
+
+python3 "$probe/tools/make-embed.py" "$build/forwarder-icon.c" wine_nx_icon_any "$probe/assets/autorun.jpg"
 clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I "$probe/source" $(sdl2-config --cflags) -I/opt/homebrew/include \
-    "$probe/tests/launcher_host.c" "$probe/source/launcher.c" "$probe/source/launcher_catalog.c" "$probe/source/launcher_ui.c" \
+    "$probe/tests/launcher_host.c" "$probe/source/launcher.c" "$probe/source/launcher_catalog.c" "$probe/source/launcher_ui.c" "$probe/source/launcher_audio.c" \
+    "$probe/source/launcher_graphics.c" "$probe/source/launcher_forwarder.c" "$probe/source/launcher_image.c" \
+    "$probe/source/launcher_setup.c" "$probe/source/setup_boot.c" \
+    "$root/libs/tomcrypt/src/hashes/sha2/sha256.c" \
     "$probe/source/steamgriddb.c" \
     "$probe/source/launcher_svg.c" \
-    $(sdl2-config --libs) -L/opt/homebrew/lib -lSDL2_ttf -lpng -lcurl -o "$build/launcher_host"
+    "$build/forwarder-icon.c" \
+    $(sdl2-config --libs) -L/opt/homebrew/lib -lSDL2_ttf -lpng -lturbojpeg -lcurl -lcrypto -lm -o "$build/launcher_host"
 # sdl2-compat looks for SDL3 next to the program, not in Homebrew's lib folder.
 ln -s /opt/homebrew/lib/libSDL3.0.dylib "$build/libSDL3.dylib"
 
@@ -154,33 +170,6 @@ grep -q "launcher returned 1 target 'sdmc:/switch/wine/drive_c/openttd/openttd.e
 }
 echo "launcher host run: empty home, explicit add, persistence, details and start passed"
 
-# The same game from a 32-bit forwarder that can open others. It can be put
-# anywhere, so it goes to Autorun with 39 bits: straight there when the console
-# has that forwarder, and only after asking when it does not.
-LAUNCHER_HOST_TITLES=0500000000039000 SDL_VIDEODRIVER=dummy "$build/launcher_host" "$font" \
-    "$build/restart-script.txt" > "$build/handoff-out.txt" 2>&1 || { cat "$build/handoff-out.txt"; exit 1; }
-grep -q "^launch_title 0500000000039000$" "$build/handoff-out.txt" || { cat "$build/handoff-out.txt"; exit 1; }
-grep -q "launcher returned 0" "$build/handoff-out.txt" || { cat "$build/handoff-out.txt"; exit 1; }
-grep -qx "sdmc:/switch/wine/drive_c/openttd/openttd.exe" "sdmc:/switch/wine/run-next.txt"
-rm "sdmc:/switch/wine/run-next.txt"
-cat > "$build/handoff-ask-script.txt" <<SCRIPT
-wait 5
-key a
-wait 3
-shot $shots/handoff-first.png
-key a
-wait 5
-shot $shots/handoff-ask.png
-key b
-wait 3
-SCRIPT
-LAUNCHER_HOST_TITLES=none SDL_VIDEODRIVER=dummy "$build/launcher_host" "$font" \
-    "$build/handoff-ask-script.txt" > "$build/handoff-ask-out.txt" 2>&1 || { cat "$build/handoff-ask-out.txt"; exit 1; }
-if grep -q "^launch_title" "$build/handoff-ask-out.txt" || [ -e "sdmc:/switch/wine/run-next.txt" ]; then
-    cat "$build/handoff-ask-out.txt"; exit 1
-fi
-grep -q "launcher returned 0" "$build/handoff-ask-out.txt" || { cat "$build/handoff-ask-out.txt"; exit 1; }
-echo "launcher host run: a game that fits anywhere goes from a 32-bit forwarder to Autorun"
 
 # Eight played covers exercise Home's row: animated hit testing, swipe selection,
 # both ends, the header, Y Options, and the square library.
@@ -240,7 +229,7 @@ grep -q "launcher returned 1 target 'sdmc:/switch/wine/drive_c/Vanguard/Game.exe
 }
 echo "launcher host run: Home history row, taps, swipes, boundaries, header focus and Y Options passed"
 
-# A library larger than one screenful: the grid has to scroll, and the buttons
+# A library larger than one page: the grid has to page, and the buttons
 # have to be acted on while the icon worker posts an event per cover decoded.
 # tests/launcher_shot.py stages the games and reads back which cover each card
 # ended up showing, so a cover that went missing or came from another game
@@ -270,18 +259,53 @@ wait 8
 key up
 wait 45
 shot $shots/scroll-back.png
+key right
+key right
+key right
+key right
+key right
+wait 35
+shot $shots/page-upper.png
+key left
+wait 20
+shot $shots/page-upper-back.png
+key down
+key right
+wait 35
+shot $shots/page-lower.png
+key left
+wait 20
+shot $shots/page-lower-back.png
+trigger zr 32767
+trigger zr 25000
+wait 35
+shot $shots/page-trigger-held.png
+trigger zr 0
+trigger zr 32767
+trigger zr 0
+wait 35
+shot $shots/page-trigger-next.png
+key zl
+trigger zl 32767
+trigger zl 0
+wait 35
+shot $shots/page-trigger-back.png
 SCRIPT
 ( cd "$build/big" && SDL_VIDEODRIVER=dummy "$build/launcher_host" "$font" "$build/scroll-script.txt" \
     > "$build/scroll-out.txt" 2>&1 ) || { cat "$build/scroll-out.txt"; exit 1; }
 grep -q "120 catalog games (120 registered, 120 shown)" "$build/scroll-out.txt" || { cat "$build/scroll-out.txt"; exit 1; }
-# Four presses down put the selection on row 4, so the two rows shown are 3 and
-# 4: games 15 to 24, with the selection the sixth card. Four back up show
-# the first two rows again. A screen that never moved means the buttons were
-# never read, which is what a queue full of the worker's events causes.
+# Four presses down select game 20, the first slot of the third page.
 python3 "$probe/tests/launcher_shot.py" check "$shots/scroll-top.png" 0 0
-python3 "$probe/tests/launcher_shot.py" check "$shots/scroll-down.png" 15 5
+python3 "$probe/tests/launcher_shot.py" check "$shots/scroll-down.png" 20 0
 python3 "$probe/tests/launcher_shot.py" check "$shots/scroll-back.png" 0 0
-echo "launcher host run: a library past one screenful scrolls and keeps every cover"
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-upper.png" 10 0
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-upper-back.png" 0 4
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-lower.png" 10 5
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-lower-back.png" 0 9
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-trigger-held.png" 10 9
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-trigger-next.png" 20 9
+python3 "$probe/tests/launcher_shot.py" check "$shots/page-trigger-back.png" 0 9
+echo "launcher host run: library row edges and triggers turn pages and keep every cover"
 
 # The same library from cold, with the presses coming while the worker is still
 # decoding covers and posting an event for each one. A frame that spent itself
@@ -301,5 +325,5 @@ shot $shots/busy-scrolled.png
 SCRIPT
 ( cd "$build/big" && SDL_VIDEODRIVER=dummy "$build/launcher_host" "$font" "$build/busy-script.txt" \
     > "$build/busy-out.txt" 2>&1 ) || { cat "$build/busy-out.txt"; exit 1; }
-python3 "$probe/tests/launcher_shot.py" check "$shots/busy-scrolled.png" 15 5 3
+python3 "$probe/tests/launcher_shot.py" check "$shots/busy-scrolled.png" 20 0 3
 echo "launcher host run: buttons are read while the covers are still being decoded"
