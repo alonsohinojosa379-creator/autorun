@@ -58,7 +58,15 @@
 #endif
 
 #define ICON_SIDE      128    /* icons are decoded no larger than this */
-#define ICON_TEXTURES  48     /* a screenful, the row below it and the backdrop, at 1 MiB each */
+/* What decoded art may hold, in bytes of texture: every cover of a library
+ * and Home's art stay once they have been shown, so going back to a screen or
+ * a page shows them at once rather than decoding them again. Autorun runs as
+ * an application, with the memory of one. */
+#define ICON_BUDGET    (192ull * 1024 * 1024)
+/* How long art takes to come in, rather than appear at once. */
+#define ART_FADE_MS    160
+/* Decoded art made into textures per frame, as tico does on the Switch. */
+#define ICON_UPLOADS   3
 #define ICON_JOBS      64
 #define MAX_FILES      1024
 #define FOOTER_SPACE   38
@@ -120,7 +128,7 @@ struct program
     int icon_width, icon_height;
     int icon_is_art;
     Uint32 icon_time;
-    unsigned int icon_use;
+    unsigned int icon_use, square_use, hero_use;   /* when each was last asked for */
     enum icon_state square_state, hero_state;
     SDL_Texture *square_icon, *hero_icon;
     int square_width, square_height, hero_width, hero_height;
@@ -781,8 +789,9 @@ static int icon_thread( void *arg )
             SDL_CondWait( l->cond, l->mutex );
             continue;
         }
-        job = l->jobs[0];
-        memmove( l->jobs, l->jobs + 1, --l->job_count * sizeof(l->jobs[0]) );
+        /* The newest request first: what the screen shows now, not what it
+         * showed while the list scrolled past. */
+        job = l->jobs[--l->job_count];
         SDL_UnlockMutex( l->mutex );
 
         memset( &icon, 0, sizeof(icon) );
@@ -848,18 +857,64 @@ static void stop_icons( struct launcher *l )
     l->mutex = NULL;
 }
 
+/* One of a program's three pictures, as the cache sees it. */
+struct art
+{
+    SDL_Texture **texture;
+    int *width, *height;
+    enum icon_state *state;
+    unsigned int *use;
+};
+
+static struct art art_of( struct program *p, int kind )
+{
+    if (kind == ART_SQUARE)
+        return (struct art){ &p->square_icon, &p->square_width, &p->square_height, &p->square_state, &p->square_use };
+    if (kind == ART_HERO)
+        return (struct art){ &p->hero_icon, &p->hero_width, &p->hero_height, &p->hero_state, &p->hero_use };
+    return (struct art){ &p->icon, &p->icon_width, &p->icon_height, &p->icon_state, &p->icon_use };
+}
+
+static unsigned long long art_bytes( int width, int height )
+{
+    return (unsigned long long)width * height * 4;
+}
+
+/* How far in art that arrived at since is: all of it after ART_FADE_MS. */
+static int fade_in( const struct ui *ui, Uint32 since )
+{
+    Uint32 age = SDL_GetTicks() - since;
+
+    return !ui->animations || age >= ART_FADE_MS ? 255 : (int)(age * 255 / ART_FADE_MS);
+}
+
 static void pump_icons( struct launcher *l )
 {
     struct icon_result results[ICON_JOBS];
-    int count, i, loaded = 0, oldest;
+    unsigned long long held = 0;
+    int count, left, i, kind, oldest;
 
     if (!l->thread) return;
+    /* A few to the GPU each frame, the oldest first: making every cover that
+     * came in at once into a texture in one frame is a frame that hitches
+     * while the list moves. The rest wait for the next ones. */
     SDL_LockMutex( l->mutex );
-    count = l->result_count;
+    count = l->result_count < ICON_UPLOADS ? l->result_count : ICON_UPLOADS;
     memcpy( results, l->results, count * sizeof(results[0]) );
-    l->result_count = 0;
+    l->result_count -= count;
+    memmove( l->results, l->results + count, l->result_count * sizeof(results[0]) );
+    left = l->result_count;
     SDL_CondSignal( l->cond );
     SDL_UnlockMutex( l->mutex );
+    /* Those left wake the loop again for the next frame. */
+    if (left)
+    {
+        SDL_Event event;
+
+        memset( &event, 0, sizeof(event) );
+        event.type = l->icon_event;
+        SDL_PushEvent( &event );
+    }
 
     for (i = 0; i < count; i++)
     {
@@ -892,50 +947,59 @@ static void pump_icons( struct launcher *l )
         }
     }
 
-    /* Keep the most recently shown icons. */
+    /* Keep what was shown most recently, up to the budget, and never what the
+     * frame being drawn asked for. */
     for (i = 0; i < l->program_count; i++)
-        loaded += (l->programs[i].icon != NULL) + (l->programs[i].square_icon != NULL) +
-                  (l->programs[i].hero_icon != NULL);
-    while (loaded > ICON_TEXTURES)
+        for (kind = 0; kind < 3; kind++)
+        {
+            struct art a = art_of( &l->programs[i], kind );
+            if (*a.texture) held += art_bytes( *a.width, *a.height );
+        }
+    while (held > ICON_BUDGET)
     {
+        int oldest_kind = 0;
+        unsigned int oldest_use = 0;
+
         oldest = -1;
         for (i = 0; i < l->program_count; i++)
-            if ((l->programs[i].icon || l->programs[i].square_icon || l->programs[i].hero_icon) &&
-                l->programs[i].icon_use <= l->icon_frame &&
-                (oldest < 0 || l->programs[i].icon_use < l->programs[oldest].icon_use))
+            for (kind = 0; kind < 3; kind++)
+            {
+                struct art a = art_of( &l->programs[i], kind );
+                if (!*a.texture || *a.use > l->icon_frame || (oldest >= 0 && *a.use >= oldest_use)) continue;
                 oldest = i;
+                oldest_kind = kind;
+                oldest_use = *a.use;
+            }
         /* Everything held is on the screen now: keep it and let the frame be
-         * over the limit rather than throw away a cover about to be drawn. */
+         * over the budget rather than throw away a cover about to be drawn. */
         if (oldest < 0) break;
-        if (l->programs[oldest].hero_icon)
         {
-            SDL_DestroyTexture( l->programs[oldest].hero_icon );
-            l->programs[oldest].hero_icon = NULL; l->programs[oldest].hero_state = ICON_UNKNOWN;
+            struct art a = art_of( &l->programs[oldest], oldest_kind );
+            held -= art_bytes( *a.width, *a.height );
+            SDL_DestroyTexture( *a.texture );
+            *a.texture = NULL;
+            *a.state = ICON_UNKNOWN;
         }
-        else if (l->programs[oldest].square_icon)
-        {
-            SDL_DestroyTexture( l->programs[oldest].square_icon );
-            l->programs[oldest].square_icon = NULL; l->programs[oldest].square_state = ICON_UNKNOWN;
-        }
-        else
-        {
-            SDL_DestroyTexture( l->programs[oldest].icon );
-            l->programs[oldest].icon = NULL; l->programs[oldest].icon_state = ICON_UNKNOWN;
-        }
-        loaded--;
     }
 }
 
 static void request_art( struct launcher *l, int index, enum art_kind kind )
 {
     struct program *p = &l->programs[index];
-    enum icon_state *state = kind == ART_SQUARE ? &p->square_state : kind == ART_HERO ? &p->hero_state : &p->icon_state;
+    struct art a = art_of( p, kind );
+    enum icon_state *state = a.state;
     const char *art = kind == ART_SQUARE ? p->square_art : kind == ART_HERO ? p->hero_art : p->portrait_art;
 
-    p->icon_use = ++l->icon_use;
+    *a.use = ++l->icon_use;
     if (*state != ICON_UNKNOWN || !l->thread) return;
     SDL_LockMutex( l->mutex );
-    if (l->job_count < ICON_JOBS)
+    /* The worker takes the newest first; a full queue lets go of the oldest,
+     * asked for by a screen long gone, which is asked for again if it comes back. */
+    if (l->job_count == ICON_JOBS)
+    {
+        *art_of( &l->programs[l->jobs[0].index], l->jobs[0].kind ).state = ICON_UNKNOWN;
+        memmove( l->jobs, l->jobs + 1, --l->job_count * sizeof(l->jobs[0]) );
+    }
     {
         l->jobs[l->job_count].index = index;
         l->jobs[l->job_count].kind = kind;
@@ -1043,8 +1107,12 @@ static void draw_card( struct launcher *l, int index, int x, int y, const struct
     SDL_Color caption = current ? ui->value : ui->dim;
     int text_w;
 
+    /* A game with a square cover waits for it, on its bare card, rather than
+     * show its portrait art and swap it for the square one a moment later. */
+    int square = p->square_art[0] && p->square_state != ICON_MISSING;
+
     request_art( l, l->visible[index], ART_SQUARE );
-    if (!p->square_art[0]) request_icon( l, l->visible[index] );
+    if (!square) request_icon( l, l->visible[index] );
     if (current)
     {
         if (ui->glow)
@@ -1073,14 +1141,15 @@ static void draw_card( struct launcher *l, int index, int x, int y, const struct
     {
         SDL_Rect src = {0, 0, p->square_width, p->square_height};
         ui_rounded_texture( ui, p->square_icon, &src, (SDL_Rect){x, y, g->card, g->card}, 14,
-                            (SDL_Color){ current ? 255 : 190, current ? 255 : 190, current ? 255 : 190, 255 } );
+                            (SDL_Color){ current ? 255 : 190, current ? 255 : 190, current ? 255 : 190,
+                                         fade_in( ui, p->square_time ) } );
     }
+    else if (square) ;
     else if (p->icon && p->icon_is_art)
-        draw_cover( ui, p, (SDL_Rect){x, y, g->card, g->card}, 14, current ? 255 : 190, 255 );
+        draw_cover( ui, p, (SDL_Rect){x, y, g->card, g->card}, 14, current ? 255 : 190, fade_in( ui, p->icon_time ) );
     else if (p->icon)
     {
         int side = p->icon_width > p->icon_height ? p->icon_width : p->icon_height, scale, w, h;
-        Uint32 age = SDL_GetTicks() - p->icon_time;
         SDL_Rect dst;
 
         /* Small pixel-art icons grow by whole steps so their pixels stay square. */
@@ -1098,10 +1167,11 @@ static void draw_card( struct launcher *l, int index, int x, int y, const struct
         h = scale ? p->icon_height * scale : p->icon_height * target / side;
         dst = (SDL_Rect){ cx - w / 2, cy - h / 2 - 4, w, h };
         SDL_SetTextureColorMod( p->icon, dim, dim, dim );
-        SDL_SetTextureAlphaMod( p->icon, ui->animations && age < 180 ? age * 255 / 180 : 255 );
+        SDL_SetTextureAlphaMod( p->icon, fade_in( ui, p->icon_time ) );
         SDL_RenderCopy( ui->renderer, p->icon, NULL, &dst );
     }
-    else draw_placeholder( l, p, cx, cy - 4, target, p->icon_state == ICON_MISSING ? dim : dim / 3 );
+    /* Only a program that has no picture at all gets the drawn one. */
+    else if (p->icon_state == ICON_MISSING) draw_placeholder( l, p, cx, cy - 4, target, dim );
 
     if (p->settings.hidden)
     {
@@ -1114,6 +1184,15 @@ static void draw_card( struct launcher *l, int index, int x, int y, const struct
     text_w = ui_text_width( ui, ui->small, p->title );
     if (text_w > g->card + g->gap_x - 6) text_w = g->card + g->gap_x - 6;
     ui_text_fit( ui, ui->small, cx - text_w / 2, y + g->card + 8, g->card + g->gap_x - 6, p->title, caption, current );
+}
+
+/* What a card will draw, asked for ahead of it. */
+static void prefetch_card( struct launcher *l, int index )
+{
+    struct program *p = &l->programs[l->visible[index]];
+
+    request_art( l, l->visible[index], ART_SQUARE );
+    if (!p->square_art[0] || p->square_state == ICON_MISSING) request_icon( l, l->visible[index] );
 }
 
 static void draw_library( struct launcher *l )
@@ -1129,12 +1208,19 @@ static void draw_library( struct launcher *l )
 
     if (l->zone == ZONE_HEADER) hints[0].label = "Select";
 
+    if (l->selection + 1 < l->visible_count) request_art( l, l->visible[l->selection + 1], ART_HERO );
+    if (l->selection > 0) request_art( l, l->visible[l->selection - 1], ART_HERO );
     draw_backdrop( l, l->visible_count ? l->visible[l->selection] : -1 );
     ui_fill( ui, 0, 0, ui->width, ui->height, (SDL_Color){ 0, 0, 0, 120 } );
     grid_layout( l, &g );
     shown = g.columns * g.rows;
 
     draw_shell( l, 0 );
+    /* The pages either side, before this one: the worker takes the newest
+     * request first, so what is on the screen still comes first, and a page
+     * turned to is already there. They ask for what a card draws. */
+    for (i = g.first + shown; i < l->visible_count && i < g.first + 2 * shown; i++) prefetch_card( l, i );
+    for (i = g.first - shown > 0 ? g.first - shown : 0; i < g.first; i++) prefetch_card( l, i );
     for (i = g.first; i < l->visible_count && i < g.first + shown; i++)
     {
         int column = (i - g.first) % g.columns, row = (i - g.first) / g.columns;
@@ -1151,9 +1237,6 @@ static void draw_library( struct launcher *l )
         draw_card( l, l->selection, g.x0 + column * (g.card + g.gap_x),
                    g.y0 + row * (g.card + g.caption + g.gap_y), &g, l->zone != ZONE_HEADER );
     }
-    /* Prefetch the next page. */
-    for (i = g.first + shown; i < l->visible_count && i < g.first + 2 * shown; i++)
-        request_icon( l, l->visible[i] );
 
     if (!l->visible_count)
     {
@@ -1400,23 +1483,32 @@ static void draw_cover( struct ui *ui, const struct program *p, SDL_Rect rect, i
     ui_rounded_texture( ui, p->icon, &src, rect, radius, (SDL_Color){ brightness, brightness, brightness, alpha } );
 }
 
+/* Whether a game's backdrop can be drawn as it will stay: its hero art, or,
+ * when it has none, its portrait art or nothing -- not something shown for a
+ * moment and replaced. */
+static int backdrop_ready( struct launcher *l, int index )
+{
+    struct program *p;
+
+    if (index < 0 || !l->thread) return 1;
+    p = &l->programs[index];
+    request_art( l, index, ART_HERO );
+    if (p->hero_icon) return 1;
+    if (p->hero_state != ICON_MISSING) return 0;
+    request_icon( l, index );
+    return p->icon_state == ICON_READY || p->icon_state == ICON_MISSING;
+}
+
 static void draw_backdrop_art( struct launcher *l, int index, int alpha )
 {
     struct ui *ui = &l->ui;
     struct program *p;
-    Uint32 age;
     SDL_Rect src;
 
     if (index < 0 || alpha <= 0) return;
     p = &l->programs[index];
+    /* Asked for again so that the cache keeps what is on the screen. */
     request_art( l, index, ART_HERO );
-    if (!p->hero_icon)
-    {
-        request_icon( l, index );
-        if (!p->icon || !p->icon_is_art) return;
-    }
-    age = SDL_GetTicks() - (p->hero_icon ? p->hero_time : p->icon_time);
-    if (ui->animations && age < BACKDROP_FADE_MS) alpha = alpha * (int)age / BACKDROP_FADE_MS;
     if (p->hero_icon)
     {
         int sw = p->hero_width, sh = p->hero_height;
@@ -1429,8 +1521,10 @@ static void draw_backdrop_art( struct launcher *l, int index, int alpha )
         SDL_SetTextureScaleMode( p->hero_icon, SDL_ScaleModeLinear );
         SDL_RenderCopy( ui->renderer, p->hero_icon, &src, NULL );
     }
-    else
+    else if (p->hero_state == ICON_MISSING)
     {
+        request_icon( l, index );
+        if (!p->icon || !p->icon_is_art) return;
         src = cover_crop( p, ui->width, ui->height );
         SDL_SetTextureColorMod( p->icon, 205, 205, 205 );
         SDL_SetTextureAlphaMod( p->icon, alpha );
@@ -1440,7 +1534,9 @@ static void draw_backdrop_art( struct launcher *l, int index, int alpha )
 }
 
 /* The focused game's artwork behind the whole screen, shaded toward the left and
- * the bottom where the text sits, and crossfaded from the last game's. */
+ * the bottom where the text sits. The last game's stays until the new one's is
+ * decoded, and the two are crossfaded from then: moving along a row never
+ * shows the screen bare between them. */
 static void draw_backdrop( struct launcher *l, int current )
 {
     struct ui *ui = &l->ui;
@@ -1448,7 +1544,7 @@ static void draw_backdrop( struct launcher *l, int current )
     int alpha = 255;
 
     ui_background( ui );
-    if (current != l->backdrop)
+    if (current != l->backdrop && backdrop_ready( l, current ))
     {
         l->backdrop_previous = l->backdrop;
         l->backdrop = current;
@@ -1506,8 +1602,11 @@ static void draw_carousel_card( struct launcher *l, int index, SDL_Rect rect, fl
                             (SDL_Color){ 244, 247, 250, strength } );
     }
     ui_rounded( ui, x, y, w, h, HOME_RADIUS, (SDL_Color){ 30, 33, 36, 255 } );
-    if (p->icon && p->icon_is_art) draw_cover( ui, p, rect, HOME_RADIUS, 225 + (int)(30 * focus), 255 );
-    else
+    if (p->icon && p->icon_is_art)
+        draw_cover( ui, p, rect, HOME_RADIUS, 225 + (int)(30 * focus), fade_in( ui, p->icon_time ) );
+    /* Until it is known what the card shows, it shows its bare surface, not a
+     * drawn picture and a title that the art would then replace. */
+    else if (p->icon || p->icon_state == ICON_MISSING)
     {
         if (p->icon)
         {
@@ -1516,7 +1615,7 @@ static void draw_carousel_card( struct launcher *l, int index, SDL_Rect rect, fl
             SDL_Rect dst = { cx - iw / 2, cy - ih / 2 - 5, iw, ih };
             SDL_SetTextureScaleMode( p->icon, SDL_ScaleModeLinear );
             SDL_SetTextureColorMod( p->icon, shade, shade, shade );
-            SDL_SetTextureAlphaMod( p->icon, 255 );
+            SDL_SetTextureAlphaMod( p->icon, fade_in( ui, p->icon_time ) );
             SDL_RenderCopy( ui->renderer, p->icon, NULL, &dst );
         }
         else draw_placeholder( l, p, cx, cy - 5, target, shade );
@@ -1583,6 +1682,13 @@ static void draw_home( struct launcher *l )
     memset( l->carousel_hits, 0, sizeof(l->carousel_hits) );
     memset( &l->add_hit, 0, sizeof(l->add_hit) );
 
+    /* The backdrops a step or two along the row, before this one's: ready by
+     * the time the selection gets there. */
+    for (i = 2; i >= 1; i--)
+    {
+        if (l->history_selection + i < l->history_count) request_art( l, l->history[l->history_selection + i], ART_HERO );
+        if (l->history_selection - i >= 0) request_art( l, l->history[l->history_selection - i], ART_HERO );
+    }
     draw_backdrop( l, l->history_count ? l->history[l->history_selection] : -1 );
     draw_shell( l, 1 );
     if (!l->history_count)
@@ -4269,6 +4375,27 @@ static int run_library( struct launcher *l, char *target, size_t size )
     return 0;
 }
 
+/* Art asked for before the first frame, as tico does, so neither Home nor the
+ * library opens on bare cards: the least wanted first, since the worker takes
+ * the newest request first -- the library's first pages, then Home's covers,
+ * then the backdrop Home opens on. */
+static void preload_art( struct launcher *l )
+{
+    struct grid g;
+    int i;
+
+    if (!l->thread) return;
+    grid_layout( l, &g );
+    for (i = g.first + 3 * g.columns * g.rows; i-- > g.first;)
+        if (i < l->visible_count) prefetch_card( l, i );
+    for (i = l->history_count; i-- > 0;) request_icon( l, l->history[i] );
+    for (i = 2; i >= 0; i--)
+    {
+        if (l->history_selection + i < l->history_count) request_art( l, l->history[l->history_selection + i], ART_HERO );
+        if (i && l->history_selection - i >= 0) request_art( l, l->history[l->history_selection - i], ART_HERO );
+    }
+}
+
 /* What runs between frames: the release check and the DLL check. */
 static void background_tick( void *data )
 {
@@ -4375,6 +4502,7 @@ int wine_nx_launcher_run( struct wine_nx_launcher_options *options, char *target
 
         if (!strcasecmp( p->path, target ) || !strcasecmp( p->dos, target )) l->history_selection = i;
     }
+    preload_art( l );
     if (!autorun_install_finish( options->runtime_dir ))
         ui_toast( &l->ui, "The update recovery files could not be cleared.", 5000 );
     l->update = launcher_update_create( &l->ui, options->runtime_dir, options->schedule_restart );
