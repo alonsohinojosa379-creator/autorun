@@ -99,6 +99,9 @@ static FILE *checked_fopen(const char *path, const char *mode)
 #define fopen checked_fopen
 #define rename horizon_rename
 #include "../../dlls/ntdll/unix/horizon_registry_server.h"
+/* The runtime's log; macOS will not link a weak reference nothing defines. */
+int wine_nx_runtime_verbose;
+void wine_nx_runtime_trace( const char *msg ) { (void)msg; }
 #undef rename
 #undef fopen
 #define CHECK_LAYOUT(n) _Static_assert(sizeof(struct horizon_##n) == sizeof(struct n), #n)
@@ -198,6 +201,8 @@ static void test_save_and_load(void)
     static const unsigned short dword_name[] = u"dword", binary_name[] = u"binary", multi_name[] = u"multi";
     static const unsigned short unterminated_name[] = u"unterminated", odd_name[] = u"odd";
     static const unsigned short test_name[] = u"Test", saved_name[] = u"Saved";
+    static const unsigned short memory[] = u"System\\CurrentControlSet\\Control\\Session Manager\\Memory Management";
+    static const unsigned short paging_name[] = u"PagingFiles", paging[] = u"C:\\pagefile.sys 27 77";
     unsigned char binary[100], odd_data[3] = {1, 2, 3}, one[4] = {1, 0, 0, 0};
     unsigned int dword = 0x12345678, i;
     struct horizon_reg_key *key, *user;
@@ -241,6 +246,9 @@ static void test_save_and_load(void)
 
     reload();
     check_value(machine_key(), seed, sizeof(seed) - 2, none, 0, HORIZON_REG_SZ, mmdevapi, sizeof(mmdevapi));
+    /* wine.inf's paging file, which Aspyr's AWL.dll wants a drive in. */
+    check_value(machine_key(), memory, sizeof(memory) - 2, paging_name, sizeof(paging_name) - 2, HORIZON_REG_SZ,
+                paging, sizeof(paging));
     check_value(machine_key(), seed, sizeof(seed) - 2, saved_name, sizeof(saved_name) - 2, HORIZON_REG_DWORD, one, 4);
     check_value(machine_key(), clsid, sizeof(clsid) - 2, none, 0, HORIZON_REG_SZ, dll, sizeof(dll));
     check_value(machine_key(), clsid, sizeof(clsid) - 2, model, sizeof(model) - 2, HORIZON_REG_SZ, both, sizeof(both));

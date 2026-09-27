@@ -297,7 +297,12 @@ static unsigned int horizon_registry_init(void)
             "WINE REGISTRY Version 2\n"
             "[Software\\\\Classes\\\\CLSID\\\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\\\InprocServer32]\n"
             "@=\"mmdevapi.dll\"\n"
-            "\"ThreadingModel\"=\"Both\"\n";
+            "\"ThreadingModel\"=\"Both\"\n"
+            /* What wine.inf writes at wineboot, which never runs here. Aspyr's
+             * AWL.dll looks for a drive in it and, finding none, has Guitar Hero
+             * III say "Windows Virtual Memory must be enabled". */
+            "[System\\\\CurrentControlSet\\\\Control\\\\Session Manager\\\\Memory Management]\n"
+            "\"PagingFiles\"=\"C:\\\\pagefile.sys 27 77\"\n";
         static const char user_seed[] =
             "WINE REGISTRY Version 2\n[Software\\\\Wine\\\\Drivers]\n\"Audio\"=\"nxaudio\"\n";
         unsigned int errors = 0;
