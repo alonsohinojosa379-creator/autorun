@@ -6,7 +6,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 source = (root / 'dlls/win32u/d3dkmt_switch.c').read_text()
-code = source[source.index('#define D3DKMT_HANDLE_BIT'):source.index('struct vk_physdev_info')]
+code = source[source.index('#define D3DKMT_HANDLE_BIT'):source.index('#ifdef WINE_NX_MESA_SWITCH\nstruct vk_physdev_info')]
 
 fixture = r'''
 #include <assert.h>

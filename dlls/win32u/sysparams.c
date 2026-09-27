@@ -2168,6 +2168,14 @@ static DEVMODEW *get_virtual_modes( const DEVMODEW *initial, const DEVMODEW *max
     DEVMODEW *modes = NULL;
     SIZE *screen_sizes;
     BOOL vertical;
+#ifdef __SWITCH__
+    DEVMODEW scaled_maximum = *maximum;
+
+    /* Presentation scales virtual modes to the unchanged physical output. */
+    scaled_maximum.dmPelsWidth = max( scaled_maximum.dmPelsWidth, 1920 );
+    scaled_maximum.dmPelsHeight = max( scaled_maximum.dmPelsHeight, 1080 );
+    maximum = &scaled_maximum;
+#endif
 
     /* Check the ratio of dmPelsWidth to dmPelsHeight to determine whether the initial display mode
      * is in horizontal or vertical orientation. DMDO_DEFAULT is the natural orientation of the

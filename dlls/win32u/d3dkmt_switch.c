@@ -776,6 +776,7 @@ D3DKMT_HANDLE d3dkmt_create_sync( int fd, D3DKMT_HANDLE *global ) { if (global) 
 D3DKMT_HANDLE d3dkmt_open_sync( D3DKMT_HANDLE global, HANDLE shared ) { return 0; }
 NTSTATUS d3dkmt_destroy_sync( D3DKMT_HANDLE local ) { return STATUS_PROCEDURE_NOT_FOUND; }
 
+#ifdef WINE_NX_MESA_SWITCH
 struct vk_physdev_info
 {
     VkPhysicalDeviceProperties2 properties2;
@@ -794,46 +795,71 @@ static int compare_vulkan_physical_devices( const void *left, const void *right 
     return memcmp( a->id.deviceUUID, b->id.deviceUUID, sizeof(a->id.deviceUUID) );
 }
 
-static struct vulkan_instance *d3dkmt_vulkan_instance;
+extern PFN_vkVoidFunction wine_nx_vkGetInstanceProcAddr( VkInstance, const char * ) __asm__("vkGetInstanceProcAddr");
+static VkInstance d3dkmt_vulkan_instance;
+static PFN_vkEnumeratePhysicalDevices d3dkmt_enumerate_devices;
+static PFN_vkGetPhysicalDeviceProperties2 d3dkmt_device_properties;
+static PFN_vkGetPhysicalDeviceMemoryProperties d3dkmt_memory_properties;
 
 static void init_d3dkmt_vulkan(void)
 {
-    static const struct vulkan_instance_extensions extensions =
+    VkApplicationInfo application = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                     .apiVersion = VK_API_VERSION_1_1 };
+    VkInstanceCreateInfo info =
     {
-        .has_VK_KHR_get_physical_device_properties2 = 1,
-        .has_VK_KHR_external_memory_capabilities = 1,
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &application,
     };
+    PFN_vkCreateInstance create_instance;
 
-    d3dkmt_vulkan_instance = vulkan_instance_create( &extensions );
+    /* GPU discovery can run while Wine's Vulkan driver is being initialized. */
+    create_instance = (void *)wine_nx_vkGetInstanceProcAddr( NULL, "vkCreateInstance" );
+    if (!create_instance || create_instance( &info, NULL, &d3dkmt_vulkan_instance )) return;
+    d3dkmt_enumerate_devices = (void *)wine_nx_vkGetInstanceProcAddr( d3dkmt_vulkan_instance,
+                                                                  "vkEnumeratePhysicalDevices" );
+    d3dkmt_device_properties = (void *)wine_nx_vkGetInstanceProcAddr( d3dkmt_vulkan_instance,
+                                                                   "vkGetPhysicalDeviceProperties2" );
+    d3dkmt_memory_properties = (void *)wine_nx_vkGetInstanceProcAddr( d3dkmt_vulkan_instance,
+                                                                   "vkGetPhysicalDeviceMemoryProperties" );
 }
 
 BOOL get_vulkan_gpus( struct list *gpus )
 {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     struct vk_physdev_info *devices;
-    struct vulkan_instance *instance;
+    VkPhysicalDevice *physical_devices = NULL;
+    uint32_t count;
+    VkResult result;
     UINT i, j;
 
     pthread_once( &once, init_d3dkmt_vulkan );
-    if (!(instance = d3dkmt_vulkan_instance)) return FALSE;
-    if (!(devices = calloc( instance->physical_device_count, sizeof(*devices) ))) return FALSE;
-
-    for (i = 0; i < instance->physical_device_count; i++)
+    if (!d3dkmt_vulkan_instance || !d3dkmt_enumerate_devices || !d3dkmt_device_properties ||
+        !d3dkmt_memory_properties) return FALSE;
+    do
     {
-        struct vulkan_physical_device *physical = instance->physical_devices + i;
+        free( physical_devices );
+        if (d3dkmt_enumerate_devices( d3dkmt_vulkan_instance, &count, NULL ) || !count) return FALSE;
+        if (!(physical_devices = calloc( count, sizeof(*physical_devices) ))) return FALSE;
+        result = d3dkmt_enumerate_devices( d3dkmt_vulkan_instance, &count, physical_devices );
+    } while (result == VK_INCOMPLETE);
+    if (result || !(devices = calloc( count, sizeof(*devices) )))
+    {
+        free( physical_devices );
+        return FALSE;
+    }
 
+    for (i = 0; i < count; i++)
+    {
         devices[i].id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
         devices[i].properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         devices[i].properties2.pNext = &devices[i].id;
-        instance->p_vkGetPhysicalDeviceProperties2KHR( physical->host.physical_device,
-                                                        &devices[i].properties2 );
-        instance->p_vkGetPhysicalDeviceMemoryProperties( physical->host.physical_device,
-                                                          &devices[i].memory );
+        d3dkmt_device_properties( physical_devices[i], &devices[i].properties2 );
+        d3dkmt_memory_properties( physical_devices[i], &devices[i].memory );
     }
-    qsort( devices, instance->physical_device_count, sizeof(*devices),
-           compare_vulkan_physical_devices );
+    free( physical_devices );
+    qsort( devices, count, sizeof(*devices), compare_vulkan_physical_devices );
 
-    for (i = 0; i < instance->physical_device_count; i++)
+    for (i = 0; i < count; i++)
     {
         struct gpu_info *gpu;
 
@@ -841,6 +867,11 @@ BOOL get_vulkan_gpus( struct list *gpus )
         if (!(gpu = calloc( 1, sizeof(*gpu) ))) break;
         memcpy( &gpu->uuid, devices[i].id.deviceUUID, sizeof(gpu->uuid) );
         gpu->name = strdup( devices[i].properties2.properties.deviceName );
+        if (!gpu->name)
+        {
+            free( gpu );
+            break;
+        }
         gpu->pci_id.vendor = devices[i].properties2.properties.vendorID;
         gpu->pci_id.device = devices[i].properties2.properties.deviceID;
         for (j = 0; j < devices[i].memory.memoryHeapCount; j++)
@@ -852,3 +883,9 @@ BOOL get_vulkan_gpus( struct list *gpus )
     free( devices );
     return !list_empty( gpus );
 }
+#else
+BOOL get_vulkan_gpus( struct list *gpus )
+{
+    return FALSE;
+}
+#endif

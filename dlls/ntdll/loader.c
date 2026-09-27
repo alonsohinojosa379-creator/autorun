@@ -3463,6 +3463,9 @@ static NTSTATUS get_dll_load_path( LPCWSTR module, LPCWSTR dll_dir, ULONG safe_m
 {
     const WCHAR *mod_end = module;
     UNICODE_STRING name = RTL_CONSTANT_STRING( L"PATH" ), value;
+    UNICODE_STRING graphics_name = RTL_CONSTANT_STRING( L"WINE_NX_GRAPHICS_PATH" );
+    WCHAR graphics_buffer[MAX_PATH];
+    UNICODE_STRING graphics = { 0, sizeof(graphics_buffer), graphics_buffer };
     WCHAR *p, *ret;
     int len = ARRAY_SIZE(system_path) + 1, path_len = 0;
 
@@ -3478,6 +3481,11 @@ static NTSTATUS get_dll_load_path( LPCWSTR module, LPCWSTR dll_dir, ULONG safe_m
     if (RtlQueryEnvironmentVariable_U( NULL, &name, &value ) == STATUS_BUFFER_TOO_SMALL)
         path_len = value.Length;
 
+    if (RtlQueryEnvironmentVariable_U( NULL, &graphics_name, &graphics )) graphics.Length = 0;
+    while (graphics.Length && graphics.Buffer[graphics.Length / sizeof(WCHAR) - 1] == ';')
+        graphics.Length -= sizeof(WCHAR);
+    if (graphics.Length) len += graphics.Length / sizeof(WCHAR) + 1;
+
     if (dll_dir) len += wcslen( dll_dir ) + 1;
     else len += 2;  /* current directory */
     if (!(p = ret = RtlAllocateHeap( GetProcessHeap(), 0, path_len + len * sizeof(WCHAR) )))
@@ -3486,6 +3494,8 @@ static NTSTATUS get_dll_load_path( LPCWSTR module, LPCWSTR dll_dir, ULONG safe_m
     p = append_path( p, module, mod_end - module );
     if (dll_dir) p = append_path( p, dll_dir, -1 );
     else if (!safe_mode) p = append_path( p, L".", -1 );
+    /* Match the renderer search path used by the runtime for static imports. */
+    p = append_path( p, graphics.Buffer, graphics.Length / sizeof(WCHAR) );
     p = append_path( p, system_path, -1 );
     if (!dll_dir && safe_mode) p = append_path( p, L".", -1 );
 

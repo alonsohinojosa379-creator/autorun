@@ -1869,7 +1869,8 @@ static const char runtime_environment[] =
     "USERPROFILE=C:\\users\\steamuser\0"
     "VKD3D_SHADER_CACHE_PATH=C:\\users\\steamuser\\AppData\\Local\\Autorun\0"
     "windir=C:\\windows\0"
-    "WINE_D3D_CONFIG=cs_spin_count=64,explicit_buffer_flush=1\0";
+    "WINE_D3D_CONFIG=cs_spin_count=64,explicit_buffer_flush=1\0"
+    "WINE_NX_GRAPHICS_PATH=\0";
 
 static size_t runtime_fex_environment( const char *target, char *buffer, size_t size )
 {
@@ -2048,7 +2049,7 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     chars += strlen( cmdline_str ) + 1;
     chars += strlen( dos_path ) + 1;
     chars += strlen( nt_path ) + 1;
-    chars += sizeof(runtime_environment) + strlen( graphics_path ) + strlen( dxvk_hud ) - 1;
+    chars += sizeof(runtime_environment) + 2 * strlen( graphics_path ) + strlen( dxvk_hud ) - 1;
     chars += fex_environment_size;
     size = sizeof(*params) + chars * sizeof(WCHAR);
 
@@ -2087,6 +2088,11 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
         {
             for (i = 0; i < 5; i++) *cursor++ = (unsigned char)*value++;
             for (i = 0; graphics_path[i]; i++) *cursor++ = (unsigned char)graphics_path[i];
+        }
+        if (!strncmp( entry, "WINE_NX_GRAPHICS_PATH=", 22 ))
+        {
+            for (i = 0; i < 22; i++) *cursor++ = (unsigned char)*value++;
+            value = graphics_path;
         }
         do *cursor++ = (unsigned char)*value; while (*value++);
     }
