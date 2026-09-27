@@ -64,8 +64,18 @@ struct horizon_dll_file
     unsigned long long size;
     char sha256[65];
     char url[256];
-    char missing[64];           /* the first feature the runtime lacks */
+    /* The zlib-compressed copy that is downloaded, when the repository has one. */
+    unsigned long long packed_size;
+    char packed_sha256[65];
+    char packed_url[256];
+    char missing[96];           /* the first feature the runtime lacks */
     unsigned int class_first, class_count;
+    unsigned int feature_first, feature_count;
+};
+
+struct horizon_dll_feature
+{
+    char name[96];
 };
 
 struct horizon_dll_class
@@ -93,18 +103,22 @@ struct horizon_dll_manifest
     unsigned int count, capacity;
     struct horizon_dll_class *classes;
     unsigned int class_count, class_capacity;
+    struct horizon_dll_feature *features;
+    unsigned int feature_count, feature_capacity;
 };
 
+/* pending_bytes is what the files take on the card, download_bytes what
+ * fetching them transfers. */
 struct horizon_dlls_category_plan
 {
     unsigned int files, current, pending, unsupported;
-    unsigned long long bytes, pending_bytes;
+    unsigned long long bytes, pending_bytes, download_bytes;
 };
 
 struct horizon_dlls_plan
 {
     unsigned int files, current, pending, unsupported, removed;
-    unsigned long long bytes, pending_bytes;
+    unsigned long long bytes, pending_bytes, download_bytes;
     struct horizon_dlls_category_plan categories[HORIZON_DLLS_CATEGORIES];
 };
 
@@ -147,8 +161,12 @@ enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct hori
         const struct horizon_dll_manifest *local, const struct horizon_dlls_transport *transport,
         horizon_dlls_progress progress, void *opaque );
 
-/* Whether the card holds what a program needs to start at all. */
-int horizon_dlls_installed( const char *root );
+/* Whether the card holds the DLLs a program needs to start, installed from the
+ * repository for this runtime: the core modules in the card's manifest, the
+ * size it says, and needing nothing this runtime does not report. A card with
+ * an earlier release's DLLs and no manifest has not. why says what is wrong. */
+int horizon_dlls_ready( const char *root, const char *const *features, size_t feature_count,
+                        char *why, size_t why_size );
 const char *horizon_dlls_error( enum horizon_dlls_result result );
 /* A category's name as a player reads it: "directx-graphics" is DirectX graphics. */
 const char *horizon_dlls_category_title( const char *key, char *buffer, size_t size );

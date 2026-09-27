@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <zlib.h>
+
 #ifdef __SWITCH__
 #include <switch.h>
 typedef Sha256Context hash_context;
@@ -86,6 +88,17 @@ static int official_url( const char *url, const char *folder, const char *name )
 
     if (strncmp( url, HORIZON_DLLS_RAW, sizeof(HORIZON_DLLS_RAW) - 1 ) || strstr( url, ".." )) return 0;
     tail_length = (size_t)snprintf( tail, sizeof(tail), "/switch/wine/%s/%s", folder, name );
+    return tail_length < sizeof(tail) && length > tail_length && !strcmp( url + length - tail_length, tail );
+}
+
+/* The compressed copy's URL, for the file it says it is. */
+static int official_packed_url( const char *url, const char *folder, const char *name )
+{
+    char tail[176];
+    size_t length = strlen( url ), tail_length;
+
+    if (strncmp( url, HORIZON_DLLS_RAW, sizeof(HORIZON_DLLS_RAW) - 1 ) || strstr( url, ".." )) return 0;
+    tail_length = (size_t)snprintf( tail, sizeof(tail), "/compressed/switch/wine/%s/%s.z", folder, name );
     return tail_length < sizeof(tail) && length > tail_length && !strcmp( url + length - tail_length, tail );
 }
 
@@ -168,9 +181,14 @@ static int has_feature( const struct reading *r, const char *feature )
 static int read_feature( struct parser *p, void *data )
 {
     struct reading *r = data;
+    struct horizon_dll_manifest *m = r->manifest;
     char feature[96];
 
     if (!json_string( p, feature, sizeof(feature) )) return 0;
+    /* Kept, so the card's manifest says what its files need too. */
+    if (!grow( (void **)&m->features, &m->feature_capacity, m->feature_count, sizeof(*m->features) )) return 0;
+    snprintf( m->features[m->feature_count++].name, sizeof(m->features[0].name), "%s", feature );
+    r->file->feature_count++;
     if (!has_feature( r, feature ) && r->file->satisfied)
     {
         r->file->satisfied = 0;
@@ -231,6 +249,25 @@ static int read_class( struct parser *p, void *data )
     return 1;
 }
 
+static int read_packed( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct horizon_dll_file *f = r->file;
+    char encoding[16];
+
+    if (!strcmp( key, "encoding" ))
+    {
+        if (!json_string( p, encoding, sizeof(encoding) )) return 0;
+        /* One this does not know how to unpack is not used. */
+        if (strcmp( encoding, "zlib" )) r->seen |= 64;
+        return 1;
+    }
+    if (!strcmp( key, "size" )) return json_uint( p, &f->packed_size );
+    if (!strcmp( key, "sha256" )) return json_string( p, f->packed_sha256, sizeof(f->packed_sha256) );
+    if (!strcmp( key, "url" )) return json_string( p, f->packed_url, sizeof(f->packed_url) );
+    return skip_value( p );
+}
+
 static int read_file_field( struct parser *p, const char *key, void *data )
 {
     struct reading *r = data;
@@ -252,7 +289,13 @@ static int read_file_field( struct parser *p, const char *key, void *data )
     if (!strcmp( key, "size" )) { r->seen |= 4; return json_uint( p, &f->size ); }
     if (!strcmp( key, "sha256" )) { r->seen |= 8; return json_string( p, f->sha256, sizeof(f->sha256) ); }
     if (!strcmp( key, "url" )) { r->seen |= 16; return json_string( p, f->url, sizeof(f->url) ); }
-    if (!strcmp( key, "requires" )) return object( p, read_requires, r );
+    if (!strcmp( key, "compressed" )) return object( p, read_packed, r );
+    if (!strcmp( key, "requires" ))
+    {
+        f->feature_first = r->manifest->feature_count;
+        f->feature_count = 0;
+        return object( p, read_requires, r );
+    }
     if (!strcmp( key, "classes" ))
     {
         f->class_first = r->manifest->class_count;
@@ -274,12 +317,23 @@ static int read_file( struct parser *p, void *data )
     memset( f, 0, sizeof(*f) );
     f->satisfied = 1;
     f->class_first = m->class_count;
+    f->feature_first = m->feature_count;
     r->path[0] = r->category[0] = 0;
     r->seen = 0;
     if (!object( p, read_file_field, r )) return 0;
-    if (r->seen != 31 || !valid_name( f->name ) || (folder = folder_index( r->path )) < 0 ||
+    if ((r->seen & 31) != 31 || !valid_name( f->name ) || (folder = folder_index( r->path )) < 0 ||
         !f->size || f->size > FILE_MAX || !valid_hash( f->sha256 ) || !official_url( f->url, r->path, f->name ))
         return 0;
+    /* A compressed copy that is not all there, or not the repository's, is
+     * not one: the file itself is downloaded instead. */
+    if ((r->seen & 64) || !f->packed_size || f->packed_size > FILE_MAX || !valid_hash( f->packed_sha256 ) ||
+        !official_packed_url( f->packed_url, r->path, f->name ))
+    {
+        if (f->packed_url[0] && !(r->seen & 64) && !official_packed_url( f->packed_url, r->path, f->name )) return 0;
+        f->packed_size = 0;
+        f->packed_sha256[0] = f->packed_url[0] = 0;
+    }
+    for (char *c = f->packed_sha256; *c; c++) *c = tolower( (unsigned char)*c );
     for (char *c = f->sha256; *c; c++) *c = tolower( (unsigned char)*c );
     if ((category = category_index( m, r->category[0] ? r->category : "system" )) < 0) return 0;
     f->folder = (unsigned char)folder;
@@ -351,6 +405,7 @@ void horizon_dlls_free( struct horizon_dll_manifest *m )
 {
     free( m->files );
     free( m->classes );
+    free( m->features );
     memset( m, 0, sizeof(*m) );
 }
 
@@ -549,6 +604,8 @@ enum horizon_dlls_result horizon_dlls_plan( const char *root, struct horizon_dll
         default:
             plan->pending++; c->pending++;
             plan->pending_bytes += f->size; c->pending_bytes += f->size;
+            plan->download_bytes += f->packed_size ? f->packed_size : f->size;
+            c->download_bytes += f->packed_size ? f->packed_size : f->size;
             break;
         }
     }
@@ -568,16 +625,49 @@ struct download
     hash_context hash;
     unsigned long long size, expected;
     int failed;
+    /* A compressed download: what came, and the stream unpacking it. */
+    int packed, ended;
+    z_stream stream;
+    hash_context packed_hash;
+    unsigned long long packed_size, packed_expected;
 };
 
-static int to_file( void *context, const void *data, size_t size )
+static int write_out( struct download *d, const void *data, size_t size )
 {
-    struct download *d = context;
-
     if (size > d->expected - d->size) { d->failed = HORIZON_DLLS_INVALID; return 0; }
     if (fwrite( data, 1, size, d->file ) != size) { d->failed = HORIZON_DLLS_IO; return 0; }
     hash_add( &d->hash, data, size );
     d->size += size;
+    return 1;
+}
+
+static int to_file( void *context, const void *data, size_t size )
+{
+    static unsigned char out[128 * 1024];
+    struct download *d = context;
+    int status;
+
+    if (!d->packed) return write_out( d, data, size );
+    if (d->ended || size > d->packed_expected - d->packed_size) { d->failed = HORIZON_DLLS_INVALID; return 0; }
+    hash_add( &d->packed_hash, data, size );
+    d->packed_size += size;
+    d->stream.next_in = (Bytef *)data;
+    d->stream.avail_in = (uInt)size;
+    do
+    {
+        d->stream.next_out = out;
+        d->stream.avail_out = sizeof(out);
+        status = inflate( &d->stream, Z_NO_FLUSH );
+        if (status != Z_OK && status != Z_STREAM_END && status != Z_BUF_ERROR)
+        {
+            d->failed = HORIZON_DLLS_HASH;
+            return 0;
+        }
+        if (!write_out( d, out, sizeof(out) - d->stream.avail_out )) return 0;
+        if (status == Z_STREAM_END) { d->ended = 1; break; }
+    } while (d->stream.avail_in || !d->stream.avail_out);
+    /* Anything after the end of the stream is not the repository's. */
+    if (d->ended && d->stream.avail_in) { d->failed = HORIZON_DLLS_INVALID; return 0; }
     return 1;
 }
 
@@ -625,13 +715,29 @@ static enum horizon_dlls_result download_file( const char *root, const struct ho
         !join( path, sizeof(path), root, horizon_dlls_folders[f->folder], f->name ) ||
         (size_t)snprintf( part, sizeof(part), "%s.part", path ) >= sizeof(part))
         return HORIZON_DLLS_IO;
-    if (!(d.file = fopen( part, "wb" ))) return HORIZON_DLLS_IO;
     d.expected = f->size;
+    d.packed = f->packed_size != 0;
+    d.packed_expected = f->packed_size;
+    if (d.packed && inflateInit( &d.stream ) != Z_OK) return HORIZON_DLLS_MEMORY;
+    if (!(d.file = fopen( part, "wb" )))
+    {
+        if (d.packed) inflateEnd( &d.stream );
+        return HORIZON_DLLS_IO;
+    }
     hash_begin( &d.hash );
-    result = transport->fetch( transport->opaque, f->url, to_file, &d, within_file, progress );
+    if (d.packed) hash_begin( &d.packed_hash );
+    result = transport->fetch( transport->opaque, d.packed ? f->packed_url : f->url, to_file, &d, within_file, progress );
     if (fflush( d.file ) || fsync( fileno( d.file ) )) d.failed = HORIZON_DLLS_IO;
     if (fclose( d.file )) d.failed = HORIZON_DLLS_IO;
+    if (d.packed) inflateEnd( &d.stream );
     if (result == HORIZON_DLLS_OK && d.failed) result = d.failed;
+    if (result == HORIZON_DLLS_OK && d.packed)
+    {
+        hash_end( &d.packed_hash, hash );
+        hex( hash, digest );
+        if (d.packed_size != f->packed_size || !d.ended) result = HORIZON_DLLS_INVALID;
+        else if (strcmp( digest, f->packed_sha256 )) result = HORIZON_DLLS_HASH;
+    }
     if (result == HORIZON_DLLS_OK && d.size != f->size) result = HORIZON_DLLS_INVALID;
     if (result == HORIZON_DLLS_OK)
     {
@@ -658,6 +764,7 @@ static void add( struct text *t, const char *format, ... ) __attribute__((format
 static void add( struct text *t, const char *format, ... )
 {
     va_list args;
+    size_t wanted;
     int length;
     char *grown;
 
@@ -668,13 +775,14 @@ static void add( struct text *t, const char *format, ... )
         length = vsnprintf( t->data ? t->data + t->size : NULL, t->data ? t->capacity - t->size : 0, format, args );
         va_end( args );
         if (length < 0) { t->failed = 1; return; }
-        if (t->data && t->size + length < t->capacity) { t->size += length; return; }
-        if (!(grown = realloc( t->data, t->capacity ? t->capacity * 2 + length : 65536 + length )))
+        if (t->data && t->size + (size_t)length < t->capacity) { t->size += length; return; }
+        wanted = (t->capacity ? t->capacity * 2 : (size_t)65536) + (size_t)length;
+        if (!(grown = realloc( t->data, wanted )))
         {
             t->failed = 1;
             return;
         }
-        t->capacity = t->capacity ? t->capacity * 2 + length : 65536 + length;
+        t->capacity = wanted;
         t->data = grown;
     }
 }
@@ -759,7 +867,13 @@ static int write_record( const char *root, const struct horizon_dll_manifest *re
         add_string( &manifest, m->categories[f->category].key );
         add( &manifest, ",\"version\":%u,\"size\":%llu,\"sha256\":\"%s\",\"url\":", f->version, f->size, f->sha256 );
         add_string( &manifest, f->url );
-        add( &manifest, ",\"requires\":{\"flavor\":\"%s\",\"features\":[]},\"classes\":[", HORIZON_DLLS_FLAVOR );
+        add( &manifest, ",\"requires\":{\"flavor\":\"%s\",\"features\":[", HORIZON_DLLS_FLAVOR );
+        for (j = 0; j < f->feature_count; j++)
+        {
+            add( &manifest, "%s", j ? "," : "" );
+            add_string( &manifest, m->features[f->feature_first + j].name );
+        }
+        add( &manifest, "]},\"classes\":[" );
         for (j = 0; j < f->class_count; j++)
         {
             const struct horizon_dll_class *c = &m->classes[f->class_first + j];
@@ -833,7 +947,7 @@ enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct hori
     for (i = 0; i < remote->count; i++)
         if (remote->files[i].state == HORIZON_DLL_NEW || remote->files[i].state == HORIZON_DLL_CHANGED)
         {
-            fp.total += remote->files[i].size;
+            fp.total += remote->files[i].packed_size ? remote->files[i].packed_size : remote->files[i].size;
             pending++;
         }
     if (!(done = calloc( remote->count + 1, 1 )) ||
@@ -853,7 +967,7 @@ enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct hori
         if (progress && progress( opaque, what, fp.done, fp.total )) { result = HORIZON_DLLS_CANCELLED; break; }
         result = download_file( root, f, transport, &fp );
         if (result == HORIZON_DLLS_OK) done[i] = 1;
-        fp.done += f->size;
+        fp.done += f->packed_size ? f->packed_size : f->size;
     }
     /* What the card holds now: the repository's files it has, and of the
      * rest, those it had and still has. */
@@ -879,21 +993,51 @@ enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct hori
     return result;
 }
 
-int horizon_dlls_installed( const char *root )
+int horizon_dlls_ready( const char *root, const char *const *features, size_t feature_count,
+                        char *why, size_t why_size )
 {
-    static const char *const needed[] =
+    /* What every program loads before its own code runs. */
+    static const struct { int folder; const char *name; } core[] =
     {
-        "drive_c/windows/system32/ntdll.dll", "drive_c/windows/system32/wow64.dll",
-        "drive_c/windows/syswow64/ntdll.dll", "drive_c/windows/syswow64/kernel32.dll",
+        { 0, "ntdll.dll" }, { 0, "wow64.dll" }, { 0, "wow64win.dll" }, { 0, "win32u.dll" },
+        { 0, "winebox64.dll" }, { 0, "apisetschema.dll" }, { 0, "kernel32.dll" }, { 0, "kernelbase.dll" },
+        { 1, "ntdll.dll" }, { 1, "kernel32.dll" }, { 1, "kernelbase.dll" },
     };
+    struct horizon_dll_manifest record;
+    enum horizon_dlls_result result;
     char path[768];
     struct stat st;
     size_t i;
+    int ready = 1;
 
-    for (i = 0; i < sizeof(needed) / sizeof(needed[0]); i++)
-        if (!join( path, sizeof(path), root, needed[i], NULL ) || stat( path, &st ) || !S_ISREG( st.st_mode ))
-            return 0;
-    return 1;
+    result = horizon_dlls_load( root, features, feature_count, &record );
+    if (result != HORIZON_DLLS_OK)
+    {
+        snprintf( why, why_size, "%s", result == HORIZON_DLLS_NOT_FOUND ?
+                  "The Windows DLLs have not been downloaded to this card." :
+                  "The card's record of its Windows DLLs is damaged." );
+        return 0;
+    }
+    for (i = 0; i < sizeof(core) / sizeof(core[0]) && ready; i++)
+    {
+        const struct horizon_dll_file *f = find( &record, core[i].folder, core[i].name );
+
+        join( path, sizeof(path), root, horizon_dlls_folders[core[i].folder], core[i].name );
+        if (!f || stat( path, &st ) || (unsigned long long)st.st_size != f->size)
+        {
+            snprintf( why, why_size, "%s/%s is missing or not the one downloaded.",
+                      horizon_dlls_folders[core[i].folder], core[i].name );
+            ready = 0;
+        }
+        else if (!f->satisfied)
+        {
+            snprintf( why, why_size, "The Windows DLLs on the card are for another Autorun (%s needs %s).",
+                      core[i].name, f->missing );
+            ready = 0;
+        }
+    }
+    horizon_dlls_free( &record );
+    return ready;
 }
 
 const char *horizon_dlls_error( enum horizon_dlls_result result )

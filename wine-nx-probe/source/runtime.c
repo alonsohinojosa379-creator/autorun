@@ -39,6 +39,8 @@
 #include "std_stream_lines.h"
 #include "thread_profile.h"
 #include "dxvk_releases.h"
+#include "horizon_dlls.h"
+#include "horizon_dll_features.h"
 #ifdef WINE_NX_SWAP_POC
 #include "swap_file.h"
 #include "horizon_swap.h"
@@ -3926,6 +3928,26 @@ int main( int argc, char **argv )
         remove( WINE_NX_RUNTIME_ROOT "/run-next.txt" );
         autorun = resumed_program = 1;
         log_line( "[SETUP] resuming %s", target );
+    }
+    /* A program started without the launcher -- from its forwarder, resumed
+     * after the components setup, or named on the command line -- needs the
+     * card's Windows DLLs as much as one chosen there. Without them, or with
+     * DLLs from an earlier release that do not match this runtime, Wine could
+     * only stop in the loader, and on the screen that is a black one. The
+     * launcher offers them instead. */
+    if (forwarded_game > 0 || resumed_program || (!forwarded_game && argc > 1 && argv[1] && argv[1][0]))
+    {
+        char why[160];
+
+        if (!horizon_dlls_ready( RUNTIME_DIR, horizon_dll_runtime_features,
+                                 sizeof(horizon_dll_runtime_features) / sizeof(horizon_dll_runtime_features[0]),
+                                 why, sizeof(why) ))
+        {
+            log_line( "[DLLS] %s The launcher offers them.", why );
+            launch_error = "Games need Autorun's Windows DLLs. Download them in Settings > System > Windows DLLs.";
+            forwarded_game = -1;
+            resumed_program = autorun = 0;
+        }
     }
     if (forwarded_game > 0 || resumed_program || (!forwarded_game && argc > 1 && argv[1] && argv[1][0]))
     {

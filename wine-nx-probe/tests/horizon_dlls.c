@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 static const char *repo, *served, *card;
+static unsigned long long fetched_bytes;
 static const char *features[64];
 static size_t feature_count;
 static int cancel_after = -1, fetches;
@@ -48,6 +49,7 @@ static enum horizon_dlls_result fetch( void *opaque, const char *url, horizon_dl
     {
         if (!sink( context, buffer, got )) { fclose( file ); return HORIZON_DLLS_IO; }
         done += got;
+        fetched_bytes += got;
         if (progress && progress( progress_opaque, url, done, 0 )) { fclose( file ); return HORIZON_DLLS_CANCELLED; }
     }
     fclose( file );
@@ -55,6 +57,13 @@ static enum horizon_dlls_result fetch( void *opaque, const char *url, horizon_dl
 }
 
 static const struct horizon_dlls_transport transport = { fetch, NULL };
+
+static int ready( size_t count )
+{
+    char why[160];
+
+    return horizon_dlls_ready( card, features, count, why, sizeof(why) );
+}
 
 static int count_files( void *opaque, const char *what, unsigned long long current, unsigned long long total )
 {
@@ -172,7 +181,7 @@ static int phase_damaged( void )
     char path[1024], *before, *after;
     size_t size_before, size_after;
 
-    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 1 );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 2 );
     card_path( path, sizeof(path), named( "quartz.dll" ) );
     before = read_all( path, &size_before );
     CHECK( update() == HORIZON_DLLS_HASH );
@@ -180,6 +189,11 @@ static int phase_damaged( void )
     CHECK( before && after && size_before == size_after && !memcmp( before, after, size_before ) );
     strcat( path, ".part" );
     CHECK( access( path, F_OK ) );
+    /* The download stopped at the first file that failed; the other, whose
+     * compressed copy is not the manifest's, fails the same way on its own. */
+    for (unsigned int i = 0; i < remote.count; i++)
+        if (strcmp( remote.files[i].name, "devenum.dll" )) remote.files[i].state = HORIZON_DLL_CURRENT;
+    CHECK( update() == HORIZON_DLLS_HASH );
     printf( "damaged: a download that fails its SHA-256 leaves the card's file and no .part behind\n" );
     return 0;
 }
@@ -206,26 +220,33 @@ int main( int argc, char **argv )
     CHECK( !strcmp( argv[1], "install" ) );
 
     /* A card with nothing: every file is new, and a program cannot start yet. */
-    CHECK( !horizon_dlls_installed( card ) );
+    CHECK( !ready( feature_count ) );
     CHECK( check( 0 ) == HORIZON_DLLS_OK );
     total = remote.count;
     CHECK( total > 20 && plan.pending == total && plan.current == 0 && !plan.unsupported );
     CHECK( !strcmp( remote.flavor, HORIZON_DLLS_FLAVOR ) && remote.category_count > 5 );
-    printf( "fresh card: %u files, %.1f MB to download in %u categories\n", total,
-            plan.pending_bytes / 1048576.0, remote.category_count );
+    CHECK( plan.download_bytes < plan.pending_bytes );
+    printf( "fresh card: %u files, %.1f MB on the card, %.1f MB to download in %u categories\n", total,
+            plan.pending_bytes / 1048576.0, plan.download_bytes / 1048576.0, remote.category_count );
 
     /* Stopped after two files: those two are kept and recorded, the rest wait. */
     cancel_after = 2;
     CHECK( update() == HORIZON_DLLS_CANCELLED );
     cancel_after = -1;
     CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.current == 2 && plan.pending == total - 2 );
+    CHECK( !ready( feature_count ) );
     printf( "cancelled after two files: %u installed and recorded, %u waiting\n", plan.current, plan.pending );
 
-    /* The rest, and the card has everything, byte for byte. */
+    /* The rest, and the card has everything, byte for byte, having fetched the
+     * compressed copies rather than the files. */
+    fetched_bytes = 0;
     CHECK( update() == HORIZON_DLLS_OK );
+    CHECK( fetched_bytes < plan.pending_bytes );
     CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && plan.current == total );
     for (i = 0; i < remote.count; i++) CHECK( same_as_repo( &remote.files[i] ) );
-    CHECK( horizon_dlls_installed( card ) );
+    CHECK( ready( feature_count ) );
+    /* Not for a runtime that reports none of what they need. */
+    CHECK( !ready( 0 ) );
     snprintf( path, sizeof(path), "%s/%s", card, HORIZON_DLLS_CLASSES );
     CHECK( (text = read_all( path, NULL )) );
     CHECK( !strncmp( text, "WINE REGISTRY Version 2\n", 24 ) );
@@ -258,11 +279,15 @@ int main( int argc, char **argv )
      * same bytes are kept, other bytes replaced. */
     snprintf( path, sizeof(path), "%s/%s", card, HORIZON_DLLS_MANIFEST );
     CHECK( !remove( path ) );
+    /* Files with no record, as an earlier release left them: a program does
+     * not start on them until they are known to be the repository's. */
+    CHECK( !ready( feature_count ) );
     CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && plan.current == total );
     fetches = 0;
     CHECK( update() == HORIZON_DLLS_OK && fetches == 0 );
     CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && local.count == total );
-    printf( "no record: the files already there are read, kept and recorded\n" );
+    CHECK( ready( feature_count ) );
+    printf( "no record: the files already there are read, kept and recorded; ready only once recorded\n" );
 
     /* What the runtime cannot run is left alone. */
     horizon_dlls_free( &remote );

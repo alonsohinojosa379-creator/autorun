@@ -42,6 +42,15 @@ static int progress( void *opaque, const char *what, unsigned long long current,
     return SDL_AtomicGet( &d->cancel );
 }
 
+/* Whether a program can start on what the card holds, and if not, why. */
+static int ready( struct launcher_dlls *d, char *why, size_t size )
+{
+    char ignored[160];
+
+    return horizon_dlls_ready( d->root, horizon_dll_runtime_features, FEATURE_COUNT,
+                               why ? why : ignored, why ? size : sizeof(ignored) );
+}
+
 static void set_what( struct launcher_dlls *d, const char *what )
 {
     progress( d, what, 0, 0 );
@@ -127,7 +136,7 @@ void launcher_dlls_tick( struct launcher_dlls *d )
 {
     if (!d || !finish( d ) || !d->notify || d->ui->modal_depth) return;
     d->notify = 0;
-    if (!horizon_dlls_installed( d->root ))
+    if (!ready( d, NULL, 0 ))
         ui_notice( d->ui, "Windows DLLs needed: Settings > System > Windows DLLs" );
     else if (d->planned && d->have_remote && d->plan.pending)
         ui_notice( d->ui, "Windows DLL updates available" );
@@ -252,16 +261,17 @@ static const char *size_text( unsigned long long bytes, char *buffer, size_t siz
 
 static int update( struct launcher_dlls *d )
 {
-    char text[512], amount[32];
+    char text[512], amount[32], unpacked[32];
     enum horizon_dlls_result result;
 
     if (!d->have_remote || !d->planned || !d->plan.pending) return 1;
     snprintf( text, sizeof(text),
-              "%u files, %s, from the DLL repository on GitHub. What is downloaded is kept if it stops "
-              "part of the way, and the rest comes the next time.%s",
-              d->plan.pending, size_text( d->plan.pending_bytes, amount, sizeof(amount) ),
+              "%u files: %s to download from the DLL repository on GitHub, %s on the SD card. What is "
+              "downloaded is kept if it stops part of the way, and the rest comes the next time.%s",
+              d->plan.pending, size_text( d->plan.download_bytes, amount, sizeof(amount) ),
+              size_text( d->plan.pending_bytes, unpacked, sizeof(unpacked) ),
               d->plan.unsupported ? "\n\nSome files need a newer Autorun and are left as they are." : "" );
-    if (!ui_confirm( d->ui, horizon_dlls_installed( d->root ) ? "Update the Windows DLLs?" :
+    if (!ui_confirm( d->ui, ready( d, NULL, 0 ) ? "Update the Windows DLLs?" :
                      "Download the Windows DLLs?", text, "Download" ))
         return 0;
     result = run( d, JOB_APPLY, "Downloading Windows DLLs" );
@@ -286,14 +296,14 @@ void launcher_dlls_open( struct launcher_dlls *d )
     while (ui->running)
     {
         const struct horizon_dll_manifest *m = d->have_remote ? &d->remote : &d->local;
-        int installed = horizon_dlls_installed( d->root ), offline = !d->have_remote;
+        int installed = ready( d, NULL, 0 ), offline = !d->have_remote;
 
         memset( rows, 0, sizeof(rows) );
         snprintf( rows[0].label, sizeof(rows[0].label), "%s", installed ? "Update" : "Download" );
         if (offline) snprintf( rows[0].value, sizeof(rows[0].value), "Offline" );
         else if (d->plan.pending)
             snprintf( rows[0].value, sizeof(rows[0].value), "%u files, %s", d->plan.pending,
-                      size_text( d->plan.pending_bytes, amount, sizeof(amount) ) );
+                      size_text( d->plan.download_bytes, amount, sizeof(amount) ) );
         else snprintf( rows[0].value, sizeof(rows[0].value), "Up to date" );
         rows[0].kind = UI_ROW_ACTION;
         rows[0].disabled = offline || !d->plan.pending;
@@ -351,8 +361,10 @@ void launcher_dlls_open( struct launcher_dlls *d )
 
 int launcher_dlls_ready( struct launcher_dlls *d )
 {
+    char why[160], text[512];
+
     if (!d) return 1;
-    if (horizon_dlls_installed( d->root )) return 1;
+    if (ready( d, why, sizeof(why) )) return 1;
     if (d->thread) run( d, JOB_NONE, "Checking the DLL repository" );
     if (!d->have_remote && run( d, JOB_CHECK, "Checking the DLL repository" ) != HORIZON_DLLS_OK)
     {
@@ -363,7 +375,19 @@ int launcher_dlls_ready( struct launcher_dlls *d )
                         "the SD card." );
         return 0;
     }
-    return update( d ) && horizon_dlls_installed( d->root );
+    /* Nothing to download that would put it right: the repository has no
+     * DLLs for this Autorun yet. */
+    if (!d->planned || !d->plan.pending)
+    {
+        snprintf( text, sizeof(text), "%s\n\nThe DLL repository has nothing newer for this version of Autorun "
+                  "yet. Update Autorun, or check again later.", why );
+        ui_message( d->ui, "Windows DLLs needed", text );
+        return 0;
+    }
+    if (!update( d )) return 0;
+    if (ready( d, why, sizeof(why) )) return 1;
+    ui_message( d->ui, "Windows DLLs needed", why );
+    return 0;
 }
 
 const char *launcher_dlls_status( struct launcher_dlls *d, char *buffer, size_t size, int *tone )
@@ -371,7 +395,7 @@ const char *launcher_dlls_status( struct launcher_dlls *d, char *buffer, size_t 
     *tone = UI_VALUE_NORMAL;
     if (!d) return "Unavailable";
     if (d->thread) return "Checking...";
-    if (!horizon_dlls_installed( d->root )) { *tone = UI_VALUE_DANGER; return "Not installed"; }
+    if (!ready( d, NULL, 0 )) { *tone = UI_VALUE_DANGER; return "Not installed"; }
     if (!d->have_remote || !d->planned) return "Installed";
     if (d->plan.pending)
     {
