@@ -5303,6 +5303,16 @@ static void test_read_write(void)
     ok(GetLastError() == 0xdeadbeef, "expected 0xdeadbeef, got %ld\n", GetLastError());
     ok(bytes == 0, "bytes %lu\n", bytes);
 
+    iob.Status = -1;
+    iob.Information = -1;
+    offset.QuadPart = 0;
+    status = pNtReadFile(hfile, 0, NULL, NULL, &iob, NULL, 0, &offset, NULL);
+    ok(status == STATUS_SUCCESS, "NtReadFile error %#lx\n", status);
+    ok(iob.Status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx\n", iob.Status);
+    ok(iob.Information == 0, "expected 0, got %Iu\n", iob.Information);
+    off = SetFilePointer(hfile, 0, NULL, FILE_CURRENT);
+    ok(off == sizeof(contents), "expected sizeof(contents), got %lu\n", off);
+
     ovl.Offset = sizeof(contents);
     ovl.OffsetHigh = 0;
     ovl.Internal = -1;
@@ -5385,6 +5395,11 @@ static void test_read_write(void)
         iob.Information = -1;
         offset.QuadPart = (LONGLONG)i;
         status = pNtReadFile(hfile, 0, NULL, NULL, &iob, buf, sizeof(buf), &offset, NULL);
+        ok(status == STATUS_INVALID_PARAMETER, "%ld: expected STATUS_INVALID_PARAMETER, got %#lx\n", i, status);
+        ok(iob.Status == -1, "expected -1, got %#lx\n", iob.Status);
+        ok(iob.Information == -1, "expected -1, got %Id\n", iob.Information);
+
+        status = pNtReadFile(hfile, 0, NULL, NULL, &iob, NULL, 0, &offset, NULL);
         ok(status == STATUS_INVALID_PARAMETER, "%ld: expected STATUS_INVALID_PARAMETER, got %#lx\n", i, status);
         ok(iob.Status == -1, "expected -1, got %#lx\n", iob.Status);
         ok(iob.Information == -1, "expected -1, got %Id\n", iob.Information);

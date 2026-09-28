@@ -7,7 +7,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[2]
 signal = (root / 'dlls/ntdll/unix/signal_arm64.c').read_text()
-functions = signal[signal.index('static NTSTATUS check_current_thread_context_access('):signal.index('/* Windows leaves the wait')]
+functions = signal[signal.index('static NTSTATUS check_current_thread_context_access('):signal.index('extern void wine_nx_call_pe_apc(')]
 syscall = (root / 'dlls/wow64/syscall.c').read_text()
 start = syscall.index('static NTSTATUS thread_init(void)')
 init = syscall[start:syscall.index('\n}\n', start) + 3]

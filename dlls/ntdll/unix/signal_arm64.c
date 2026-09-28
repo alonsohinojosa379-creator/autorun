@@ -39,6 +39,7 @@
 #include "windef.h"
 #include "winnt.h"
 #include "winternl.h"
+#include "wine/asm.h"
 #include "unix_private.h"
 #include "horizon_wow64.h"
 #include "horizon_private.h"
@@ -159,28 +160,35 @@ NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
                                           get_cpu_area( get_thread_data(), IMAGE_FILE_MACHINE_I386 ), ctx, FALSE );
 }
 
-/* Windows leaves the wait through KiUserApcDispatcher, which calls the routine
- * on the thread's own stack and continues the context it was given. Here the
- * routine is called where the wait ends, with a context of this place, and the
- * wait's status is what the caller gets -- STATUS_USER_APC, which is the
- * WAIT_IO_COMPLETION a program waiting alertably looks for.
- *
- * The context matters for a 32-bit program: wow64 hands it to
- * Wow64ApcRoutine, which runs the program's own routine in a simulation of its
- * own and leaves it by continuing that context, which comes back here. The
- * program's registers go back as they were, and the status reaches its Eax on
- * the way out of the call that waited, as wow64cpu puts it there
- * (wow64_box64_bridge.c). A thread's first wait is the one ending its loader
- * initialization, where Eax holds the thread's entry point. */
+extern void wine_nx_call_pe_apc( PNTAPCFUNC func, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
+                                CONTEXT *context, TEB *teb );
+__ASM_GLOBAL_FUNC( wine_nx_call_pe_apc,
+                   "hint 34\n\t"
+                   "stp x29, x30, [sp, #-64]!\n\t"
+                   "mov x29, sp\n\t"
+                   "stp x18, x23, [sp, #16]\n\t"
+                   "stp x24, x28, [sp, #32]\n\t"
+                   "mov x18, x5\n\t"
+                   "mov x16, x0\n\t"
+                   "mov x0, x1\n\t"
+                   "mov x1, x2\n\t"
+                   "mov x2, x3\n\t"
+                   "mov x3, x4\n\t"
+                   "blr x16\n\t"
+                   "ldp x18, x23, [sp, #16]\n\t"
+                   "ldp x24, x28, [sp, #32]\n\t"
+                   "ldp x29, x30, [sp], #64\n\t"
+                   "ret" )
+
+/* WoW64 resumes the captured native context after its guest APC returns. */
 NTSTATUS call_user_apc_dispatcher( CONTEXT *context, unsigned int flags, ULONG_PTR arg1, ULONG_PTR arg2,
                                    ULONG_PTR arg3, PNTAPCFUNC func, NTSTATUS status )
 {
-    void (WINAPI *dispatch)( ULONG_PTR, ULONG_PTR, ULONG_PTR, CONTEXT * ) = (void *)func;
     CONTEXT here;
 
     if (flags) FIXME( "flags %#x are not supported.\n", flags );
-    if (!horizon_capture_context( &here )) dispatch( arg1, arg2, arg3, &here );
-    /* A context the caller wants resumed instead of returning to it. */
+    if (!horizon_capture_context( &here ))
+        wine_nx_call_pe_apc( func, arg1, arg2, arg3, &here, NtCurrentTeb() );
     if (context) return signal_set_full_context( context );
     return status;
 }

@@ -6505,6 +6505,14 @@ NTSTATUS WINAPI NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, vo
             goto done;
         }
 
+        if (!length)
+        {
+            status = STATUS_SUCCESS;
+            if (offset && offset->QuadPart < 0 && offset->QuadPart != FILE_USE_FILE_POINTER_POSITION)
+                status = STATUS_INVALID_PARAMETER;
+            goto done;
+        }
+
         if (offset && offset->QuadPart != FILE_USE_FILE_POINTER_POSITION)
         {
             /* async I/O doesn't make sense on regular files */
