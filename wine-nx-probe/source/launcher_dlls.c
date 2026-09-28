@@ -1,4 +1,5 @@
 #include "launcher_dlls.h"
+#include "launcher.h"
 #include "launcher_ui.h"
 #include "horizon_dlls.h"
 #include "horizon_dlls_curl.h"
@@ -103,6 +104,18 @@ static int worker( void *opaque )
         replan( d, d->job == JOB_VERIFY );
     }
     if (transport.opaque) horizon_dlls_curl_close( &transport );
+    {
+        char line[400], why[160];
+
+        snprintf( line, sizeof(line), "[DLLS] %s: %s; %u files, %u to download (%llu KB), %u need another runtime, "
+                  "%u in folders this build does not know; the card %s",
+                  d->job == JOB_APPLY ? "download" : d->job == JOB_VERIFY ? "verify" : "check",
+                  horizon_dlls_error( d->result ), d->have_remote ? d->remote.count : 0,
+                  d->planned ? d->plan.pending : 0, d->planned ? d->plan.download_bytes >> 10 : 0,
+                  d->planned ? d->plan.unsupported : 0, d->have_remote ? d->remote.skipped : 0,
+                  ready( d, why, sizeof(why) ) ? "can start programs" : why );
+        wine_nx_runtime_trace( line );
+    }
     SDL_AtomicSet( &d->done, 1 );
     event.type = SDL_USEREVENT;
     SDL_PushEvent( &event );
@@ -300,7 +313,8 @@ void launcher_dlls_open( struct launcher_dlls *d )
 
         memset( rows, 0, sizeof(rows) );
         snprintf( rows[0].label, sizeof(rows[0].label), "%s", installed ? "Update" : "Download" );
-        if (offline) snprintf( rows[0].value, sizeof(rows[0].value), "Offline" );
+        if (offline) snprintf( rows[0].value, sizeof(rows[0].value), "%s",
+                               d->result == HORIZON_DLLS_NETWORK ? "Offline" : "Unavailable" );
         else if (d->plan.pending)
             snprintf( rows[0].value, sizeof(rows[0].value), "%u files, %s", d->plan.pending,
                       size_text( d->plan.download_bytes, amount, sizeof(amount) ) );
@@ -308,7 +322,8 @@ void launcher_dlls_open( struct launcher_dlls *d )
         rows[0].kind = UI_ROW_ACTION;
         rows[0].disabled = offline || !d->plan.pending;
         rows[0].value_tone = offline ? UI_VALUE_DANGER : d->plan.pending ? UI_VALUE_NORMAL : UI_VALUE_SUCCESS;
-        rows[0].help = "Downloads the files that are new or changed in the DLL repository.";
+        rows[0].help = offline ? horizon_dlls_error( d->result ) :
+                       "Downloads the files that are new or changed in the DLL repository.";
         snprintf( rows[1].label, sizeof(rows[1].label), "Check again" );
         rows[1].kind = UI_ROW_ACTION;
         rows[1].help = offline ? horizon_dlls_error( d->result ) : "Reads the DLL repository's manifest again.";
@@ -402,10 +417,11 @@ const char *launcher_dlls_describe( struct launcher_dlls *d, char *buffer, size_
     if (!d) return "Windows DLLs are not available in this build.";
     if (d->thread) return "Checking the DLL repository...";
     if (!d->have_remote || !d->planned)
-        return ready( d, NULL, 0 ) ? "The card has the Windows DLLs. The DLL repository could not be reached to "
-                                     "look for newer ones." :
-                                     "The DLL repository could not be reached. Connect to the internet, or skip and "
-                                     "download them later.";
+    {
+        snprintf( buffer, size, "%s%s", ready( d, NULL, 0 ) ? "The card has the Windows DLLs. " : "",
+                  horizon_dlls_error( d->result ) );
+        return buffer;
+    }
     if (!d->plan.pending) return "The card has the Windows DLLs, up to date.";
     snprintf( buffer, size, "%u files: %s to download, %s on the SD card.", d->plan.pending,
               size_text( d->plan.download_bytes, download, sizeof(download) ),

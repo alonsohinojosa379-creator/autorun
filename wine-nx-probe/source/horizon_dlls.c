@@ -329,9 +329,18 @@ static int read_file( struct parser *p, void *data )
     r->path[0] = r->category[0] = 0;
     r->seen = 0;
     if (!object( p, read_file_field, r )) return 0;
-    if ((r->seen & 31) != 31 || !valid_name( f->name ) || (folder = folder_index( r->path )) < 0 ||
+    if ((r->seen & 31) != 31 || !valid_name( f->name ) || !r->path[0] || strstr( r->path, ".." ) ||
         !f->size || f->size > FILE_MAX || !valid_hash( f->sha256 ) || !official_url( f->url, r->path, f->name ))
         return 0;
+    /* A folder a later Autorun knows and this one does not: the file is for
+     * that Autorun, and is left out rather than the whole manifest with it. */
+    if ((folder = folder_index( r->path )) < 0)
+    {
+        m->class_count = f->class_first;
+        m->feature_count = f->feature_first;
+        m->skipped++;
+        return 1;
+    }
     /* A compressed copy that is not all there, or not the repository's, is
      * not one: the file itself is downloaded instead. */
     if ((r->seen & 64) || !f->packed_size || f->packed_size > FILE_MAX || !valid_hash( f->packed_sha256 ) ||

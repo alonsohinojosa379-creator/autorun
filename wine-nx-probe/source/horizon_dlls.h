@@ -105,6 +105,8 @@ struct horizon_dll_manifest
     unsigned int class_count, class_capacity;
     struct horizon_dll_feature *features;
     unsigned int feature_count, feature_capacity;
+    /* Files in folders this Autorun does not know, which it leaves out. */
+    unsigned int skipped;
 };
 
 /* pending_bytes is what the files take on the card, download_bytes what

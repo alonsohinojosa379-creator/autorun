@@ -311,5 +311,24 @@ int main( int argc, char **argv )
              "\"size\":1,\"sha256\":\"" "0000000000000000000000000000000000000000000000000000000000000000" "\","
              "\"url\":\"https://example.com/switch/wine/drive_c/windows/system32/x.dll\"}]}" );
     printf( "refused: a path out of the known folders, a name with a path, a URL from elsewhere\n" );
+
+    /* A folder a later Autorun knows: that file is left out, not the manifest. */
+    {
+        static const char later[] =
+            "{\"schema\":2,\"flavor\":\"arm64x\",\"files\":["
+            "{\"name\":\"later.dll\",\"path\":\"drive_c/later/runtime\",\"size\":1,\"sha256\":\""
+            "0000000000000000000000000000000000000000000000000000000000000000" "\",\"url\":\"" HORIZON_DLLS_RAW
+            "main/switch/wine/drive_c/later/runtime/later.dll\",\"classes\":[{\"clsid\":"
+            "\"00000000-0000-0000-0000-000000000001\",\"name\":\"X\"}]},"
+            "{\"name\":\"x.dll\",\"path\":\"drive_c/windows/system32\",\"size\":1,\"sha256\":\""
+            "0000000000000000000000000000000000000000000000000000000000000000" "\",\"url\":\"" HORIZON_DLLS_RAW
+            "main/switch/wine/drive_c/windows/system32/x.dll\"}]}";
+        struct horizon_dll_manifest m;
+
+        CHECK( horizon_dlls_parse( later, strlen( later ), features, feature_count, &m ) == HORIZON_DLLS_OK );
+        CHECK( m.count == 1 && m.skipped == 1 && !strcmp( m.files[0].name, "x.dll" ) && m.class_count == 0 );
+        horizon_dlls_free( &m );
+    }
+    printf( "later folders: a file in a folder this build does not know is left out, the rest read\n" );
     return 0;
 }
