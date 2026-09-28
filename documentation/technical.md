@@ -208,10 +208,12 @@ a submodule at `horizon-dlls/`. That is all of system32 (ARM64X) and syswow64
 one set for the x86 and AMD64 runtimes, laid out as on the card and grouped by
 the part of Windows each file belongs to. No Autorun package carries any of it.
 
-Then, from the repository root:
+`sh build.sh` at the repository root does all of it, fetching what is missing
+(`--help` lists its options). The steps it runs, from the repository root:
 
 ```sh
-sh horizon-wine/build-boot-bundle.sh             # Atmosphere and HOC boot payloads, in devkitPro with hactool
+docker run --rm -v "$PWD:/work" -w /work -e DEVKITPRO=/opt/devkitpro-release "$(cat horizon-wine/switch-dev.txt)" \
+    sh horizon-wine/build-boot-bundle.sh         # Atmosphere 1.11.2 and HOC boot payloads, once
 WINE_NX_LLVM_MINGW="$PWD/horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal" \
 WINE_NX_FEX=1 WINE_NX_DXVK=1 WINE_NX_VKD3D=1 \
     sh horizon-wine/build-amd64-components.sh    # the AMD64 NRO, and the build-wine-amd64-pe tree
