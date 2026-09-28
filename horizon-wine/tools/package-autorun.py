@@ -2,14 +2,13 @@
 """Build autorun-NNN.zip, the SD-card archive: the runtime, the files Wine reads
 beside it, Autorun's own setup programs and the default settings.
 
-    package-autorun.py [--no-amd64] [--amd64 ZIP] [--dlls DIR]
+    package-autorun.py [--x86] [--amd64 ZIP] [--dlls DIR]
 
-NNN is the x86 runtime's build. The x86 runtime is the one linked with
-mesa-switch (build-switch-wow64-mesa-switch); the AMD64 package, when merged,
-brings its own NRO, which runs x86 programs too. --no-amd64 leaves it out, for
-a card that only runs 32-bit programs. The archive holds no Windows modules:
-those are the DLL repository's (horizon-dlls), which the package is checked
-against."""
+NNN is the build number in source/runtime.c. The runtime is the AMD64 one
+(build-amd64-components.sh), which runs 32- and 64-bit programs. --x86 ships
+the x86-only runtime instead (build-x86.sh), for trying it: 32-bit programs
+through Box64, without FEX. The archive holds no Windows modules: those are
+the DLL repository's (horizon-dlls), which the package is checked against."""
 from pathlib import Path
 from pathlib import PurePosixPath
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -36,7 +35,7 @@ default_amd64 = next((path for path in (horizon_wine / f'build-switch-amd64/wine
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument('--amd64', type=Path,
                     default=Path(os.environ.get('WINE_NX_AMD64_PACKAGE', default_amd64)))
-parser.add_argument('--no-amd64', action='store_true', help='leave the AMD64 runtime out')
+parser.add_argument('--x86', action='store_true', help='ship the x86-only runtime instead of the AMD64 one')
 parser.add_argument('--dlls', type=Path, default=root / 'horizon-dlls/switch/wine',
                     help="the DLL repository's card tree, to check the package against")
 args = parser.parse_args()
@@ -51,21 +50,10 @@ def compile_setup(source, output, *libs):
                    check=True)
 
 
-# --- The x86 runtime and what Wine reads beside it ---------------------------
-
-# The card runs Direct3D 9 through DXVK, so its x86 runtime is the one linked
-# with mesa-switch: NVK behind winevulkan. Without it a game on DXVK dies with
-# "Failed to create Vulkan instance".
-nro = horizon_wine / 'build-switch-wow64-mesa-switch/wine-nx-runtime.nro'
-assert nro.is_file(), f'{nro} is missing; build it with build-x86.sh'
-assert b'a Vulkan surface has the screen' in nro.read_bytes(), \
-    f'{nro} has no Vulkan display driver; it is not the mesa-switch build'
-assert f'nx-wow64-dynarec-{marker}'.encode() + b'\0' in nro.read_bytes(), \
-    f'{nro} is stale; rebuild the runtime for build {marker}'
+# --- What Wine reads beside the runtime --------------------------------------
 
 shutil.rmtree(build, ignore_errors=True)
 stage.mkdir(parents=True)
-shutil.copy2(nro, stage / 'wine-nx-runtime.nro')
 for nls in (root / 'nls').glob('*.nls'):
     (stage / 'share/wine/nls').mkdir(parents=True, exist_ok=True)
     shutil.copy2(nls, stage / 'share/wine/nls' / nls.name)
@@ -383,9 +371,20 @@ def merge_amd64(archive, root):
     return (match.group(1) or match.group(2)).decode()
 
 
-if not args.no_amd64:
-    assert args.amd64.is_file(), f'{args.amd64} is missing; build the AMD64 DXVK/VKD3D package first, ' \
-                                 'or pass --no-amd64'
+if args.x86:
+    # The card runs Direct3D 9 through DXVK, so the x86 runtime is the one
+    # linked with mesa-switch: NVK behind winevulkan. Without it a game on DXVK
+    # dies with "Failed to create Vulkan instance".
+    nro = horizon_wine / 'build-switch-wow64-mesa-switch/wine-nx-runtime.nro'
+    assert nro.is_file(), f'{nro} is missing; build it with build-x86.sh'
+    assert b'a Vulkan surface has the screen' in nro.read_bytes(), \
+        f'{nro} has no Vulkan display driver; it is not the mesa-switch build'
+    assert f'nx-wow64-dynarec-{marker}'.encode() + b'\0' in nro.read_bytes(), \
+        f'{nro} is stale; rebuild the runtime for build {marker}'
+    shutil.copy2(nro, stage / 'wine-nx-runtime.nro')
+    print('x86 runtime staged')
+else:
+    assert args.amd64.is_file(), f'{args.amd64} is missing; run build-amd64-components.sh, or pass --x86'
     print(f'AMD64 runtime build {merge_amd64(args.amd64, stage_root)} merged')
 subprocess.run([sys.executable, str(tools / 'verify-package.py'), str(stage), '--dlls', str(args.dlls)],
                check=True)

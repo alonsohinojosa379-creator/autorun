@@ -197,14 +197,6 @@ Requirements:
   tests.
 - LLVM-MinGW 20260505 in `horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal`,
   and bison (Homebrew's), for Wine's PE modules.
-- A Wine PE build tree, configured once:
-
-```sh
-mkdir -p horizon-wine/build-wine-wow64-pe && cd horizon-wine/build-wine-wow64-pe
-PATH="$PWD/../toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin:/opt/homebrew/opt/bison/bin:$PATH" \
-    ../../configure --enable-archs=aarch64,i386 --enable-winebox64=aarch64
-```
-
 - For the Mesa 26 runtime, a [mesa-switch](https://github.com/danfromtico/mesa-switch)
   checkout in `~/mesa-switch` and the image its `Docker.rust` makes
   (`devkitpro-mesa-rust`). For DXVK, a [DXVK](https://github.com/doitsujin/dxvk)
@@ -221,14 +213,13 @@ Then, from the repository root:
 
 ```sh
 sh horizon-wine/build-mesa-switch.sh             # Mesa 26 (OpenGL and Vulkan) into build-mesa-switch/install
-sh horizon-wine/build-x86.sh                     # the x86 runtime, linked with that Mesa
 sh horizon-wine/build-boot-bundle.sh             # Atmosphere and HOC boot payloads, in devkitPro with hactool
 WINE_NX_LLVM_MINGW="$PWD/horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal" \
 WINE_NX_MESA_SWITCH_DIR=/work/horizon-wine/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib \
 WINE_NX_FEX=1 WINE_NX_DXVK=1 WINE_NX_VKD3D=1 WINE_NX_DEVKIT_IMAGE=devkitpro-lsfg \
     sh horizon-wine/build-amd64-components.sh    # the AMD64 NRO, and the build-wine-amd64-pe tree
 horizon-dlls/tools/build-dlls.py                  # the DLL repository: what changed since its manifest
-python3 horizon-wine/tools/package-autorun.py    # x86 and AMD64 runtimes merged: autorun-NNN.zip
+python3 horizon-wine/tools/package-autorun.py    # the card: autorun-NNN.zip, with the AMD64 runtime
 ```
 
 `devkitpro-lsfg` is devkitPro's image with glslang, which LSFG-VK needs. The
@@ -240,6 +231,10 @@ folder beside it: the runtime, Wine's NLS files and fonts, Autorun's setup
 programs (the components setup, WarCraft III, The Sims 2, Guitar Hero III) and
 the default settings, checked against that tree by `verify-package.py`. It
 holds no test programs.
+
+The AMD64 runtime runs 32-bit programs too, so it is the only one a card
+needs. `build-x86.sh` builds the x86-only runtime (Box64, no FEX) against the
+same Wine tree and Mesa, and `package-autorun.py --x86` ships it instead.
 
 `build-dlls.py` builds in `horizon-wine/build-wine-amd64-pe` and rebuilds
 only what changed since the commit its manifest names: a Wine module whose

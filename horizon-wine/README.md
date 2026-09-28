@@ -26,7 +26,8 @@ One source tree builds each runtime. The CMake options pick which:
 | x86 (`nx-wow64-dynarec-*`) | 32-bit games through WoW64 and Box64, with OpenGL and Vulkan from mesa-switch | `WINE_NX_BOX64_DYNAREC`, `WINE_NX_MESA_SWITCH_DIR` |
 | AMD64 (`nx-amd64-fex-*`) | 32- and 64-bit games through FEX (WoW64 and ARM64EC) | `WINE_NX_AMD64`, `WINE_NX_FEX` |
 
-`tools/package-autorun.py` merges the x86 and AMD64 runtimes, Autorun's setup
+The AMD64 runtime runs 32-bit programs too, so a card needs only it; the x86
+one is optional. `tools/package-autorun.py` puts the runtime, Autorun's setup
 programs and default settings into the release zip,
 `build-autorun/autorun-NNN.zip`. The build number is `WINE_NX_RUNTIME_BUILD` in
 `source/runtime.c`.
@@ -38,9 +39,11 @@ From the repository root, with the requirements in
 
 ```sh
 sh horizon-wine/build-mesa-switch.sh            # Mesa 26, which both runtimes link
-sh horizon-wine/build-x86.sh                    # x86 runtime
-sh horizon-wine/build-amd64-components.sh       # AMD64 runtime (see technical.md for its environment)
+sh horizon-wine/build-amd64-components.sh       # AMD64 runtime and the Wine tree (see technical.md for its environment)
 python3 horizon-wine/tools/package-autorun.py   # autorun-NNN.zip
+
+# Optional: the x86-only runtime, shipped instead with package-autorun.py --x86
+sh horizon-wine/build-x86.sh
 ```
 
 The build folders (`build-*`, `toolchains/`, `vendor/`) are not tracked.
@@ -54,7 +57,7 @@ The build folders (`build-*`, `toolchains/`, `vendor/`) are not tracked.
 | `tools/` | The packagers and their check, Autorun's setup programs (`autorun_setup.c`, `war3_setup.c`, `sims2_setup.c`, `gh3_setup.c`), the Box64/libusbhsfs/LSFG-VK bootstraps and `runtime_features.py`, which gives the features the DLL repository checks against |
 | `cmake/` | The devkitA64 toolchain file, the Box64 core build and LSFG-VK |
 | `fex/` | The Horizon patch for FEX and the ABI the runtime shares with it; FEX's DLLs are built in the DLL repository |
-| `lsfg/`, `mesa/`, `mesosphere/`, `usbhsfs-uasp/` | Patches for LSFG-VK, Mesa and libdrm, the Atmosphère/HOC boot payloads and libusbhsfs |
+| `lsfg/`, `mesosphere/`, `usbhsfs-uasp/` | Patches for LSFG-VK, the Atmosphère/HOC boot payloads and libusbhsfs |
 | `hbl/` | nx-hbloader, for game forwarders |
 | `assets/` | Launcher art and icons |
 | `box64-shims/`, `switch-shims/`, `syntax/` | Headers that let Box64 and Wine's code build against libnx |
