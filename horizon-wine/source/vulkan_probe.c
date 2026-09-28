@@ -1,6 +1,6 @@
 /* Copyright 2026 Wine-NX contributors. LGPL-2.1-or-later.
  * With sdmc:/switch/wine/vulkan-probe.txt containing 1, report what the
- * loaderless NVK from build-mesa-switch.sh offers on this console, as [NXVK]
+ * loaderless NVK from mesa-switch offers on this console, as [NXVK]
  * lines: the instance, GPU, DXVK requirements and feature-enabled device. */
 #include <stdarg.h>
 #include <stdio.h>

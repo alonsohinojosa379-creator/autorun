@@ -35,10 +35,11 @@ programs and default settings into the release zip,
 ## Quick build
 
 From the repository root, with the requirements in
-[technical.md](../documentation/technical.md#building):
+[technical.md](../documentation/technical.md#building). The Switch build runs in
+the [switch-dev](https://github.com/autorunhq/switch-dev) image named in
+`switch-dev.txt`, which has libnx, mesa-switch, LSFG-VK and libusbhsfs built in.
 
 ```sh
-sh horizon-wine/build-mesa-switch.sh            # Mesa 26, which both runtimes link
 sh horizon-wine/build-amd64-components.sh       # AMD64 runtime and the Wine tree (see technical.md for its environment)
 python3 horizon-wine/tools/package-autorun.py   # autorun-NNN.zip
 
@@ -54,10 +55,10 @@ The build folders (`build-*`, `toolchains/`, `vendor/`) are not tracked.
 |---|---|
 | `source/` | The runtime: `runtime.c` (startup), `launcher*.c` (the SDL launcher and its screens), `compositor*.c`, the Box64 and FEX engines, audio, XInput, USB storage, the forwarder installer, `horizon_dlls*.c` (the DLL manager) and `autorun_update.c` (self-update) |
 | `tests/` | Host tests of the runtime, the launcher and the Horizon server pieces |
-| `tools/` | The packagers and their check, Autorun's setup programs (`autorun_setup.c`, `war3_setup.c`, `sims2_setup.c`, `gh3_setup.c`), the Box64/libusbhsfs/LSFG-VK bootstraps and `runtime_features.py`, which gives the features the DLL repository checks against |
+| `tools/` | The packagers and their check, Autorun's setup programs (`autorun_setup.c`, `war3_setup.c`, `sims2_setup.c`, `gh3_setup.c`), the Box64 bootstrap and `runtime_features.py`, which gives the features the DLL repository checks against |
 | `cmake/` | The devkitA64 toolchain file, the Box64 core build and LSFG-VK |
 | `fex/` | The Horizon patch for FEX and the ABI the runtime shares with it; FEX's DLLs are built in the DLL repository |
-| `lsfg/`, `mesosphere/`, `usbhsfs-uasp/` | Patches for LSFG-VK, the Atmosphère/HOC boot payloads and libusbhsfs |
+| `mesosphere/` | Patches for the Atmosphère/HOC boot payloads |
 | `hbl/` | nx-hbloader, for game forwarders |
 | `assets/` | Launcher art and icons |
 | `box64-shims/`, `switch-shims/`, `syntax/` | Headers that let Box64 and Wine's code build against libnx |

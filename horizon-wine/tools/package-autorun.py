@@ -67,8 +67,7 @@ licenses = stage / 'licenses'
 licenses.mkdir()
 for source, name in ((root / 'COPYING.LIB', 'Wine-LGPL-2.1.txt'),
                      (horizon_wine / 'vendor/box64/LICENSE', 'Box64-MIT.txt'),
-                     (horizon_wine / 'licenses/libjpeg-turbo.txt', 'libjpeg-turbo.txt'),
-                     (horizon_wine / 'vendor/lsfg-vk/LICENSE.md', 'LSFG-VK-GPL-3.0.txt')):
+                     (horizon_wine / 'licenses/libjpeg-turbo.txt', 'libjpeg-turbo.txt')):
     shutil.copy2(source, licenses / name)
 
 # --- Autorun's setup programs ------------------------------------------------
@@ -382,6 +381,8 @@ if args.x86:
     assert f'nx-wow64-dynarec-{marker}'.encode() + b'\0' in nro.read_bytes(), \
         f'{nro} is stale; rebuild the runtime for build {marker}'
     shutil.copy2(nro, stage / 'wine-nx-runtime.nro')
+    # The build copies LSFG-VK's license out of the switch-dev image.
+    shutil.copy2(nro.parent / 'licenses/LSFG-VK-GPL-3.0.txt', licenses / 'LSFG-VK-GPL-3.0.txt')
     print('x86 runtime staged')
 else:
     assert args.amd64.is_file(), f'{args.amd64} is missing; run build-amd64-components.sh, or pass --x86'

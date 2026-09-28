@@ -19,8 +19,6 @@ import sys
 import tempfile
 from zipfile import ZipFile, ZIP_DEFLATED
 
-from mesa_sdk import mesa_revision as configured_mesa_revision
-
 horizon_wine = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument('--build', type=Path, default=horizon_wine / 'build-switch-amd64')
@@ -58,20 +56,21 @@ if args.fex and b'FEX-2609' not in nro.read_bytes():
     parser.error('The NRO has no FEX launch support; rebuild it first')
 if args.vkd3d and b'[VKD3D] payload' not in nro.read_bytes():
     parser.error('The NRO has no VKD3D launch support; rebuild it first')
+# What the switch-dev image the NRO was built in holds (CMake copies it).
+switch_dev_path = build / 'switch-dev.json'
+if not switch_dev_path.is_file():
+    parser.error('The NRO was not built in the switch-dev image; no switch-dev.json in the build')
+switch_dev = json.loads(switch_dev_path.read_text())
 lsfg_revision = None
 if enabled('WINE_NX_LSFG') and args.vulkan:
-    lsfg_revision = (horizon_wine / 'lsfg/revision.txt').read_text().strip()
+    lsfg_revision = switch_dev['lsfg_vk']
     if b'[LSFG]' not in nro.read_bytes():
         parser.error('The NRO has no LSFG-VK support; rebuild it first')
 mesa_revision = None
 if args.vulkan:
     if b'a Vulkan surface has the screen' not in nro.read_bytes():
         parser.error('The NRO has no mesa-switch Vulkan display driver')
-    try:
-        mesa_revision = configured_mesa_revision(cache['WINE_NX_MESA_SWITCH_DIR'],
-                                                 horizon_wine / 'build-mesa-switch/source-revision.txt')
-    except (OSError, ValueError) as error:
-        parser.error(str(error))
+    mesa_revision = switch_dev['mesa_switch']
 if args.stage_output:
     stage_root = args.stage_output.resolve()
     stage_root.mkdir(parents=True, exist_ok=False)
@@ -102,7 +101,7 @@ for name in ('fonts', 'nls'):
 stage_file(nro, stage / nro.name)
 licenses = stage / 'licenses'
 if lsfg_revision:
-    stage_file(horizon_wine / 'vendor/lsfg-vk/LICENSE.md', licenses / 'LSFG-VK-GPL-3.0.txt')
+    stage_file(build / 'licenses/LSFG-VK-GPL-3.0.txt', licenses / 'LSFG-VK-GPL-3.0.txt')
     (stage / 'lsfg').mkdir()
 for source, name in ((wine_source / 'COPYING.LIB', 'Wine-LGPL-2.1.txt'),
                      (horizon_wine / 'vendor/box64/LICENSE', 'Box64-MIT.txt'),
@@ -120,8 +119,9 @@ manifest = {
     'mesa_switch': mesa_revision,
     'lsfg': {'repository': 'https://git.lsfg-vk.dev/lsfg-vk-archive.git',
              'revision': lsfg_revision,
-             'patch_sha256': hashlib.sha256((horizon_wine / 'lsfg/horizon.patch').read_bytes()).hexdigest()}
+             'port': 'https://github.com/autorunhq/switch-dev'}
             if lsfg_revision else None,
+    'switch_dev': switch_dev,
     'files': {path.relative_to(stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in files},
 }
 for name, digest in source_hashes.items():

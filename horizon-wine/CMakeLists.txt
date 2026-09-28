@@ -778,27 +778,20 @@ endif()
 configure_file(cmake/autorun_version.h.in autorun_version.h @ONLY)
 target_include_directories(wine-nx-runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
+# What the switch-dev image this is built in holds, for the packager to record.
+set(SWITCH_DEV_MANIFEST "$ENV{DEVKITPRO}/portlibs/switch/share/switch-dev.json")
+if(EXISTS "${SWITCH_DEV_MANIFEST}")
+    configure_file("${SWITCH_DEV_MANIFEST}" "${CMAKE_CURRENT_BINARY_DIR}/switch-dev.json" COPYONLY)
+endif()
+
 option(WINE_NX_USB_STORAGE "Mount USB drives as D: to H: through libusbhsfs" OFF)
 if(WINE_NX_USB_STORAGE)
-    set(WINE_NX_LIBUSBHSFS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libusbhsfs" CACHE PATH
-        "libusbhsfs checkout made by tools/bootstrap-libusbhsfs.sh")
-    if(NOT EXISTS "${WINE_NX_LIBUSBHSFS_DIR}/include/usbhsfs.h")
-        message(FATAL_ERROR "Missing libusbhsfs; run horizon-wine/tools/bootstrap-libusbhsfs.sh")
-    endif()
-    # FAT and exFAT through FatFs; NTFS and ext4 would link GPL libraries.
-    set(USBHSFS_GPL OFF CACHE BOOL "" FORCE)
-    set(USBHSFS_NTFS OFF CACHE BOOL "" FORCE)
-    set(USBHSFS_EXT4 OFF CACHE BOOL "" FORCE)
-    set(USBHSFS_SXOS_DISABLE ON CACHE BOOL "" FORCE)
-    set(USBHSFS_EXAMPLES OFF CACHE BOOL "" FORCE)
-    add_subdirectory("${WINE_NX_LIBUSBHSFS_DIR}" libusbhsfs EXCLUDE_FROM_ALL)
-    set(WINE_NX_USBHSFS_UASP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/usbhsfs-uasp")
-    target_sources(libusbhsfs PRIVATE "${WINE_NX_USBHSFS_UASP_DIR}/usbhsfs_uasp.c")
-    target_include_directories(libusbhsfs PRIVATE "${WINE_NX_USBHSFS_UASP_DIR}" "${WINE_NX_LIBUSBHSFS_DIR}/source")
-    target_compile_definitions(libusbhsfs PRIVATE get_fattime=usbhsfs_get_fattime)
+    # libusbhsfs with the UASP transport, FAT and exFAT only, as the
+    # switch-dev image builds it into portlibs.
+    find_library(SWITCH_USBHSFS usbhsfs HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib" REQUIRED)
     target_sources(wine-nx-runtime PRIVATE source/usb_storage.c)
     target_compile_definitions(wine-nx-runtime PRIVATE WINE_NX_USB_STORAGE)
-    target_link_libraries(wine-nx-runtime PRIVATE libusbhsfs)
+    target_link_libraries(wine-nx-runtime PRIVATE ${SWITCH_USBHSFS})
 endif()
 
 option(WINE_NX_BOX64_INTERPRETER "Build the Box64 interpreter adapter" OFF)
@@ -900,11 +893,16 @@ find_library(SWITCH_MBEDCRYPTO mbedcrypto HINTS "$ENV{DEVKITPRO}/portlibs/switch
 find_library(SWITCH_EGL EGL HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_GLAPI glapi HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
 find_library(SWITCH_DRM_NOUVEAU drm_nouveau HINTS "$ENV{DEVKITPRO}/portlibs/switch/lib")
-# build-mesa-switch.sh builds danfromtico/mesa-switch: Mesa 26 with OpenGL through
-# nvc0 and loaderless NVK Vulkan, both over its own Horizon backend, so without
-# libdrm_nouveau. This links it in place of devkitPro's Mesa above, in one
-# archive group because EGL, GL, glapi and Vulkan share Mesa's utility libraries.
-set(WINE_NX_MESA_SWITCH_DIR "" CACHE PATH "Folder with libEGL.a, libGL.a, libglapi.a and libvulkan.a from build-mesa-switch.sh")
+# mesa-switch: Mesa 26 with OpenGL through nvc0 and loaderless NVK Vulkan, both
+# over its own Horizon backend, so without libdrm_nouveau. The switch-dev image
+# has it in portlibs, where it is used unless this names another build. It is
+# linked in one archive group because EGL, GL, glapi and Vulkan share Mesa's
+# utility libraries.
+set(WINE_NX_MESA_SWITCH_DEFAULT "")
+if(EXISTS "$ENV{DEVKITPRO}/portlibs/switch/lib/libvulkan.a")
+    set(WINE_NX_MESA_SWITCH_DEFAULT "$ENV{DEVKITPRO}/portlibs/switch/lib")
+endif()
+set(WINE_NX_MESA_SWITCH_DIR "${WINE_NX_MESA_SWITCH_DEFAULT}" CACHE PATH "Folder with mesa-switch's libEGL.a, libGL.a, libglapi.a and libvulkan.a")
 if(WINE_NX_MESA_SWITCH_DIR)
     message(STATUS "Mesa: mesa-switch, ${WINE_NX_MESA_SWITCH_DIR}")
     foreach(lib EGL GL glapi vulkan mesa_util_c11 blake3 mesa_util mesa_util_simd xmlconfig)

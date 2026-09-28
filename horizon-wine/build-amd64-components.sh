@@ -11,10 +11,6 @@ case "${WINE_NX_FEX:-0}" in
     1) fex=ON ;;
     *) echo "WINE_NX_FEX must be 0 or 1." >&2; exit 1;;
 esac
-if { [ "${WINE_NX_DXVK:-0}" = 1 ] || [ "${WINE_NX_VKD3D:-0}" = 1 ]; } && [ -z "${WINE_NX_MESA_SWITCH_DIR:-}" ]; then
-    echo "DXVK/VKD3D require WINE_NX_MESA_SWITCH_DIR." >&2
-    exit 1
-fi
 if [ -n "${WINE_NX_LLVM_MINGW:-}" ]; then
     export PATH="$WINE_NX_LLVM_MINGW/bin:$PATH"
 fi
@@ -48,20 +44,18 @@ fi
     make -j"$jobs" include/all
 )
 sh "$root/horizon-wine/tools/bootstrap-box64-core.sh"
-sh "$root/horizon-wine/tools/bootstrap-libusbhsfs.sh"
-if [ -n "${WINE_NX_MESA_SWITCH_DIR:-}" ]; then
-    sh "$root/horizon-wine/tools/bootstrap-lsfg-vk.sh"
-fi
+# The switch-dev image (switch-dev.txt) has libnx, mesa-switch, LSFG-VK and
+# libusbhsfs in portlibs. WINE_NX_MESA_SWITCH_DIR links another mesa-switch.
 docker run --rm --network none --platform linux/arm64 -v "$root:/work" -w /work \
     -e NX_PE="/work/${pe#"$root/"}" -e NX_BUILD="/work/${build#"$root/"}" \
     -e NX_JOBS="$jobs" -e NX_DYNAREC="${WINE_NX_BOX64_DYNAREC:-ON}" \
     -e NX_MESA="${WINE_NX_MESA_SWITCH_DIR:-}" -e NX_FEX="$fex" -e NX_BOOT_BUNDLE="$boot_bundle" \
-    "${WINE_NX_DEVKIT_IMAGE:-devkitpro/devkita64}" sh -ec '
+    "${WINE_NX_DEVKIT_IMAGE:-$(cat "$root/horizon-wine/switch-dev.txt")}" sh -ec '
     cmake -S horizon-wine -B "$NX_BUILD" -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE=/work/horizon-wine/cmake/switch-devkitA64.cmake \
         -DWINE_NX_PE_BUILD_DIR="$NX_PE" -DWINE_NX_AMD64=ON -DWINE_NX_FEX="$NX_FEX" \
         -DWINE_NX_BOX64_INTERPRETER=ON -DWINE_NX_BOX64_DYNAREC="$NX_DYNAREC" \
-        -DWINE_NX_MESA_SWITCH_DIR="$NX_MESA" -DWINE_NX_USB_STORAGE=ON \
+        ${NX_MESA:+-DWINE_NX_MESA_SWITCH_DIR="$NX_MESA"} -DWINE_NX_USB_STORAGE=ON \
         -DWINE_NX_BOOT_BUNDLE="$NX_BOOT_BUNDLE" -DCMAKE_BUILD_TYPE=Release
     cmake --build "$NX_BUILD" --target wine-nx-runtime-nro -j "$NX_JOBS"
     '
@@ -70,7 +64,7 @@ docker run --rm --network none --platform linux/arm64 -v "$root:/work" -w /work 
 # builds them in $pe. These say what the NRO was built to run.
 set -- --build "$build"
 if [ "$fex" = ON ]; then set -- "$@" --fex; fi
-if [ -n "${WINE_NX_MESA_SWITCH_DIR:-}" ]; then set -- "$@" --vulkan; fi
+set -- "$@" --vulkan
 if [ "${WINE_NX_DXVK:-0}" = 1 ] || [ "${WINE_NX_VKD3D:-0}" = 1 ]; then set -- "$@" --dxvk; fi
 if [ "${WINE_NX_VKD3D:-0}" = 1 ]; then set -- "$@" --vkd3d; fi
 python3 "$root/horizon-wine/tools/package-amd64.py" "$@"

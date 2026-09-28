@@ -193,14 +193,13 @@ operations (`[ASYNC]`), user APCs (`[APC]`) and x86 faults (`[BOX64]`).
 
 Requirements:
 
-- Docker with the `devkitpro/devkita64` image, for the Switch build and the Box64
-  tests.
+- Docker with the [switch-dev](https://github.com/autorunhq/switch-dev) image
+  named in `horizon-wine/switch-dev.txt`, for the Switch build and the Box64
+  tests. It is devkitA64 with a newer libnx, mesa-switch (Mesa 26: OpenGL and
+  NVK Vulkan), LSFG-VK's Horizon port and libusbhsfs with UASP in portlibs,
+  each from a pinned revision.
 - LLVM-MinGW 20260505 in `horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal`,
   and bison (Homebrew's), for Wine's PE modules.
-- For the Mesa 26 runtime, a [mesa-switch](https://github.com/danfromtico/mesa-switch)
-  checkout in `~/mesa-switch` and the image its `Docker.rust` makes
-  (`devkitpro-mesa-rust`). For DXVK, a [DXVK](https://github.com/doitsujin/dxvk)
-  checkout in `~/dxvk`.
 
 Autorun builds the runtime; the Windows modules it runs are the DLL
 repository's, [autorun-horizon-dlls](https://github.com/autorunhq/autorun-horizon-dlls),
@@ -212,19 +211,19 @@ the part of Windows each file belongs to. No Autorun package carries any of it.
 Then, from the repository root:
 
 ```sh
-sh horizon-wine/build-mesa-switch.sh             # Mesa 26 (OpenGL and Vulkan) into build-mesa-switch/install
 sh horizon-wine/build-boot-bundle.sh             # Atmosphere and HOC boot payloads, in devkitPro with hactool
 WINE_NX_LLVM_MINGW="$PWD/horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal" \
-WINE_NX_MESA_SWITCH_DIR=/work/horizon-wine/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib \
-WINE_NX_FEX=1 WINE_NX_DXVK=1 WINE_NX_VKD3D=1 WINE_NX_DEVKIT_IMAGE=devkitpro-lsfg \
+WINE_NX_FEX=1 WINE_NX_DXVK=1 WINE_NX_VKD3D=1 \
     sh horizon-wine/build-amd64-components.sh    # the AMD64 NRO, and the build-wine-amd64-pe tree
 horizon-dlls/tools/build-dlls.py                  # the DLL repository: what changed since its manifest
 python3 horizon-wine/tools/package-autorun.py    # the card: autorun-NNN.zip, with the AMD64 runtime
 ```
 
-`devkitpro-lsfg` is devkitPro's image with glslang, which LSFG-VK needs. The
-mesa-switch runtime links libelf only where the Mesa SDK was built with it (the
-MSYS2 one); devkitPro has no libelf, and Mesa leaves it out there.
+The runtime links mesa-switch, LSFG-VK and libusbhsfs from the image's portlibs;
+a build records the image's revisions (`switch-dev.json` in the build folder)
+in the package's `build-manifest.json`. `WINE_NX_MESA_SWITCH_DIR` links another
+mesa-switch build instead. A change to Mesa, LSFG-VK's port or libusbhsfs's
+UASP patches is made in switch-dev and comes with a new image.
 
 `package-autorun.py` is what a card wants, with the DLL repository's `switch`
 folder beside it: the runtime, Wine's NLS files and fonts, Autorun's setup

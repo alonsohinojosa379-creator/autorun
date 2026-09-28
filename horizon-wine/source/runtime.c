@@ -3901,7 +3901,7 @@ int main( int argc, char **argv )
     if (runtime_config_moved && wine_nx_config_save( &runtime_config, CONFIG_FILE ))
         log_line( "[CONFIG] settings written to %s", CONFIG_FILE );
 #ifdef WINE_NX_MESA_SWITCH
-    /* This runtime links mesa-switch (build-mesa-switch.sh); vulkan-probe.txt
+    /* This runtime links mesa-switch (switch-dev image); vulkan-probe.txt
      * reports what its NVK offers, for Vulkan and DXVK (vulkan_probe.c). */
     {
         int vulkan_probe = config_bool( "vulkan-probe", 0, "vulkan-probe.txt", 0 );
