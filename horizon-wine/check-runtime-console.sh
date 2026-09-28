@@ -26,7 +26,7 @@ flags="-std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-f
 "${CC:-clang}" $flags "$root/horizon-wine/tests/launcher_settings.c" -o "$build/launcher_settings"
 "$build/launcher_settings"
 "${CC:-clang}" $flags "$root/horizon-wine/tests/launcher_pe.c" -o "$build/launcher_pe"
-"$build/launcher_pe" "$root/horizon-wine/build-switch-wow64-dynarec/switch/wine/drive_c"
+"$build/launcher_pe"
 "${CC:-clang}" $flags "$root/horizon-wine/tests/sd_read_cache.c" -o "$build/sd_read_cache"
 "${CC:-clang}" $flags "$root/horizon-wine/tests/sd_write_buffer.c" -o "$build/sd_write_buffer"
 "${CC:-clang}" $flags "$root/horizon-wine/tests/sd_stat_cache.c" -o "$build/sd_stat_cache"
@@ -90,4 +90,3 @@ python3 "$root/horizon-wine/tests/check_package_amd64.py"
 if [ -f "$root/horizon-wine/vendor/dxvk/src/dxvk/dxvk_device_info.cpp" ]; then
     python3 "$root/horizon-wine/tests/check_dxvk_requirements.py"
 fi
-python3 "$root/horizon-wine/tools/make-7zr-tree.py" "$build/drive_c" >/dev/null

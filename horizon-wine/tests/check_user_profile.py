@@ -21,7 +21,7 @@ root = Path(__file__).resolve().parents[2]
 runtime = (root / 'horizon-wine/source/runtime.c').read_text()
 advapi = (root / 'dlls/advapi32/advapi.c').read_text()
 shellpath = (root / 'dlls/shell32/shellpath.c').read_text()
-packager = (root / 'horizon-wine/tools/package-wow64-full.py').read_text()
+packager = (root / 'horizon-wine/tools/package-autorun.py').read_text()
 failures = []
 
 

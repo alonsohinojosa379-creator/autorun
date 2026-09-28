@@ -11,15 +11,8 @@ export SDL_AUDIODRIVER=dummy
 [ -d /opt/homebrew/lib ] && export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 horizon_wine="$root/horizon-wine"
-# Two programs to stand in for games, out of whichever stage the card was last
-# packaged from: the full package keeps its own and takes the checkpoints' away.
-drive_c=""
-for stage in full-sd-card notepad-sd-card openttd-sd-card audio-sd-card opengl-sd-card d3d9-sd-card war3-sd-card; do
-    candidate="$horizon_wine/build-switch-wow64-dynarec/$stage/switch/wine/drive_c"
-    [ -f "$candidate/7zr.exe" ] && { drive_c="$candidate"; break; }
-done
-[ -n "$drive_c" ] || { echo "no staged drive_c with 7zr.exe: run tools/package-wow64-full.py" >&2; exit 1; }
-# Wine's Notepad, the program that stands in for the games, is the DLL repository's.
+# Wine's Notepad, the program that stands in for the games under several names,
+# is the DLL repository's.
 notepad="$root/horizon-dlls/switch/wine/drive_c/windows/syswow64/notepad.exe"
 [ -f "$notepad" ] || { echo "no $notepad: check out horizon-dlls" >&2; exit 1; }
 build="$(mktemp -d "${TMPDIR:-/tmp}/wine-nx-launcher.XXXXXX")"
@@ -40,7 +33,7 @@ clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-
 # loader's NPDM comes out of whichever build dir has one, since it is what the
 # address space is patched into.
 npdm=""
-for dir in build-switch-wow64-dynarec build-switch-wow64-mesa-switch build-switch-wow64; do
+for dir in build-switch-wow64-mesa-switch build-switch-amd64; do
     [ -f "$horizon_wine/$dir/hbl-main.npdm" ] && { npdm="$horizon_wine/$dir/hbl-main.npdm"; break; }
 done
 if [ -n "$npdm" ]; then
@@ -88,7 +81,8 @@ clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-
 
 card="$build/card/sdmc:"
 mkdir -p "$card/switch/wine/drive_c/openttd" "$card/games/deep/er/still"
-ln -s "$notepad" "$drive_c/7zr.exe" "$card/switch/wine/drive_c/"
+ln -s "$notepad" "$card/switch/wine/drive_c/"
+ln -s "$notepad" "$card/switch/wine/drive_c/7zr.exe"
 ln -s "$notepad" "$card/switch/wine/drive_c/openttd/openttd.exe"
 ln -s "$notepad" "$card/games/deep/er/still/Deep.exe"
 

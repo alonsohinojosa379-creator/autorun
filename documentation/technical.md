@@ -220,15 +220,8 @@ the part of Windows each file belongs to. No Autorun package carries any of it.
 Then, from the repository root:
 
 ```sh
-sh horizon-wine/build-wow64-dynarec.sh           # the x86 runtime NROs, and its test stage
 sh horizon-wine/build-mesa-switch.sh             # Mesa 26 (OpenGL and Vulkan) into build-mesa-switch/install
-docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work devkitpro-lsfg sh -ec '
-    cmake -S horizon-wine -B horizon-wine/build-switch-wow64-mesa-switch -G Ninja \
-        -DCMAKE_TOOLCHAIN_FILE=/work/horizon-wine/cmake/switch-devkitA64.cmake \
-        -DWINE_NX_PE_BUILD_DIR=/work/horizon-wine/build-wine-wow64-pe \
-        -DWINE_NX_BOX64_DYNAREC=ON -DWINE_NX_USB_STORAGE=ON -DCMAKE_BUILD_TYPE=Release \
-        -DWINE_NX_MESA_SWITCH_DIR=/work/horizon-wine/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib
-    cmake --build horizon-wine/build-switch-wow64-mesa-switch --target wine-nx-runtime-nro'
+sh horizon-wine/build-x86.sh                     # the x86 runtime, linked with that Mesa
 sh horizon-wine/build-boot-bundle.sh             # Atmosphere and HOC boot payloads, in devkitPro with hactool
 WINE_NX_LLVM_MINGW="$PWD/horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal" \
 WINE_NX_MESA_SWITCH_DIR=/work/horizon-wine/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib \
@@ -243,14 +236,10 @@ mesa-switch runtime links libelf only where the Mesa SDK was built with it (the
 MSYS2 one); devkitPro has no libelf, and Mesa leaves it out there.
 
 `package-autorun.py` is what a card wants, with the DLL repository's `switch`
-folder beside it; every package is checked against that tree
-(`verify-wow64-package.py --dlls`). The x86 packages can also be run on their
-own:
-
-```sh
-python3 horizon-wine/tools/package-wow64-full.py # the whole SD-card payload as one zip
-python3 horizon-wine/tools/package-wow64-dxvk.py # the Mesa 26 runtime and the DXVK tests, over that payload
-```
+folder beside it: the runtime, Wine's NLS files and fonts, Autorun's setup
+programs (the components setup, WarCraft III, The Sims 2, Guitar Hero III) and
+the default settings, checked against that tree by `verify-package.py`. It
+holds no test programs.
 
 `build-dlls.py` builds in `horizon-wine/build-wine-amd64-pe` and rebuilds
 only what changed since the commit its manifest names: a Wine module whose
@@ -263,11 +252,8 @@ toolchain. Commit and push the DLL repository, then commit the new
 `horizon-dlls` here.
 
 The runtime's version is `WINE_NX_RUNTIME_BUILD` in
-`horizon-wine/source/runtime.c`, and archives are written to
-`horizon-wine/build-switch-wow64-dynarec`. Other packagers in
-`horizon-wine/tools` stage single programs over the full payload (OpenTTD,
-Quake III's engine, WarCraft III's setup, the Direct3D 9, OpenGL and audio
-tests).
+`horizon-wine/source/runtime.c`, and the archive is written to
+`horizon-wine/build-autorun`.
 
 ## Tests
 
@@ -282,11 +268,6 @@ sh horizon-wine/tests/check-launcher-host.sh  # the launcher, headless, with scr
 sh horizon-wine/tests/check-horizon-dlls.sh   # the DLL manager against the horizon-dlls checkout: install, resume, verify, update
 for t in horizon-wine/tests/check_*.py; do python3 "$t"; done  # server pieces run against real host sockets and files
 ```
-
-`horizon-wine/tests/win32` holds small Windows programs the full package puts
-on the card (`C:\APC Test`, `C:\Socket Test`): each does what a game does with
-one piece of the machinery and reports the result in a message box, which the
-log records. Run under desktop Wine first, they give the answers to expect.
 
 Box64 is pinned in `horizon-wine/vendor/box64` (fetched by
 `tools/bootstrap-box64-core.sh`) and never edited:
@@ -342,7 +323,6 @@ Autorun is built from these projects; each keeps its own copyright and license.
 | [HarfBuzz](https://harfbuzz.github.io) | HarfBuzz authors | MIT | Text shaping in the launcher |
 | [libpng](http://www.libpng.org), [zlib](https://zlib.net), [bzip2](https://sourceware.org/bzip2/) | Their authors | libpng, zlib, BSD-style | Program icons and compressed data |
 | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) | Martin Storsjö; LLVM and mingw-w64 authors | Apache-2.0 with LLVM exception, mingw-w64's licenses | Building Wine's and DXVK's Windows DLLs |
-| [7-Zip](https://www.7-zip.org) | Igor Pavlov | LGPL-2.1 | `7zr.exe`, the benchmark and archive test program on the card |
 | [FidelityFX Super Resolution 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | Advanced Micro Devices | MIT | The Upscaling setting's FSR 1.0 (EASU and RCAS, `tools/fsr1`), which isrmicha brought to the launcher |
 | [dolphin-nx](https://github.com/NaGaa95/dolphin-nx) | NaGaa95 | GPL-2.0-or-later | The launcher's look (icon grid, program menu, settings and themes) follows its launcher; Autorun's launcher is its own code |
 
