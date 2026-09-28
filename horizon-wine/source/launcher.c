@@ -706,17 +706,16 @@ static void save_program_settings( struct launcher *l, struct program *p )
     load_program_settings( l, p );
 }
 
-static void enable_program_dxvk( struct launcher *l, struct program *p )
+static void apply_new_game_renderer( struct launcher *l, struct program *p )
 {
-    struct dxvk_version dxvk, vkd3d;
+    char path[768], value[64];
+    struct launcher_kv kv;
 
-    if (!l->options->dxvk_on_add || !launcher_dxvk_directory( p->machine, p->settings.dxvk_source )) return;
-    dxvk_resolve_version( p->settings.dxvk_source, l->options->runtime_dir, p->machine,
-                          p->settings.dxvk_version, &dxvk );
-    vkd3d_resolve_version( l->options->runtime_dir, p->machine, p->settings.vkd3d_version, &vkd3d );
-    if (dxvk.installed) strcpy( p->settings.dxvk_version, dxvk.version );
-    if (vkd3d.installed) strcpy( p->settings.vkd3d_version, vkd3d.version );
-    p->settings.dxvk = 1;
+    if (l->options->dxvk_on_add || !launcher_dxvk_directory( p->machine, p->settings.dxvk_source ) ||
+        !launcher_program_settings_path( l->options->runtime_dir, p->path, path, sizeof(path) ) ||
+        !launcher_kv_load( &kv, path ) || launcher_kv_get( &kv, "d3d", value, sizeof(value) ) ||
+        launcher_kv_get( &kv, "d3d9", value, sizeof(value) )) return;
+    p->settings.d3d = LAUNCHER_D3D_WINE;
     save_program_settings( l, p );
 }
 
@@ -1951,13 +1950,11 @@ static int prepare_program_graphics( struct launcher *l, struct program *p )
 
     strcpy( dxvk, p->settings.dxvk_version );
     strcpy( vkd3d, p->settings.vkd3d_version );
-    if (!launcher_graphics_ensure( l->graphics, p->machine, p->settings.dxvk_source, dxvk, vkd3d )) return 0;
-    if (strcmp( dxvk, p->settings.dxvk_version ) || strcmp( vkd3d, p->settings.vkd3d_version ))
-    {
-        strcpy( p->settings.dxvk_version, dxvk );
-        strcpy( p->settings.vkd3d_version, vkd3d );
-        save_program_settings( l, p );
-    }
+    if (!launcher_graphics_ensure( l->graphics, p->machine,
+                                  p->settings.d3d == LAUNCHER_D3D_DXVK_VKD3D,
+                                  p->settings.dxvk_source, dxvk, vkd3d )) return 0;
+    strcpy( p->settings.dxvk_version, dxvk );
+    strcpy( p->settings.vkd3d_version, vkd3d );
     return 1;
 }
 
@@ -1982,7 +1979,7 @@ static int start_program( struct launcher *l, struct program *p, char *target, s
     }
     /* Autorun ships no Windows DLLs: a card without them is offered them here. */
     if (!launcher_dlls_ready( l->dlls )) return 0;
-    if (p->settings.dxvk && !prepare_program_graphics( l, p )) return 0;
+    if (p->settings.d3d != LAUNCHER_D3D_WINE && !prepare_program_graphics( l, p )) return 0;
     p->missing = 0;
     p->launched_order = l->catalog.next_order++;
     save_library( l );
@@ -2306,7 +2303,7 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
     {
         const char *base = file_name( p->path );
         int in_library = find_program( l, p->path ) >= 0;
-        int x86 = p->machine == 0x014c, x64 = p->machine == 0x8664, dxvk_beside;
+        int x86 = p->machine == 0x014c, x64 = p->machine == 0x8664, dxvk_beside, dxvk_ready;
         struct dxvk_version dxvk, vkd3d;
 #ifdef WINE_NX_LSFG
         int lsfg_installed;
@@ -2323,7 +2320,7 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
         {
             snprintf( path, sizeof(path), "%s/dxgi.dll", dir );
             dxvk_beside |= file_exists( path );
-            if (p->settings.dxvk)
+            if (p->settings.d3d == LAUNCHER_D3D_DXVK_VKD3D)
             {
                 snprintf( path, sizeof(path), "%s/d3d12.dll", dir );
                 dxvk_beside |= file_exists( path );
@@ -2334,6 +2331,9 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
         dxvk_resolve_version( p->settings.dxvk_source, l->options->runtime_dir, p->machine,
                               p->settings.dxvk_version, &dxvk );
         vkd3d_resolve_version( l->options->runtime_dir, p->machine, p->settings.vkd3d_version, &vkd3d );
+        dxvk_ready = dxvk.installed &&
+                     (p->settings.d3d != LAUNCHER_D3D_DXVK_VKD3D ||
+                      launcher_dxvk_vkd3d_compatible( p->settings.dxvk_source, dxvk.version ));
 
         count = 0;
 #define ADD_ROW(i, section, text, help_text) \
@@ -2413,37 +2413,49 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
         if (l->options->vulkan && (x86 || x64))
         {
             ADD_ROW( ROW_D3D9, SECTION_GRAPHICS, "Direct3D renderer",
-                      "Wine uses its built-in renderer. DXVK + VKD3D uses Vulkan for Direct3D 9/10/11/12. "
+                      "Wine uses its built-in renderer. DXVK uses Vulkan for Direct3D 9/10/11; "
+                      "DXVK + VKD3D adds Direct3D 12. "
                      "Graphics DLLs next to the game have priority." );
-            row->adjustable = 1;
-            row->download = p->settings.dxvk && (!dxvk.installed || !vkd3d.installed);
+            row->kind = UI_ROW_DROPDOWN;
+            row->choices = 3;
+            row->download = p->settings.d3d != LAUNCHER_D3D_WINE &&
+                            (!dxvk_ready || (p->settings.d3d == LAUNCHER_D3D_DXVK_VKD3D && !vkd3d.installed));
             snprintf( row->value, sizeof(row->value), "%s%s%s",
-                      p->settings.dxvk ? "DXVK + VKD3D" : "Wine",
+                      p->settings.d3d == LAUNCHER_D3D_WINE ? "Wine" :
+                      p->settings.d3d == LAUNCHER_D3D_DXVK ? "DXVK" : "DXVK + VKD3D",
                       row->download ? " (download required)" : "",
                       dxvk_beside ? " (app DLL first)" : "" );
 
-            ADD_ROW( ROW_VKD3D_VERSION, SECTION_GRAPHICS, "VKD3D version",
-                     "Choose an official VKD3D GitHub release." );
-            row->kind = UI_ROW_DROPDOWN;
-            row->download = !vkd3d.installed;
-            snprintf( row->value, sizeof(row->value), "%s", vkd3d.version[0] ? vkd3d.version :
-                      vkd3d.installed ? "Bundled" : "Not installed" );
+            if (p->settings.d3d == LAUNCHER_D3D_DXVK_VKD3D)
+            {
+                ADD_ROW( ROW_VKD3D_VERSION, SECTION_GRAPHICS, "VKD3D version",
+                         "Choose an official VKD3D GitHub release." );
+                row->kind = UI_ROW_DROPDOWN;
+                row->download = !vkd3d.installed;
+                snprintf( row->value, sizeof(row->value), "%s", vkd3d.version[0] ? vkd3d.version :
+                          vkd3d.installed ? "Bundled" : "Not installed" );
+            }
 
-            ADD_ROW( ROW_DXVK_VERSION, SECTION_GRAPHICS, "DXVK version",
-                     "Choose an Official, Sarek or GPLAsync release." );
-            row->kind = UI_ROW_DROPDOWN;
-            row->download = !dxvk.installed;
-            snprintf( row->value, sizeof(row->value), "%s %s",
-                      p->settings.dxvk_source == DXVK_SOURCE_SAREK ? "Sarek" :
-                      p->settings.dxvk_source == DXVK_SOURCE_GPLASYNC ? "GPLAsync" : "Official",
-                      dxvk.version[0] ? dxvk.version : dxvk.installed ? "Bundled" : "Not installed" );
-            ADD_ROW( ROW_DXVK_HUD, SECTION_GRAPHICS, "DXVK HUD",
-                     "FPS shows only the frame rate. Compact shows the DirectX version, FPS and frame times. "
-                     "Full also shows the DXVK version, GPU, video memory and shader compiler activity. "
-                     "The DXVK HUD does not cover VKD3D's D3D12 rendering." );
-            row->kind = UI_ROW_DROPDOWN;
-            snprintf( row->value, sizeof(row->value), "%s", launcher_hud_labels[p->settings.dxvk_hud] );
-            row->choices = LAUNCHER_HUD_COUNT;
+            if (p->settings.d3d != LAUNCHER_D3D_WINE)
+            {
+                ADD_ROW( ROW_DXVK_VERSION, SECTION_GRAPHICS, "DXVK version",
+                         p->settings.d3d == LAUNCHER_D3D_DXVK_VKD3D ?
+                         "Choose an Official or GPLAsync release, version 2.1 or newer." :
+                         "Choose an Official, Sarek or GPLAsync release." );
+                row->kind = UI_ROW_DROPDOWN;
+                row->download = !dxvk_ready;
+                snprintf( row->value, sizeof(row->value), "%s %s",
+                          p->settings.dxvk_source == DXVK_SOURCE_SAREK ? "Sarek" :
+                          p->settings.dxvk_source == DXVK_SOURCE_GPLASYNC ? "GPLAsync" : "Official",
+                          !dxvk_ready ? "Not installed" : dxvk.version[0] ? dxvk.version : "Bundled" );
+                ADD_ROW( ROW_DXVK_HUD, SECTION_GRAPHICS, "DXVK HUD",
+                         "FPS shows only the frame rate. Compact shows the DirectX version, FPS and frame times. "
+                         "Full also shows the DXVK version, GPU, video memory and shader compiler activity. "
+                         "The DXVK HUD does not cover VKD3D's D3D12 rendering." );
+                row->kind = UI_ROW_DROPDOWN;
+                snprintf( row->value, sizeof(row->value), "%s", launcher_hud_labels[p->settings.dxvk_hud] );
+                row->choices = LAUNCHER_HUD_COUNT;
+            }
 
             ADD_ROW( ROW_FRAME_LIMIT, SECTION_GRAPHICS, "Frame rate limit",
                      "Limits real game frames in Vulkan, DXVK and VKD3D. Off adds no cap. "
@@ -2680,10 +2692,37 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
         }
 
         case ROW_D3D9:
-            if (action != UI_ACTION_RESET && !p->settings.dxvk && !prepare_program_graphics( l, p )) break;
-            p->settings.dxvk = action == UI_ACTION_RESET ? 0 : !p->settings.dxvk;
+        {
+            static const char *const names[] = { "Wine", "DXVK", "DXVK + VKD3D" };
+            struct launcher_settings previous = p->settings;
+            struct ui_row items[3] = {0};
+            int selected;
+
+            if (action == UI_ACTION_RESET) selected = LAUNCHER_D3D_DXVK;
+            else if (action == UI_ACTION_CHOOSE)
+            {
+                for (i = 0; i < 3; i++) snprintf( items[i].label, sizeof(items[i].label), "%s", names[i] );
+                selected = ui_settings_dropdown( ui, &list, items, 3, p->settings.d3d );
+                if (selected < 0) break;
+            }
+            else break;
+            p->settings.d3d = selected;
+            if (selected == LAUNCHER_D3D_DXVK_VKD3D &&
+                (p->settings.dxvk_source == DXVK_SOURCE_SAREK ||
+                 (p->settings.dxvk_version[0] &&
+                  !launcher_dxvk_vkd3d_compatible( p->settings.dxvk_source, p->settings.dxvk_version ))))
+            {
+                p->settings.dxvk_source = DXVK_SOURCE_OFFICIAL;
+                p->settings.dxvk_version[0] = 0;
+            }
+            if (selected != LAUNCHER_D3D_WINE && !prepare_program_graphics( l, p ))
+            {
+                p->settings = previous;
+                break;
+            }
             save_program_settings( l, p );
             break;
+        }
 
 #ifdef WINE_NX_FEX
         case ROW_CPU:
@@ -2751,9 +2790,9 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
             {
                 char *version = id == ROW_VKD3D_VERSION ? p->settings.vkd3d_version : p->settings.dxvk_version;
                 if (launcher_graphics_select( l->graphics, &list, p->machine, id == ROW_VKD3D_VERSION,
+                                              p->settings.d3d == LAUNCHER_D3D_DXVK_VKD3D,
                                               &p->settings.dxvk_source, version ))
                 {
-                    p->settings.dxvk = 1;
                     save_program_settings( l, p );
                 }
             }
@@ -2920,7 +2959,7 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
                 save_library( l );
                 ui_toast( ui, "Added to the library", 1500 );
                 p = &l->programs[index];
-                enable_program_dxvk( l, p );
+                apply_new_game_renderer( l, p );
             }
             break;
         }
@@ -3422,7 +3461,7 @@ static void settings_menu( struct launcher *l )
         snprintf( rows[SET_DXVK_ON_ADD].value, sizeof(rows[0].value), "%s", on_off[!!l->options->dxvk_on_add] );
         rows[SET_DXVK_ON_ADD].kind = UI_ROW_SWITCH;
         rows[SET_DXVK_ON_ADD].on = !!l->options->dxvk_on_add;
-        rows[SET_DXVK_ON_ADD].help = "New games use the latest installed DXVK and VKD3D versions.";
+        rows[SET_DXVK_ON_ADD].help = "New games use DXVK. When off, newly added games use Wine.";
         snprintf( rows[SET_VERBOSE].label, sizeof(rows[0].label), "Verbose traces" );
         snprintf( rows[SET_VERBOSE].value, sizeof(rows[0].value), "%s", on_off[!!l->options->verbose] );
         rows[SET_VERBOSE].kind = UI_ROW_SWITCH;
@@ -4017,7 +4056,7 @@ static int add_game( struct launcher *l )
         l->program_count--;
         return -1;
     }
-    enable_program_dxvk( l, &l->programs[index] );
+    apply_new_game_renderer( l, &l->programs[index] );
     launcher_log( "[LAUNCHER] Added %s to the library", path );
     ui_toast( &l->ui, "Game added to the library", 1800 );
     return index;

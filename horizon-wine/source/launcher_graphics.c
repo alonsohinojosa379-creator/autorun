@@ -193,6 +193,7 @@ struct release_menu
     struct graphics_catalog *catalog;
     enum dxvk_source source;
     unsigned short machine;
+    int combined;
     struct dxvk_version selected;
     struct ui_row rows[DXVK_MAX_RELEASES + 1];
     int ids[DXVK_MAX_RELEASES + 1], count, revision;
@@ -224,7 +225,9 @@ static int update_menu( void *opaque, int *selection )
         struct ui_row *row;
         int index;
 
-        if (!c->vkd3d && !launcher_dxvk_version_selectable( c->releases[i].version )) continue;
+        if (!c->vkd3d && (!launcher_dxvk_version_selectable( c->releases[i].version ) ||
+                          (m->combined && !launcher_dxvk_vkd3d_compatible( m->source,
+                                                                            c->releases[i].version )))) continue;
         if (latest < 0 && !c->releases[i].prerelease) { latest = i; latest_row = m->count; }
         index = m->count++;
         row = m->rows + index;
@@ -239,7 +242,9 @@ static int update_menu( void *opaque, int *selection )
                   i == latest ? "Latest" : c->releases[i].prerelease ? "Pre-release" : "" );
     }
     if (!have_selected && m->selected.installed &&
-        (c->vkd3d || !m->selected.version[0] || launcher_dxvk_version_selectable( m->selected.version )))
+        (c->vkd3d || (!m->combined && (!m->selected.version[0] ||
+                                      launcher_dxvk_version_selectable( m->selected.version ))) ||
+         (m->combined && launcher_dxvk_vkd3d_compatible( m->source, m->selected.version ))))
     {
         int index = m->count++;
         m->ids[index] = -1;
@@ -260,25 +265,34 @@ static int update_menu( void *opaque, int *selection )
 }
 
 int launcher_graphics_select( struct launcher_graphics *g, const struct ui_list *anchor,
-                              unsigned short machine, int vkd3d, enum dxvk_source *source, char version[32] )
+                              unsigned short machine, int vkd3d, int combined,
+                              enum dxvk_source *source, char version[32] )
 {
     struct ui_row sources[DXVK_SOURCE_COUNT] = {0};
+    enum dxvk_source source_ids[DXVK_SOURCE_COUNT];
     struct release_menu *m;
     enum dxvk_source selected_source = DXVK_SOURCE_OFFICIAL;
-    int chosen, i, ok = 0;
+    int chosen, i, count = 0, selected = 0, ok = 0;
 
     if (!g) return 0;
     if (!vkd3d)
     {
         for (i = 0; i < DXVK_SOURCE_COUNT; i++)
-            snprintf( sources[i].label, sizeof(sources[i].label), "%s", source_names[i] );
-        chosen = ui_settings_dropdown( g->ui, anchor, sources, DXVK_SOURCE_COUNT, *source );
+        {
+            if (combined && i == DXVK_SOURCE_SAREK) continue;
+            source_ids[count] = i;
+            snprintf( sources[count].label, sizeof(sources[count].label), "%s", source_names[i] );
+            if ((enum dxvk_source)i == *source) selected = count;
+            count++;
+        }
+        chosen = ui_settings_dropdown( g->ui, anchor, sources, count, selected );
         if (chosen < 0) return 0;
-        selected_source = chosen;
+        selected_source = source_ids[chosen];
     }
     if (!(m = calloc( 1, sizeof(*m) ))) return 0;
     m->machine = machine;
     m->source = selected_source;
+    m->combined = combined && !vkd3d;
     if (!(m->catalog = open_catalog( g, vkd3d, m->source ))) { free( m ); return 0; }
     resolve_version( g, machine, vkd3d, m->source,
                      vkd3d || selected_source == *source ? version : "", &m->selected );
@@ -298,13 +312,15 @@ int launcher_graphics_select( struct launcher_graphics *g, const struct ui_list 
     return ok;
 }
 
-static const struct dxvk_release *find_release( struct graphics_catalog *c, const char *version )
+static const struct dxvk_release *find_release( struct graphics_catalog *c, const char *version, int combined )
 {
     int i;
 
     for (i = 0; i < c->count; i++)
     {
-        if (!c->vkd3d && !launcher_dxvk_version_selectable( c->releases[i].version )) continue;
+        if (!c->vkd3d && (!launcher_dxvk_version_selectable( c->releases[i].version ) ||
+                          (combined && !launcher_dxvk_vkd3d_compatible( c->source,
+                                                                          c->releases[i].version )))) continue;
         if (version[0] ? !strcmp( version, c->releases[i].version ) : !c->releases[i].prerelease)
             return c->releases + i;
     }
@@ -312,17 +328,24 @@ static const struct dxvk_release *find_release( struct graphics_catalog *c, cons
 }
 
 static int ensure_backend( struct launcher_graphics *g, unsigned short machine, int vkd3d,
-                           enum dxvk_source source, char version[32] )
+                           int combined, enum dxvk_source source, char version[32] )
 {
     struct graphics_catalog *c;
     struct dxvk_version selected;
     const struct dxvk_release *release;
 
+    if (!vkd3d && combined)
+    {
+        if (source == DXVK_SOURCE_SAREK) return 0;
+        if (version[0] && !launcher_dxvk_vkd3d_compatible( source, version )) version[0] = 0;
+    }
     resolve_version( g, machine, vkd3d, source, version, &selected );
+    if (!vkd3d && combined && !launcher_dxvk_vkd3d_compatible( source, selected.version ))
+        selected.installed = 0;
     if (!selected.installed)
     {
         if (!(c = open_catalog( g, vkd3d, source ))) return 0;
-        release = find_release( c, version );
+        release = find_release( c, version, combined && !vkd3d );
         if (c->thread && (!release || !version[0]))
         {
             char title[96];
@@ -338,7 +361,7 @@ static int ensure_backend( struct launcher_graphics *g, unsigned short machine, 
             }
             ui_progress_end( g->ui );
             if (!g->ui->running) { SDL_AtomicSet( &c->cancel, 1 ); return 0; }
-            release = find_release( c, version );
+            release = find_release( c, version, combined && !vkd3d );
         }
         if (!release)
         {
@@ -355,15 +378,16 @@ static int ensure_backend( struct launcher_graphics *g, unsigned short machine, 
 }
 
 int launcher_graphics_ensure( struct launcher_graphics *g, unsigned short machine,
-                              enum dxvk_source source, char dxvk_version[32], char vkd3d_version[32] )
+                              int combined, enum dxvk_source source,
+                              char dxvk_version[32], char vkd3d_version[32] )
 {
     char dxvk[32], vkd3d[32];
 
     if (!g) return 0;
     strcpy( dxvk, dxvk_version );
     strcpy( vkd3d, vkd3d_version );
-    if (!ensure_backend( g, machine, 0, source, dxvk ) ||
-        !ensure_backend( g, machine, 1, DXVK_SOURCE_OFFICIAL, vkd3d )) return 0;
+    if (!ensure_backend( g, machine, 0, combined, source, dxvk ) ||
+        (combined && !ensure_backend( g, machine, 1, 0, DXVK_SOURCE_OFFICIAL, vkd3d ))) return 0;
     strcpy( dxvk_version, dxvk );
     strcpy( vkd3d_version, vkd3d );
     return 1;

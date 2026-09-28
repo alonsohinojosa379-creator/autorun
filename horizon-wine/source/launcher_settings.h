@@ -171,6 +171,13 @@ static inline int launcher_kv_save( const struct launcher_kv *kv, const char *pa
 }
 
 /* The settings of one program. -1 means the global setting applies. */
+enum launcher_d3d_renderer
+{
+    LAUNCHER_D3D_WINE,
+    LAUNCHER_D3D_DXVK,
+    LAUNCHER_D3D_DXVK_VKD3D
+};
+
 struct launcher_settings
 {
     char title[128];  /* empty: the title from the program's resources */
@@ -181,7 +188,7 @@ struct launcher_settings
     int fex;
     int four_cores;
     int framebuffer;  /* 1: windows go to the framebuffer, 0: through the compositor */
-    int dxvk;         /* architecture-specific DXVK payload */
+    enum launcher_d3d_renderer d3d;
     enum dxvk_source dxvk_source;
     char vkd3d_version[32];
     char dxvk_version[32]; /* empty: newest installed release */
@@ -300,6 +307,21 @@ static inline int launcher_dxvk_version_selectable( const char *version )
     return end != version && major >= 1;
 }
 
+static inline int launcher_dxvk_vkd3d_compatible( enum dxvk_source source, const char *version )
+{
+    char *end, *minor_start;
+    unsigned long major, minor;
+
+    if ((source != DXVK_SOURCE_OFFICIAL && source != DXVK_SOURCE_GPLASYNC) ||
+        !launcher_dxvk_version_valid( version )) return 0;
+    major = strtoul( version, &end, 10 );
+    if (end == version || *end != '.') return 0;
+    minor_start = end + 1;
+    minor = strtoul( minor_start, &end, 10 );
+    if (end == minor_start) return 0;
+    return major > 2 || (major == 2 && minor >= 1);
+}
+
 static inline int launcher_dxvk_version_directory( unsigned short machine, enum dxvk_source source, const char *version,
                                                    char *out, size_t size )
 {
@@ -390,7 +412,9 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
     }
     if (!launcher_kv_get( kv, "d3d", value, sizeof(value) ) &&
         !launcher_kv_get( kv, "d3d9", value, sizeof(value) )) value[0] = 0;
-    settings->dxvk = !strcasecmp( value, "dxvk" );
+    settings->d3d = !strcasecmp( value, "wine" ) ? LAUNCHER_D3D_WINE :
+                    !strcasecmp( value, "dxvk" ) || !strcasecmp( value, "dxvk+vkd3d" ) ?
+                    LAUNCHER_D3D_DXVK_VKD3D : LAUNCHER_D3D_DXVK;
     settings->dxvk_source = DXVK_SOURCE_OFFICIAL;
     if (launcher_kv_get( kv, "dxvk-source", value, sizeof(value) ))
     {
@@ -403,6 +427,14 @@ static inline void launcher_settings_read( const struct launcher_kv *kv, struct 
     settings->dxvk_version[0] = 0;
     if (launcher_kv_get( kv, "dxvk-version", value, sizeof(value) ) && launcher_dxvk_version_valid( value ))
         memcpy( settings->dxvk_version, value, strlen( value ) + 1 );
+    if (settings->d3d == LAUNCHER_D3D_DXVK_VKD3D &&
+        (settings->dxvk_source == DXVK_SOURCE_SAREK ||
+         (settings->dxvk_version[0] && !launcher_dxvk_vkd3d_compatible( settings->dxvk_source,
+                                                                          settings->dxvk_version ))))
+    {
+        settings->dxvk_source = DXVK_SOURCE_OFFICIAL;
+        settings->dxvk_version[0] = 0;
+    }
     settings->own_controls = launcher_setting_state( kv, "own-controls" );
     settings->dxvk_hud = 0;
     if (launcher_kv_get( kv, "dxvk-hud", value, sizeof(value) ))
@@ -442,7 +474,8 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
 {
     static const char *states[] = { NULL, "0", "1" };
 
-    if (settings->dxvk_hud < 0 || settings->dxvk_hud >= LAUNCHER_HUD_COUNT ||
+    if (settings->d3d < LAUNCHER_D3D_WINE || settings->d3d > LAUNCHER_D3D_DXVK_VKD3D ||
+        settings->dxvk_hud < 0 || settings->dxvk_hud >= LAUNCHER_HUD_COUNT ||
         settings->dxvk_source < 0 || settings->dxvk_source >= DXVK_SOURCE_COUNT ||
         settings->frame_limit < 0 || settings->frame_limit >= LAUNCHER_FRAME_LIMIT_COUNT ||
         settings->lsfg_flow < 0 || settings->lsfg_flow >= 3 ||
@@ -458,7 +491,8 @@ static inline int launcher_settings_write( struct launcher_kv *kv, const struct 
            launcher_kv_set( kv, "windows", settings->framebuffer < 0 ? NULL :
                                            settings->framebuffer ? "framebuffer" : "compositor" ) &&
            launcher_kv_set( kv, "d3d9", NULL ) &&
-           launcher_kv_set( kv, "d3d", settings->dxvk ? "dxvk" : NULL ) &&
+           launcher_kv_set( kv, "d3d", settings->d3d == LAUNCHER_D3D_WINE ? "wine" :
+                            settings->d3d == LAUNCHER_D3D_DXVK_VKD3D ? "dxvk+vkd3d" : NULL ) &&
            launcher_kv_set( kv, "dxvk-source", settings->dxvk_source == DXVK_SOURCE_SAREK ? "sarek" :
                             settings->dxvk_source == DXVK_SOURCE_GPLASYNC ? "gplasync" : NULL ) &&
            launcher_kv_set( kv, "vkd3d-version", settings->vkd3d_version[0] ? settings->vkd3d_version : NULL ) &&

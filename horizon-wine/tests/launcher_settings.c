@@ -70,7 +70,8 @@ static void test_settings( const char *dir )
 
     load_text( &kv, "" );
     launcher_settings_read( &kv, &settings );
-    assert( !settings.fast_sync && settings.fex && settings.four_cores );
+    assert( !settings.fast_sync && settings.fex && settings.four_cores &&
+            settings.d3d == LAUNCHER_D3D_DXVK );
     load_text( &kv, "four-cores=0\n" );
     launcher_settings_read( &kv, &settings );
     assert( !settings.four_cores && launcher_settings_write( &kv, &settings ) );
@@ -111,31 +112,41 @@ static void test_settings( const char *dir )
 
     load_text( &kv, "verbose=on\nprofile=off\nwindows=framebuffer\nd3d9=DXVK\nhidden=yes\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.verbose == 1 && settings.profile == 0 && settings.framebuffer == 1 && settings.dxvk == 1 );
+    assert( settings.verbose == 1 && settings.profile == 0 && settings.framebuffer == 1 &&
+            settings.d3d == LAUNCHER_D3D_DXVK_VKD3D );
     assert( settings.hidden == 0 && !settings.title[0] );  /* only 1 or on hides */
 
     load_text( &kv, "d3d=wine\nd3d9=dxvk\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.dxvk == 0 );
+    assert( settings.d3d == LAUNCHER_D3D_WINE );
     load_text( &kv, "d3d=DXVK\ndxvk-version=2.7.1\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.dxvk == 1 && settings.dxvk_source == DXVK_SOURCE_OFFICIAL &&
+    assert( settings.d3d == LAUNCHER_D3D_DXVK_VKD3D && settings.dxvk_source == DXVK_SOURCE_OFFICIAL &&
             !strcmp( settings.dxvk_version, "2.7.1" ) );
     load_text( &kv, "d3d=dxvk\ndxvk-source=gplasync\ndxvk-version=3.1.1-1\n" );
     launcher_settings_read( &kv, &settings );
     assert( settings.dxvk_source == DXVK_SOURCE_GPLASYNC && !strcmp( settings.dxvk_version, "3.1.1-1" ) );
     assert( launcher_settings_write( &kv, &settings ) && strstr( kv.text, "dxvk-source=gplasync\n" ) );
-    load_text( &kv, "d3d=dxvk\ndxvk-source=sarek\ndxvk-version=1.13.0\n" );
+    load_text( &kv, "dxvk-source=sarek\ndxvk-version=1.13.0\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.dxvk_source == DXVK_SOURCE_SAREK && !strcmp( settings.dxvk_version, "1.13.0" ) );
+    assert( settings.d3d == LAUNCHER_D3D_DXVK && settings.dxvk_source == DXVK_SOURCE_SAREK &&
+            !strcmp( settings.dxvk_version, "1.13.0" ) );
+    load_text( &kv, "d3d=dxvk+vkd3d\ndxvk-source=sarek\ndxvk-version=1.13.0\n" );
+    launcher_settings_read( &kv, &settings );
+    assert( settings.d3d == LAUNCHER_D3D_DXVK_VKD3D && settings.dxvk_source == DXVK_SOURCE_OFFICIAL &&
+            !settings.dxvk_version[0] );
     load_text( &kv, "d3d=DXVK\ndxvk-version=../../bad\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.dxvk == 1 && !settings.dxvk_version[0] );
+    assert( settings.d3d == LAUNCHER_D3D_DXVK_VKD3D && !settings.dxvk_version[0] );
     assert( launcher_dxvk_version_valid( "3.1.1" ) && launcher_dxvk_version_valid( "2.0-rc1" ) );
     assert( !launcher_dxvk_version_valid( "" ) && !launcher_dxvk_version_valid( "../3.1" ) &&
             !launcher_dxvk_version_valid( "3.1/other" ) );
     assert( launcher_dxvk_version_selectable( "1.0" ) && launcher_dxvk_version_selectable( "3.1.1" ) );
     assert( !launcher_dxvk_version_selectable( "0.96" ) && !launcher_dxvk_version_selectable( "bad" ) );
+    assert( !launcher_dxvk_vkd3d_compatible( DXVK_SOURCE_OFFICIAL, "2.0" ) &&
+            launcher_dxvk_vkd3d_compatible( DXVK_SOURCE_OFFICIAL, "2.1" ) &&
+            launcher_dxvk_vkd3d_compatible( DXVK_SOURCE_GPLASYNC, "3.0-1" ) &&
+            !launcher_dxvk_vkd3d_compatible( DXVK_SOURCE_SAREK, "3.0" ) );
     assert( !strcmp( launcher_dxvk_directory( 0x014c, DXVK_SOURCE_OFFICIAL ), "dxvk" ) );
     assert( !strcmp( launcher_dxvk_directory( 0x8664, DXVK_SOURCE_OFFICIAL ), "dxvk64" ) );
     assert( !strcmp( launcher_dxvk_directory( 0x014c, DXVK_SOURCE_SAREK ), "dxvk-sarek" ) );
@@ -213,18 +224,19 @@ static void test_settings( const char *dir )
     settings.verbose = -1;
     settings.profile = 1;
     settings.framebuffer = 0;
-    settings.dxvk = 1;
+    settings.d3d = LAUNCHER_D3D_DXVK;
     strcpy( settings.dxvk_version, "2.7.1" );
     assert( launcher_settings_write( &kv, &settings ) && launcher_kv_save( &kv, path ) );
     assert( launcher_kv_load( &kv, path ) );
-    assert( !strcmp( kv.text, "# written by hand\ntitle=Need for Speed\nhidden=1\nprofile=1\nwindows=compositor\nd3d=dxvk\ndxvk-version=2.7.1\n" ) );
+    assert( !strcmp( kv.text, "# written by hand\ntitle=Need for Speed\nhidden=1\nprofile=1\nwindows=compositor\ndxvk-version=2.7.1\n" ) );
     launcher_settings_read( &kv, &back );
     assert( !strcmp( back.title, settings.title ) && back.hidden == 1 && back.verbose == -1 && back.profile == 1 );
-    assert( back.framebuffer == 0 && back.dxvk == 1 && !strcmp( back.dxvk_version, "2.7.1" ) );
+    assert( back.framebuffer == 0 && back.d3d == LAUNCHER_D3D_DXVK && !strcmp( back.dxvk_version, "2.7.1" ) );
 
     /* Back to the global settings: only the comment stays; without it the file goes. */
     memset( &settings, 0, sizeof(settings) );
     settings.fex = settings.four_cores = 1;
+    settings.d3d = LAUNCHER_D3D_DXVK;
     settings.verbose = settings.profile = settings.framebuffer = settings.own_controls = -1;
     settings.vsync = settings.lsfg_performance = settings.lsfg_flow = 1;
     assert( launcher_settings_write( &kv, &settings ) && !strcmp( kv.text, "# written by hand\n" ) );

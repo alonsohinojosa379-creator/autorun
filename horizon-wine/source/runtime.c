@@ -490,7 +490,7 @@ void wine_nx_runtime_trace( const char *msg )
  * whole program down. Their call sites check this first; it is set from
  * sdmc:/switch/wine/verbose.txt containing 1. */
 int wine_nx_runtime_verbose;
-static int runtime_dxvk;
+static enum launcher_d3d_renderer runtime_d3d;
 static enum dxvk_source runtime_dxvk_source;
 static int runtime_fex;
 static int runtime_four_cores;
@@ -1952,10 +1952,11 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     char dxvk_dir[96], vkd3d_dir[96], vkd3d_path[104] = "", graphics_path[208] = "";
     struct dxvk_version dxvk = {0}, vkd3d = {0};
 
-    if (runtime_dxvk)
+    if (runtime_d3d != LAUNCHER_D3D_WINE)
     {
         dxvk_resolve_version( runtime_dxvk_source, RUNTIME_DIR, main_image_info.Machine, runtime_dxvk_version, &dxvk );
-        vkd3d_resolve_version( RUNTIME_DIR, main_image_info.Machine, runtime_vkd3d_version, &vkd3d );
+        if (runtime_d3d == LAUNCHER_D3D_DXVK_VKD3D)
+            vkd3d_resolve_version( RUNTIME_DIR, main_image_info.Machine, runtime_vkd3d_version, &vkd3d );
     }
 
     if (!target_to_dos_path( target, dos_path, dos_path_size )) return NULL;
@@ -1983,7 +1984,8 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
             log_line( "[DXVK] %s bundled payload C:\\%s; application-local DLLs take priority",
                       main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ? "AMD64" : "x86", dxvk_dir );
     }
-    else if (runtime_dxvk) log_line( "[DXVK] selected payload is not installed; using Wine Direct3D" );
+    else if (runtime_d3d != LAUNCHER_D3D_WINE)
+        log_line( "[DXVK] selected payload is not installed; using Wine Direct3D" );
     snprintf( dll_path, sizeof(dll_path), "%s;%sC:\\windows\\system32;C:\\windows;C:\\",
               current_dir, graphics_path );
     /* The current directory ends in a backslash, as RtlSetCurrentDirectory_U
@@ -2077,7 +2079,7 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     {
         const char *value = entry;
 
-        if (!runtime_dxvk && !strncmp( entry, "DXVK_", 5 )) continue;
+        if (runtime_d3d == LAUNCHER_D3D_WINE && !strncmp( entry, "DXVK_", 5 )) continue;
         if (!strncmp( entry, "DXVK_ASYNC=", 11 ) &&
             (runtime_dxvk_source != DXVK_SOURCE_GPLASYNC || !dxvk.installed)) continue;
         if (!strncmp( entry, "DXVK_HUD=", 9 ))
@@ -4069,7 +4071,7 @@ int main( int argc, char **argv )
         struct launcher_kv kv;
         char settings_path[520];
 
-        runtime_dxvk = 0;
+        runtime_d3d = LAUNCHER_D3D_DXVK;
         runtime_dxvk_source = DXVK_SOURCE_OFFICIAL;
         runtime_dxvk_hud = 0;
 #ifdef WINE_NX_FEX
@@ -4102,7 +4104,7 @@ int main( int argc, char **argv )
             if (settings.profile >= 0) runtime_profile = settings.profile;
             if (settings.framebuffer >= 0) wine_nx_compositor_mode = !settings.framebuffer;
 #ifdef WINE_NX_MESA_SWITCH
-            runtime_dxvk = settings.dxvk;
+            runtime_d3d = settings.d3d;
             runtime_dxvk_source = settings.dxvk_source;
             runtime_dxvk_hud = settings.dxvk_hud;
             wine_nx_graphics_configure( launcher_frame_limits[settings.frame_limit], settings.vsync );
@@ -4112,7 +4114,7 @@ int main( int argc, char **argv )
 #endif
             memcpy( runtime_vkd3d_version, settings.vkd3d_version, sizeof(runtime_vkd3d_version) );
             memcpy( runtime_dxvk_version, settings.dxvk_version, sizeof(runtime_dxvk_version) );
-            if (runtime_dxvk)
+            if (runtime_d3d != LAUNCHER_D3D_WINE)
             {
                 struct launcher_kv graphics;
 
@@ -4150,9 +4152,10 @@ int main( int argc, char **argv )
                       settings.profile < 0 ? "global" : settings.profile ? "on" : "off",
                       settings.framebuffer < 0 ? "global" : settings.framebuffer ? "framebuffer" : "compositor",
 #ifdef WINE_NX_MESA_SWITCH
-                      settings.dxvk ? "DXVK + VKD3D" : "Wine" );
+                      settings.d3d == LAUNCHER_D3D_WINE ? "Wine" :
+                      settings.d3d == LAUNCHER_D3D_DXVK ? "DXVK" : "DXVK + VKD3D" );
 #else
-                      settings.dxvk ? "Wine (DXVK needs the Vulkan runtime)" : "Wine" );
+                      settings.d3d != LAUNCHER_D3D_WINE ? "Wine (DXVK needs the Vulkan runtime)" : "Wine" );
 #endif
         }
     }
