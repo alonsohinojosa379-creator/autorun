@@ -335,13 +335,14 @@ static int sd_cache_open( struct _reent *r, void *fd, const char *path, int flag
         for (other = file->next; other; other = other->next)
             if (sd_cache_same_path( other->path, path )) other->shared = file->shared = 1;
     }
-    if (flags & (O_CREAT | O_TRUNC)) sd_stat_changed( path );
     else if (writable)
     {
         /* Without a record of this writer, its readers cannot be told apart. */
         sd_cache_off = 1;
         for (file = sd_cache_files; file; file = file->next) sd_cache_drop( file, &sd_cache_pool );
     }
+    if (flags & O_TRUNC) sd_cache_written( sd_cache_files, &sd_cache_pool, path );
+    if (flags & (O_CREAT | O_TRUNC)) sd_stat_changed( path );
     pthread_mutex_unlock( &sd_cache_mutex );
     return 0;
 }
@@ -452,6 +453,7 @@ static ssize_t sd_cache_write_file( struct _reent *r, void *fd, const char *ptr,
 {
     struct sd_write_buffer *wb;
     struct sd_cache_file *file;
+    ssize_t ret;
     long long at = -1;
     int held = 0;
 
@@ -510,7 +512,17 @@ static ssize_t sd_cache_write_file( struct _reent *r, void *fd, const char *ptr,
         __atomic_add_fetch( &wine_nx_sd_writes_held, 1, __ATOMIC_RELAXED );
         return (ssize_t)len;
     }
-    return sd_cache_base_write( r, fd, ptr, len );
+    ret = sd_cache_base_write( r, fd, ptr, len );
+    pthread_mutex_lock( &sd_cache_mutex );
+    /* A reader may have refilled the cache while the write was in flight. */
+    if ((file = sd_cache_find( sd_cache_files, fd )))
+    {
+        if (file->shared) sd_cache_written( sd_cache_files, &sd_cache_pool, file->path );
+        else sd_cache_drop( file, &sd_cache_pool );
+    }
+    sd_stat_changed( file ? file->path : NULL );
+    pthread_mutex_unlock( &sd_cache_mutex );
+    return ret;
 }
 
 /* While bytes are held the file position is kept with them, and a seek from
