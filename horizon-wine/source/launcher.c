@@ -447,6 +447,7 @@ static void load_program_settings( struct launcher *l, struct program *p )
     p->own_files = 0;
     memset( &p->settings, 0, sizeof(p->settings) );
     p->settings.verbose = p->settings.profile = p->settings.framebuffer = -1;
+    p->settings.fex = p->settings.four_cores = 1;
     if (launcher_program_settings_path( l->options->runtime_dir, p->path, path, sizeof(path) ) &&
         launcher_kv_load( &kv, path ))
     {
@@ -2690,7 +2691,7 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
             struct ui_row items[2] = {0};
             int selected;
 
-            if (action == UI_ACTION_RESET) selected = 0;
+            if (action == UI_ACTION_RESET) selected = 1;
             else if (action == UI_ACTION_CHOOSE)
             {
                 snprintf( items[0].label, sizeof(items[0].label), "Box64" );
@@ -2712,7 +2713,8 @@ static int program_menu( struct launcher *l, struct program *p, char *target, si
         }
 #endif
         case ROW_FOUR_CORES:
-            if (action == UI_ACTION_RESET || p->settings.four_cores) p->settings.four_cores = 0;
+            if (action == UI_ACTION_RESET) p->settings.four_cores = 1;
+            else if (p->settings.four_cores) p->settings.four_cores = 0;
             else if (l->options->four_cores_available) p->settings.four_cores = 1;
             save_program_settings( l, p );
             break;

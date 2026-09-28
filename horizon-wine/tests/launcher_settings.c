@@ -70,28 +70,28 @@ static void test_settings( const char *dir )
 
     load_text( &kv, "" );
     launcher_settings_read( &kv, &settings );
-    assert( !settings.fast_sync && !settings.fex && !settings.four_cores );
-    load_text( &kv, "four-cores=1\n" );
+    assert( !settings.fast_sync && settings.fex && settings.four_cores );
+    load_text( &kv, "four-cores=0\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.four_cores && launcher_settings_write( &kv, &settings ) );
+    assert( !settings.four_cores && launcher_settings_write( &kv, &settings ) );
     launcher_settings_read( &kv, &back );
-    assert( back.four_cores );
-    settings.four_cores = 0;
+    assert( !back.four_cores );
+    settings.four_cores = 1;
     assert( launcher_settings_write( &kv, &settings ) && !strstr( kv.text, "four-cores=" ) );
     load_text( &kv, "four-cores=unknown\n" );
     launcher_settings_read( &kv, &settings );
-    assert( !settings.four_cores );
-    load_text( &kv, "cpu=fex\n" );
+    assert( settings.four_cores );
+    load_text( &kv, "cpu=box64\n" );
     launcher_settings_read( &kv, &settings );
-    assert( settings.fex );
+    assert( !settings.fex );
     assert( launcher_settings_write( &kv, &settings ) );
     launcher_settings_read( &kv, &back );
-    assert( back.fex );
-    settings.fex = 0;
+    assert( !back.fex );
+    settings.fex = 1;
     assert( launcher_settings_write( &kv, &settings ) && !strstr( kv.text, "cpu=" ) );
     load_text( &kv, "cpu=unknown\n" );
     launcher_settings_read( &kv, &settings );
-    assert( !settings.fex );
+    assert( settings.fex );
     load_text( &kv, "sync=horizon\n" );
     launcher_settings_read( &kv, &settings );
     assert( settings.fast_sync );
@@ -205,6 +205,7 @@ static void test_settings( const char *dir )
     snprintf( path, sizeof(path), "%s/game.wine-nx.txt", dir );
     load_text( &kv, "# written by hand\n" );
     memset( &settings, 0, sizeof(settings) );
+    settings.fex = settings.four_cores = 1;
     settings.own_controls = -1;
     settings.vsync = settings.lsfg_performance = settings.lsfg_flow = 1;
     strcpy( settings.title, "Need for Speed" );
@@ -223,6 +224,7 @@ static void test_settings( const char *dir )
 
     /* Back to the global settings: only the comment stays; without it the file goes. */
     memset( &settings, 0, sizeof(settings) );
+    settings.fex = settings.four_cores = 1;
     settings.verbose = settings.profile = settings.framebuffer = settings.own_controls = -1;
     settings.vsync = settings.lsfg_performance = settings.lsfg_flow = 1;
     assert( launcher_settings_write( &kv, &settings ) && !strcmp( kv.text, "# written by hand\n" ) );

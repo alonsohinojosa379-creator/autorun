@@ -4072,8 +4072,12 @@ int main( int argc, char **argv )
         runtime_dxvk = 0;
         runtime_dxvk_source = DXVK_SOURCE_OFFICIAL;
         runtime_dxvk_hud = 0;
+#ifdef WINE_NX_FEX
+        runtime_fex = 1;
+#else
         runtime_fex = 0;
-        runtime_four_cores = 0;
+#endif
+        runtime_four_cores = 1;
         horizon_fast_sync_enabled = 0;
 #ifdef WINE_NX_MESA_SWITCH
         wine_nx_graphics_configure( 0, 1 );
@@ -4086,11 +4090,13 @@ int main( int argc, char **argv )
         runtime_dxvk_version[0] = 0;
         if (target[1] != ':' &&
             launcher_program_settings_path( RUNTIME_DIR, target, settings_path, sizeof(settings_path) ) &&
-            launcher_kv_load( &kv, settings_path ) && kv.size)
+            launcher_kv_load( &kv, settings_path ))
         {
             launcher_settings_read( &kv, &settings );
             horizon_fast_sync_enabled = settings.fast_sync;
+#ifdef WINE_NX_FEX
             runtime_fex = settings.fex;
+#endif
             runtime_four_cores = settings.four_cores;
             if (settings.verbose >= 0) wine_nx_runtime_verbose = settings.verbose;
             if (settings.profile >= 0) runtime_profile = settings.profile;
