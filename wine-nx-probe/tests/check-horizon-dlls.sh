@@ -14,7 +14,8 @@ trap 'rm -rf "$build"' EXIT HUP INT TERM
 python3 "$probe/tools/runtime_features.py" > "$build/features.txt"
 clang -std=gnu11 -Wall -Wextra -Werror -Wno-deprecated-declarations -O1 -g \
     -fsanitize=address,undefined -fno-omit-frame-pointer -I "$probe/source" \
-    "$probe/tests/horizon_dlls.c" "$probe/source/horizon_dlls.c" -lz -o "$build/horizon_dlls"
+    -I/opt/homebrew/include "$probe/tests/horizon_dlls.c" "$probe/source/horizon_dlls.c" -L/opt/homebrew/lib -lzstd -lz \
+    -o "$build/horizon_dlls"
 
 # Three states of the repository: a part of it (1), then with d3d9.dll changed
 # and dsound.dll and xinput1_3.dll gone (2), then naming a hash quartz.dll does
@@ -52,6 +53,24 @@ def serve(name, m, files={}):
         (build / name / path).write_bytes(data)
 
 serve('served1', manifest)
+# The release: the same files as one tar compressed with zstd, as
+# tools/make-release.py writes it, but with quartz.dll as another version, as
+# when main has moved on since.
+import io, subprocess, tarfile
+release = build / 'served1/releases/latest/download'
+release.mkdir(parents=True)
+with tarfile.open(release / 'horizon-dlls.tar', 'w', format=tarfile.USTAR_FORMAT) as t:
+    for f in manifest['files']:
+        data = (repo / 'switch/wine' / f['path'] / f['name']).read_bytes()
+        if f['name'] == 'quartz.dll' and f['path'].endswith('syswow64'):
+            data = data[:-1] + bytes([data[-1] ^ 1])
+        info = tarfile.TarInfo(f"switch/wine/{f['path']}/{f['name']}")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    info = tarfile.TarInfo('switch/wine/horizon-dlls')
+    info.type = tarfile.DIRTYPE
+    t.addfile(info)
+subprocess.run(['zstd', '-q', '-19', '--long=27', '--rm', '-f', str(release / 'horizon-dlls.tar')], check=True)
 changed = (repo / 'switch/wine/drive_c/windows/syswow64/d3d8.dll').read_bytes()
 m2 = json.loads(json.dumps(manifest))
 m2['files'] = [f for f in m2['files'] if not (f['path'].endswith('syswow64') and f['name'] in ('dsound.dll', 'xinput1_3.dll'))]
@@ -75,6 +94,10 @@ for f in m3['files']:
 serve('served3', m3, files)
 PY
 
+# A card brought up from the release, then what it did not bring.
+mkdir -p "$build/release-card"
+"$build/horizon_dlls" release "$repo" "$build/served1" "$build/features.txt" "$build/release-card"
+
 card="$build/card"
 mkdir -p "$card"
 "$build/horizon_dlls" install "$repo" "$build/served1" "$build/features.txt" "$card"
@@ -82,4 +105,4 @@ mkdir -p "$card"
 printf 'mine' >> "$card/drive_c/windows/syswow64/xinput1_3.dll"
 "$build/horizon_dlls" update "$repo" "$build/served2" "$build/features.txt" "$card"
 "$build/horizon_dlls" damaged "$repo" "$build/served3" "$build/features.txt" "$card"
-echo "horizon-dlls: install, resume, verify, adopt, update, removal and damaged download passed"
+echo "horizon-dlls: release, install, resume, verify, adopt, update, removal and damaged download passed"

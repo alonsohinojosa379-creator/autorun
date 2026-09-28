@@ -107,6 +107,7 @@ u32 __nx_exception_ignoredebug = 1;
 
 extern void wine_nx_runtime_platform_init(void);
 extern void wine_nx_runtime_network_init(void);
+extern void wine_nx_runtime_network_fast( int fast );
 extern void wine_nx_runtime_environment_init(void);
 extern NTSTATUS wine_nx_loader_bootstrap( const UNICODE_STRING *main_nt_name );
 extern NTSTATUS wine_nx_loader_fixup_main_imports(void);
@@ -4008,7 +4009,9 @@ int main( int argc, char **argv )
         wine_nx_console_active = 0;
         log_lent_memory( "the settings" );
         log_line( "[LAUNCHER] bringing the screen up: the launcher" );
+        wine_nx_runtime_network_fast( 1 );
         chosen = wine_nx_launcher_run( &options, target, sizeof(target) );
+        wine_nx_runtime_network_fast( 0 );
         log_lent_memory( "the launcher" );
         /* The console stays off from here: after SDL's EGL surface let the
          * screen go, libnx's console was set up but could not dequeue a buffer,

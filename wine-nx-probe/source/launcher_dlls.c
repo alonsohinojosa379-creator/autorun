@@ -27,19 +27,42 @@ struct launcher_dlls
     /* What the worker is doing, under the mutex. */
     char what[160];
     unsigned long long current, total;
+    /* When the log last heard how the download goes, and how far it was. */
+    Uint32 logged_at;
+    unsigned long long logged_bytes;
 };
 
 #define FEATURE_COUNT (sizeof(horizon_dll_runtime_features) / sizeof(horizon_dll_runtime_features[0]))
+/* Downloads at once, and the release's parts: the Switch's curl speaks HTTP/1.1
+ * only, one request at a time on a connection. Sixteen had TLS handshakes fail
+ * on hardware, and the card, not the network, is what holds eight back. */
+#define DOWNLOADS 8
+/* From how many files still to come the release is downloaded first. */
+#define ARCHIVE_FILES 200
 
 static int progress( void *opaque, const char *what, unsigned long long current, unsigned long long total )
 {
     struct launcher_dlls *d = opaque;
+    Uint32 now = SDL_GetTicks();
+    char line[320];
+    int log = 0;
 
     SDL_LockMutex( d->mutex );
     if (what) snprintf( d->what, sizeof(d->what), "%s", what );
     d->current = current;
     d->total = total;
+    /* Every few seconds, how fast it goes, so a download cut short still says. */
+    if (d->job == JOB_APPLY && now - d->logged_at >= 5000 && current >= d->logged_bytes)
+    {
+        snprintf( line, sizeof(line), "[DLLS] %llu of %llu KB, %.0f KB/s over the last %.1f s; %s",
+                  current >> 10, total >> 10, (current - d->logged_bytes) / 1024.0 * 1000 / (now - d->logged_at),
+                  (now - d->logged_at) / 1000.0, d->what );
+        d->logged_at = now;
+        d->logged_bytes = current;
+        log = 1;
+    }
     SDL_UnlockMutex( d->mutex );
+    if (log) wine_nx_runtime_trace( line );
     return SDL_AtomicGet( &d->cancel );
 }
 
@@ -75,23 +98,75 @@ static void replan( struct launcher_dlls *d, int verify )
 static int worker( void *opaque )
 {
     struct launcher_dlls *d = opaque;
-    struct horizon_dlls_transport transport = {0};
+    struct horizon_dlls_transport transports[DOWNLOADS] = {{0}};
+    unsigned int connections = horizon_dlls_curl_open( transports, d->job == JOB_APPLY ? DOWNLOADS : 1 );
     struct horizon_dll_manifest fetched;
     SDL_Event event = {0};
 
+    Uint32 started = SDL_GetTicks();
+
     d->result = HORIZON_DLLS_OK;
-    if (!horizon_dlls_curl_open( &transport )) d->result = HORIZON_DLLS_NETWORK;
+    if (!connections) d->result = HORIZON_DLLS_NETWORK;
     else if (d->job == JOB_APPLY)
     {
-        set_what( d, "Starting the download" );
-        d->result = horizon_dlls_apply( d->root, &d->remote, d->have_local ? &d->local : NULL, &transport,
-                                        progress, d );
-        replan( d, 0 );
+        /* A card that has little of it takes the whole set in one download,
+         * the repository's release, and only then what that did not bring --
+         * anything newer than the release -- one file at a time. */
+        if (d->plan.pending >= ARCHIVE_FILES && d->plan.pending * 2 >= d->plan.files)
+        {
+            struct horizon_dlls_bundle_stats stats = {0};
+            unsigned char *bundle;
+            unsigned long long size;
+            char line[400];
+
+            /* All of it first, over every connection, a range each; then
+             * unpacked from memory, each file to the card whole. */
+            set_what( d, "Downloading the Windows DLLs" );
+            d->logged_at = SDL_GetTicks();
+            d->logged_bytes = 0;
+            d->result = horizon_dlls_download( transports, connections, HORIZON_DLLS_BUNDLE_URL, &bundle, &size,
+                                               progress, d, &stats );
+            snprintf( line, sizeof(line), "[DLLS] release: %s; %llu KB over %u connections in %u ms (%.0f KB/s); %s",
+                      horizon_dlls_error( d->result ), stats.bytes >> 10, stats.connections, stats.download_ms,
+                      stats.download_ms ? (stats.bytes >> 10) * 1000.0 / stats.download_ms : 0,
+                      horizon_dlls_curl_last( &transports[0] ) );
+            wine_nx_runtime_trace( line );
+            if (d->result == HORIZON_DLLS_OK)
+            {
+                set_what( d, "Unpacking the Windows DLLs" );
+                d->result = horizon_dlls_apply_bundle( d->root, &d->remote, d->have_local ? &d->local : NULL,
+                                                       bundle, size, progress, d, &stats );
+                free( bundle );
+                snprintf( line, sizeof(line), "[DLLS] unpacked: %s; %u files in %u ms, %u of it writing to the card; "
+                          "%u left for single files", horizon_dlls_error( d->result ), stats.unpacked,
+                          stats.unpack_ms, stats.write_ms, stats.skipped );
+                wine_nx_runtime_trace( line );
+            }
+            replan( d, 0 );
+            /* No release, or it could not be read: the files on their own. */
+            if (d->result != HORIZON_DLLS_CANCELLED && d->result != HORIZON_DLLS_IO) d->result = HORIZON_DLLS_OK;
+        }
+        if (d->result == HORIZON_DLLS_OK && d->planned && d->plan.pending)
+        {
+            set_what( d, "Downloading the remaining files" );
+            d->logged_at = SDL_GetTicks();
+            d->logged_bytes = 0;
+            d->result = horizon_dlls_apply( d->root, &d->remote, d->have_local ? &d->local : NULL, transports,
+                                            connections, progress, d );
+            {
+                char line[400];
+
+                snprintf( line, sizeof(line), "[DLLS] single files: %s; the last on the first connection: %s",
+                          horizon_dlls_error( d->result ), horizon_dlls_curl_last( &transports[0] ) );
+                wine_nx_runtime_trace( line );
+            }
+            replan( d, 0 );
+        }
     }
     else
     {
         set_what( d, "Reading the DLL repository" );
-        d->result = horizon_dlls_fetch_manifest( &transport, HORIZON_DLLS_MANIFEST_URL, horizon_dll_runtime_features,
+        d->result = horizon_dlls_fetch_manifest( &transports[0], HORIZON_DLLS_MANIFEST_URL, horizon_dll_runtime_features,
                                                  FEATURE_COUNT, &fetched, progress, d );
         if (d->result == HORIZON_DLLS_OK)
         {
@@ -103,14 +178,14 @@ static int worker( void *opaque )
          * had of the repository the last time it was reached. */
         replan( d, d->job == JOB_VERIFY );
     }
-    if (transport.opaque) horizon_dlls_curl_close( &transport );
+    horizon_dlls_curl_close( transports, connections );
     {
         char line[400], why[160];
 
-        snprintf( line, sizeof(line), "[DLLS] %s: %s; %u files, %u to download (%llu KB), %u need another runtime, "
-                  "%u in folders this build does not know; the card %s",
+        snprintf( line, sizeof(line), "[DLLS] %s in %u ms over %u connections: %s; %u files, %u to download (%llu KB), "
+                  "%u need another runtime, %u in folders this build does not know; the card %s",
                   d->job == JOB_APPLY ? "download" : d->job == JOB_VERIFY ? "verify" : "check",
-                  horizon_dlls_error( d->result ), d->have_remote ? d->remote.count : 0,
+                  SDL_GetTicks() - started, connections, horizon_dlls_error( d->result ), d->have_remote ? d->remote.count : 0,
                   d->planned ? d->plan.pending : 0, d->planned ? d->plan.download_bytes >> 10 : 0,
                   d->planned ? d->plan.unsupported : 0, d->have_remote ? d->remote.skipped : 0,
                   ready( d, why, sizeof(why) ) ? "can start programs" : why );

@@ -2,15 +2,18 @@
 #include "json_reader.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <zlib.h>
+#include <zstd.h>
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -529,21 +532,23 @@ static void hex( const unsigned char hash[32], char out[65] )
 static int hash_file( const char *path, char out[65], const char *what, unsigned long long *done,
                       unsigned long long total, horizon_dlls_progress progress, void *opaque, int *cancelled )
 {
-    static unsigned char buffer[256 * 1024];
-    unsigned char hash[32];
+    const size_t buffer_size = 256 * 1024;
+    unsigned char hash[32], *buffer;
     hash_context context;
     FILE *file;
     size_t got;
 
-    if (!(file = fopen( path, "rb" ))) return 0;
+    if (!(buffer = malloc( buffer_size ))) return 0;
+    if (!(file = fopen( path, "rb" ))) { free( buffer ); return 0; }
     hash_begin( &context );
-    while ((got = fread( buffer, 1, sizeof(buffer), file )) > 0)
+    while ((got = fread( buffer, 1, buffer_size, file )) > 0)
     {
         hash_add( &context, buffer, got );
         *done += got;
         if (progress && progress( opaque, what, *done, total )) { *cancelled = 1; break; }
     }
     fclose( file );
+    free( buffer );
     if (*cancelled) return 0;
     hash_end( &context, hash );
     hex( hash, out );
@@ -636,9 +641,54 @@ enum horizon_dlls_result horizon_dlls_plan( const char *root, struct horizon_dll
  * Bringing the card up to date
  */
 
-struct download
+/* The card is written by one download at a time, each file whole in one
+ * write: eight writing their files a piece at a time held a first install to
+ * 13 MB/s on hardware, most of each download spent there, while one file
+ * written in one go is laid down in one run. The downloads go on meanwhile. */
+static pthread_mutex_t card_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int write_whole( const char *path, const unsigned char *data, size_t size )
 {
     FILE *file;
+    int ok;
+
+    pthread_mutex_lock( &card_lock );
+    if ((file = fopen( path, "wb" )))
+    {
+        /* No stdio buffer to copy through: the file's bytes go as they are. */
+        setvbuf( file, NULL, _IONBF, 0 );
+        ok = fwrite( data, 1, size, file ) == size;
+        ok = !fclose( file ) && ok;
+        if (!ok) remove( path );
+    }
+    else ok = 0;
+    pthread_mutex_unlock( &card_lock );
+    return ok;
+}
+
+/* Put a checked file in place: straight where it goes when the card lacks it,
+ * beside the old one and renamed over it otherwise, so a failure never costs
+ * the card a working DLL. */
+static int put_file( const char *path, const unsigned char *data, size_t size )
+{
+    char part[800];
+    struct stat st;
+    int ok;
+
+    if (stat( path, &st )) return write_whole( path, data, size );
+    if ((size_t)snprintf( part, sizeof(part), "%s.part", path ) >= sizeof(part) ||
+        !write_whole( part, data, size ))
+        return 0;
+    pthread_mutex_lock( &card_lock );
+    ok = (!remove( path ) || errno == ENOENT) && !rename( part, path );
+    pthread_mutex_unlock( &card_lock );
+    if (!ok) remove( part );
+    return ok;
+}
+
+struct download
+{
+    unsigned char *data;    /* the file, as it comes */
     hash_context hash;
     unsigned long long size, expected;
     int failed;
@@ -647,12 +697,15 @@ struct download
     z_stream stream;
     hash_context packed_hash;
     unsigned long long packed_size, packed_expected;
+    unsigned char *out;     /* what the stream unpacks into, each download its own */
 };
+
+#define UNPACK_BUFFER (128 * 1024)
 
 static int write_out( struct download *d, const void *data, size_t size )
 {
     if (size > d->expected - d->size) { d->failed = HORIZON_DLLS_INVALID; return 0; }
-    if (fwrite( data, 1, size, d->file ) != size) { d->failed = HORIZON_DLLS_IO; return 0; }
+    memcpy( d->data + d->size, data, size );
     hash_add( &d->hash, data, size );
     d->size += size;
     return 1;
@@ -660,7 +713,6 @@ static int write_out( struct download *d, const void *data, size_t size )
 
 static int to_file( void *context, const void *data, size_t size )
 {
-    static unsigned char out[128 * 1024];
     struct download *d = context;
     int status;
 
@@ -672,37 +724,20 @@ static int to_file( void *context, const void *data, size_t size )
     d->stream.avail_in = (uInt)size;
     do
     {
-        d->stream.next_out = out;
-        d->stream.avail_out = sizeof(out);
+        d->stream.next_out = d->out;
+        d->stream.avail_out = UNPACK_BUFFER;
         status = inflate( &d->stream, Z_NO_FLUSH );
         if (status != Z_OK && status != Z_STREAM_END && status != Z_BUF_ERROR)
         {
             d->failed = HORIZON_DLLS_HASH;
             return 0;
         }
-        if (!write_out( d, out, sizeof(out) - d->stream.avail_out )) return 0;
+        if (!write_out( d, d->out, UNPACK_BUFFER - d->stream.avail_out )) return 0;
         if (status == Z_STREAM_END) { d->ended = 1; break; }
     } while (d->stream.avail_in || !d->stream.avail_out);
     /* Anything after the end of the stream is not the repository's. */
     if (d->ended && d->stream.avail_in) { d->failed = HORIZON_DLLS_INVALID; return 0; }
     return 1;
-}
-
-struct file_progress
-{
-    horizon_dlls_progress progress;
-    void *opaque;
-    const char *what;
-    unsigned long long done, total;
-};
-
-static int within_file( void *opaque, const char *what, unsigned long long current, unsigned long long total )
-{
-    struct file_progress *p = opaque;
-
-    (void)what;
-    (void)total;
-    return p->progress && p->progress( p->opaque, p->what, p->done + current, p->total );
 }
 
 static int make_folders( const char *root, const char *folder )
@@ -720,33 +755,73 @@ static int make_folders( const char *root, const char *folder )
     return !mkdir( path, 0777 ) || errno == EEXIST;
 }
 
-static enum horizon_dlls_result download_file( const char *root, const struct horizon_dll_file *f,
-        const struct horizon_dlls_transport *transport, struct file_progress *progress )
+static unsigned long long now_us( void )
 {
-    char path[768], part[800], digest[65];
-    unsigned char hash[32];
-    struct download d = {0};
-    enum horizon_dlls_result result;
+    struct timespec t;
+
+    clock_gettime( CLOCK_MONOTONIC, &t );
+    return (unsigned long long)t.tv_sec * 1000000 + t.tv_nsec / 1000;
+}
+
+/* A download thread on a core of its own: Horizon runs a thread on the core it
+ * was made on and does not move it, so eight made on one would take turns there
+ * decrypting, unpacking and hashing while the others idle. */
+static void spread_thread( unsigned int index )
+{
+#ifdef __SWITCH__
+    svcSetThreadCoreMask( threadGetCurHandle(), index % 3, 7 );
+#else
+    (void)index;
+#endif
+}
+
+/* How often a download that failed on the way -- a name that did not resolve,
+ * a handshake that did not finish, a connection that dropped -- is tried again. */
+#define ATTEMPTS 3
+
+static void pause_before( unsigned int attempt )
+{
+    struct timespec wait = { 0, 400000000L * attempt };
+
+    nanosleep( &wait, NULL );
+}
+
+static enum horizon_dlls_result download_file( const char *root, const struct horizon_dll_file *f,
+        const struct horizon_dlls_transport *transport, horizon_dlls_progress progress, void *opaque )
+{
+    char path[768], digest[65];
+    unsigned char hash[32], *data;
+    struct download d;
+    enum horizon_dlls_result result = HORIZON_DLLS_NETWORK;
+    unsigned int attempt;
 
     if (!make_folders( root, horizon_dlls_folders[f->folder] ) ||
-        !join( path, sizeof(path), root, horizon_dlls_folders[f->folder], f->name ) ||
-        (size_t)snprintf( part, sizeof(part), "%s.part", path ) >= sizeof(part))
+        !join( path, sizeof(path), root, horizon_dlls_folders[f->folder], f->name ))
         return HORIZON_DLLS_IO;
-    d.expected = f->size;
-    d.packed = f->packed_size != 0;
-    d.packed_expected = f->packed_size;
-    if (d.packed && inflateInit( &d.stream ) != Z_OK) return HORIZON_DLLS_MEMORY;
-    if (!(d.file = fopen( part, "wb" )))
+    /* The file comes into memory, is checked there, and only then goes to the
+     * card, whole: nothing half-written is ever on it. */
+    if (!(data = malloc( f->size ))) return HORIZON_DLLS_MEMORY;
+    for (attempt = 0; attempt < ATTEMPTS; attempt++)
     {
+        if (attempt) pause_before( attempt );
+        memset( &d, 0, sizeof(d) );
+        d.data = data;
+        d.expected = f->size;
+        d.packed = f->packed_size != 0;
+        d.packed_expected = f->packed_size;
+        if (d.packed && (!(d.out = malloc( UNPACK_BUFFER )) || inflateInit( &d.stream ) != Z_OK))
+        {
+            free( d.out );
+            free( data );
+            return HORIZON_DLLS_MEMORY;
+        }
+        hash_begin( &d.hash );
+        if (d.packed) hash_begin( &d.packed_hash );
+        result = transport->fetch( transport->opaque, d.packed ? f->packed_url : f->url, to_file, &d, progress, opaque );
         if (d.packed) inflateEnd( &d.stream );
-        return HORIZON_DLLS_IO;
+        free( d.out );
+        if (result != HORIZON_DLLS_NETWORK) break;
     }
-    hash_begin( &d.hash );
-    if (d.packed) hash_begin( &d.packed_hash );
-    result = transport->fetch( transport->opaque, d.packed ? f->packed_url : f->url, to_file, &d, within_file, progress );
-    if (fflush( d.file ) || fsync( fileno( d.file ) )) d.failed = HORIZON_DLLS_IO;
-    if (fclose( d.file )) d.failed = HORIZON_DLLS_IO;
-    if (d.packed) inflateEnd( &d.stream );
     if (result == HORIZON_DLLS_OK && d.failed) result = d.failed;
     if (result == HORIZON_DLLS_OK && d.packed)
     {
@@ -762,11 +837,8 @@ static enum horizon_dlls_result download_file( const char *root, const struct ho
         hex( hash, digest );
         if (strcmp( digest, f->sha256 )) result = HORIZON_DLLS_HASH;
     }
-    /* A rename does not replace a file on the card: the old one goes first,
-     * and one missing after a power cut is simply downloaded again. */
-    if (result == HORIZON_DLLS_OK && ((remove( path ) && errno != ENOENT) || rename( part, path )))
-        result = HORIZON_DLLS_IO;
-    if (result != HORIZON_DLLS_OK) remove( part );
+    if (result == HORIZON_DLLS_OK && !put_file( path, data, f->size )) result = HORIZON_DLLS_IO;
+    free( data );
     return result;
 }
 
@@ -950,44 +1022,17 @@ static void remove_stale( const char *root, const struct horizon_dll_file *f )
         remove( path );
 }
 
-enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct horizon_dll_manifest *remote,
-        const struct horizon_dll_manifest *local, const struct horizon_dlls_transport *transport,
-        horizon_dlls_progress progress, void *opaque )
+/* What the card holds now, written as its manifest and classes.reg: the
+ * repository's files it has (done), and of the rest, those it had and still
+ * has. remove_old takes away what the repository no longer has. Frees done. */
+static enum horizon_dlls_result record( const char *root, const struct horizon_dll_manifest *remote,
+        const struct horizon_dll_manifest *local, unsigned char *done, enum horizon_dlls_result result,
+        int remove_old )
 {
-    struct file_progress fp = { .progress = progress, .opaque = opaque };
-    enum horizon_dlls_result result = HORIZON_DLLS_OK;
-    unsigned char *done;
-    struct kept *kept;
-    unsigned int i, count = 0, pending = 0, index = 0;
-    char what[128];
+    struct kept *kept = calloc( remote->count + (local ? local->count : 0) + 1, sizeof(*kept) );
+    unsigned int i, count = 0;
 
-    for (i = 0; i < remote->count; i++)
-        if (remote->files[i].state == HORIZON_DLL_NEW || remote->files[i].state == HORIZON_DLL_CHANGED)
-        {
-            fp.total += remote->files[i].packed_size ? remote->files[i].packed_size : remote->files[i].size;
-            pending++;
-        }
-    if (!(done = calloc( remote->count + 1, 1 )) ||
-        !(kept = calloc( remote->count + (local ? local->count : 0) + 1, sizeof(*kept) )))
-    {
-        free( done );
-        return HORIZON_DLLS_MEMORY;
-    }
-    for (i = 0; i < remote->count && result == HORIZON_DLLS_OK; i++)
-    {
-        const struct horizon_dll_file *f = &remote->files[i];
-
-        if (f->state == HORIZON_DLL_CURRENT) { done[i] = 1; continue; }
-        if (f->state != HORIZON_DLL_NEW && f->state != HORIZON_DLL_CHANGED) continue;
-        snprintf( what, sizeof(what), "%s (%u of %u)", f->name, ++index, pending );
-        fp.what = what;
-        if (progress && progress( opaque, what, fp.done, fp.total )) { result = HORIZON_DLLS_CANCELLED; break; }
-        result = download_file( root, f, transport, &fp );
-        if (result == HORIZON_DLLS_OK) done[i] = 1;
-        fp.done += f->packed_size ? f->packed_size : f->size;
-    }
-    /* What the card holds now: the repository's files it has, and of the
-     * rest, those it had and still has. */
+    if (!kept) { free( done ); return HORIZON_DLLS_MEMORY; }
     for (i = 0; i < remote->count; i++)
     {
         const struct horizon_dll_file *f = &remote->files[i], *before = find( local, f->folder, f->name );
@@ -1001,13 +1046,544 @@ enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct hori
             const struct horizon_dll_file *f = &local->files[i];
 
             if (find( remote, f->folder, f->name )) continue;
-            if (result == HORIZON_DLLS_OK) remove_stale( root, f );
+            if (remove_old) remove_stale( root, f );
             else kept[count++] = (struct kept){ local, f };
         }
     if (!write_record( root, remote, kept, count ) && result == HORIZON_DLLS_OK) result = HORIZON_DLLS_IO;
     free( kept );
     free( done );
     return result;
+}
+
+/* Several downloads at once, one connection each: an update is hundreds of
+ * small files, and one at a time the wait between them is most of the time. */
+struct apply
+{
+    pthread_mutex_t lock;
+    const char *root;
+    const struct horizon_dll_manifest *remote;
+    const struct horizon_dlls_transport *transports;
+    horizon_dlls_progress progress;
+    void *opaque;
+    unsigned char *done;
+    unsigned int next, started, pending;
+    unsigned long long total, finished;
+    unsigned long long in_flight[HORIZON_DLLS_CONNECTIONS];
+    enum horizon_dlls_result result;
+    int stop;
+};
+
+struct apply_worker
+{
+    struct apply *a;
+    unsigned int index;
+    char what[128];
+};
+
+static int apply_progress( void *opaque, const char *what, unsigned long long current, unsigned long long total )
+{
+    struct apply_worker *w = opaque;
+    struct apply *a = w->a;
+    unsigned long long sum;
+    unsigned int i;
+    int stop;
+
+    (void)what;
+    (void)total;
+    pthread_mutex_lock( &a->lock );
+    a->in_flight[w->index] = current;
+    for (sum = a->finished, i = 0; i < HORIZON_DLLS_CONNECTIONS; i++) sum += a->in_flight[i];
+    stop = a->stop;
+    pthread_mutex_unlock( &a->lock );
+    if (!stop && a->progress && a->progress( a->opaque, w->what, sum, a->total ))
+    {
+        pthread_mutex_lock( &a->lock );
+        a->stop = 1;
+        if (a->result == HORIZON_DLLS_OK) a->result = HORIZON_DLLS_CANCELLED;
+        pthread_mutex_unlock( &a->lock );
+        stop = 1;
+    }
+    /* One failing or cancelled stops the others' downloads too. */
+    return stop;
+}
+
+static void *apply_thread( void *opaque )
+{
+    struct apply_worker *w = opaque;
+    struct apply *a = w->a;
+
+    spread_thread( w->index );
+    for (;;)
+    {
+        const struct horizon_dll_file *f = NULL;
+        enum horizon_dlls_result result;
+        unsigned int i;
+
+        pthread_mutex_lock( &a->lock );
+        for (i = a->next; !a->stop && i < a->remote->count; i++)
+            if (a->remote->files[i].state == HORIZON_DLL_NEW || a->remote->files[i].state == HORIZON_DLL_CHANGED)
+                break;
+        if (!a->stop && i < a->remote->count)
+        {
+            f = &a->remote->files[i];
+            a->next = i + 1;
+            snprintf( w->what, sizeof(w->what), "%s (%u of %u)", f->name, ++a->started, a->pending );
+        }
+        pthread_mutex_unlock( &a->lock );
+        if (!f) break;
+        if (apply_progress( w, NULL, 0, 0 )) break;
+        result = download_file( a->root, f, &a->transports[w->index], apply_progress, w );
+        pthread_mutex_lock( &a->lock );
+        a->in_flight[w->index] = 0;
+        a->finished += f->packed_size ? f->packed_size : f->size;
+        if (result == HORIZON_DLLS_OK) a->done[i] = 1;
+        else
+        {
+            if (a->result == HORIZON_DLLS_OK) a->result = result;
+            a->stop = 1;
+        }
+        pthread_mutex_unlock( &a->lock );
+    }
+    return NULL;
+}
+
+enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct horizon_dll_manifest *remote,
+        const struct horizon_dll_manifest *local, const struct horizon_dlls_transport *transports,
+        unsigned int connections, horizon_dlls_progress progress, void *opaque )
+{
+    struct apply a = { .root = root, .remote = remote, .transports = transports, .progress = progress,
+                       .opaque = opaque, .result = HORIZON_DLLS_OK };
+    struct apply_worker workers[HORIZON_DLLS_CONNECTIONS];
+    pthread_t threads[HORIZON_DLLS_CONNECTIONS];
+    int running[HORIZON_DLLS_CONNECTIONS] = {0};
+    enum horizon_dlls_result result;
+    unsigned char *done;
+    unsigned int i;
+
+    if (!connections) connections = 1;
+    if (connections > HORIZON_DLLS_CONNECTIONS) connections = HORIZON_DLLS_CONNECTIONS;
+    for (i = 0; i < remote->count; i++)
+        if (remote->files[i].state == HORIZON_DLL_NEW || remote->files[i].state == HORIZON_DLL_CHANGED)
+        {
+            a.total += remote->files[i].packed_size ? remote->files[i].packed_size : remote->files[i].size;
+            a.pending++;
+        }
+    if (!(done = calloc( remote->count + 1, 1 ))) return HORIZON_DLLS_MEMORY;
+    for (i = 0; i < remote->count; i++) done[i] = remote->files[i].state == HORIZON_DLL_CURRENT;
+    a.done = done;
+    pthread_mutex_init( &a.lock, NULL );
+    for (i = 0; i < connections; i++) workers[i] = (struct apply_worker){ &a, i, "" };
+    /* The others on threads of their own, the first on this one. */
+    for (i = 1; i < connections; i++)
+    {
+        pthread_attr_t attr;
+
+        pthread_attr_init( &attr );
+        pthread_attr_setstacksize( &attr, 1024 * 1024 );  /* curl and mbedTLS take a good deal */
+        running[i] = !pthread_create( &threads[i], &attr, apply_thread, &workers[i] );
+        pthread_attr_destroy( &attr );
+    }
+    apply_thread( &workers[0] );
+    for (i = 1; i < connections; i++) if (running[i]) pthread_join( threads[i], NULL );
+    pthread_mutex_destroy( &a.lock );
+    result = a.result;
+    return record( root, remote, local, done, result, result == HORIZON_DLLS_OK );
+}
+
+/***********************************************************************
+ * The whole set at once, from the repository's release
+ */
+
+/* The largest bundle this takes into memory. */
+#define BUNDLE_MAX (1024ull * 1024 * 1024)
+
+struct ranges
+{
+    pthread_mutex_t lock;
+    horizon_dlls_progress progress;
+    void *opaque;
+    unsigned long long total;
+    unsigned long long got[HORIZON_DLLS_CONNECTIONS];
+    int stop;
+};
+
+struct range_job
+{
+    struct ranges *all;
+    const struct horizon_dlls_transport *transport;
+    const char *url;
+    unsigned char *data;
+    unsigned long long offset, length, got;
+    unsigned int index;
+    enum horizon_dlls_result result;
+};
+
+static int to_range( void *context, const void *data, size_t size )
+{
+    struct range_job *j = context;
+
+    /* More than was asked: a server that did not take the range. */
+    if (size > j->length - j->got) return 0;
+    memcpy( j->data + j->offset + j->got, data, size );
+    j->got += size;
+    return 1;
+}
+
+static int range_progress( void *opaque, const char *what, unsigned long long current, unsigned long long total )
+{
+    struct range_job *j = opaque;
+    struct ranges *all = j->all;
+    unsigned long long sum = 0;
+    unsigned int i;
+    int stop;
+
+    (void)what;
+    (void)current;
+    (void)total;
+    pthread_mutex_lock( &all->lock );
+    all->got[j->index] = j->got;
+    for (i = 0; i < HORIZON_DLLS_CONNECTIONS; i++) sum += all->got[i];
+    stop = all->stop;
+    pthread_mutex_unlock( &all->lock );
+    if (!stop && all->progress && all->progress( all->opaque, "Downloading the Windows DLLs", sum, all->total ))
+    {
+        pthread_mutex_lock( &all->lock );
+        all->stop = 1;
+        pthread_mutex_unlock( &all->lock );
+        stop = 1;
+    }
+    return stop;
+}
+
+static void *range_thread( void *opaque )
+{
+    struct range_job *j = opaque;
+    unsigned int attempt;
+    int stop;
+
+    spread_thread( j->index );
+    for (attempt = 0; attempt < ATTEMPTS; attempt++)
+    {
+        if (attempt) pause_before( attempt );
+        j->got = 0;
+        j->result = j->transport->fetch_range( j->transport->opaque, j->url, j->offset, j->length,
+                                               to_range, j, range_progress, j );
+        if (j->result == HORIZON_DLLS_OK && j->got != j->length) j->result = HORIZON_DLLS_INVALID;
+        pthread_mutex_lock( &j->all->lock );
+        stop = j->all->stop;
+        pthread_mutex_unlock( &j->all->lock );
+        if (j->result != HORIZON_DLLS_NETWORK || stop) break;
+    }
+    return NULL;
+}
+
+struct growing
+{
+    unsigned char *data;
+    size_t size, capacity;
+};
+
+static int to_growing( void *context, const void *data, size_t size )
+{
+    struct growing *g = context;
+    unsigned char *grown;
+    size_t wanted;
+
+    if (size > BUNDLE_MAX - g->size) return 0;
+    if (g->size + size > g->capacity)
+    {
+        wanted = g->capacity ? g->capacity * 2 : 16 * 1024 * 1024;
+        while (wanted < g->size + size) wanted *= 2;
+        if (!(grown = realloc( g->data, wanted ))) return 0;
+        g->data = grown;
+        g->capacity = wanted;
+    }
+    memcpy( g->data + g->size, data, size );
+    g->size += size;
+    return 1;
+}
+
+enum horizon_dlls_result horizon_dlls_download( const struct horizon_dlls_transport *transports,
+        unsigned int connections, const char *url, unsigned char **data, unsigned long long *size,
+        horizon_dlls_progress progress, void *opaque, struct horizon_dlls_bundle_stats *stats )
+{
+    struct ranges all = { .progress = progress, .opaque = opaque };
+    struct range_job jobs[HORIZON_DLLS_CONNECTIONS];
+    pthread_t threads[HORIZON_DLLS_CONNECTIONS];
+    int running[HORIZON_DLLS_CONNECTIONS] = {0};
+    enum horizon_dlls_result result;
+    unsigned long long started = now_us(), total = 0, chunk;
+    unsigned int i;
+
+    *data = NULL;
+    *size = 0;
+    if (connections > HORIZON_DLLS_CONNECTIONS) connections = HORIZON_DLLS_CONNECTIONS;
+    if (!connections) connections = 1;
+    /* Without its size, or ranges, one connection takes it all. */
+    if (!transports[0].size || !transports[0].fetch_range ||
+        transports[0].size( transports[0].opaque, url, &total ) != HORIZON_DLLS_OK || !total ||
+        total > BUNDLE_MAX)
+    {
+        struct growing g = {0};
+
+        result = transports[0].fetch( transports[0].opaque, url, to_growing, &g, progress, opaque );
+        if (result == HORIZON_DLLS_OK) { *data = g.data; *size = g.size; }
+        else free( g.data );
+        if (stats) *stats = (struct horizon_dlls_bundle_stats){ .bytes = g.size, .connections = 1,
+                                .download_ms = (unsigned int)((now_us() - started) / 1000) };
+        return result;
+    }
+    if (!(*data = malloc( total ))) return HORIZON_DLLS_MEMORY;
+    all.total = total;
+    pthread_mutex_init( &all.lock, NULL );
+    /* The ranges in whole MiB, so no connection is left a sliver. */
+    chunk = (total + connections - 1) / connections;
+    chunk = (chunk + (1 << 20) - 1) & ~((unsigned long long)(1 << 20) - 1);
+    for (i = 0; i < connections && (unsigned long long)i * chunk < total; i++)
+    {
+        unsigned long long offset = (unsigned long long)i * chunk;
+
+        jobs[i] = (struct range_job){ &all, &transports[i], url, *data, offset,
+                                      offset + chunk > total ? total - offset : chunk, 0, i, HORIZON_DLLS_OK };
+    }
+    connections = i;
+    for (i = 1; i < connections; i++)
+    {
+        pthread_attr_t attr;
+
+        pthread_attr_init( &attr );
+        pthread_attr_setstacksize( &attr, 1024 * 1024 );  /* curl and mbedTLS take a good deal */
+        running[i] = !pthread_create( &threads[i], &attr, range_thread, &jobs[i] );
+        pthread_attr_destroy( &attr );
+        if (!running[i]) range_thread( &jobs[i] );
+    }
+    range_thread( &jobs[0] );
+    for (i = 1; i < connections; i++) if (running[i]) pthread_join( threads[i], NULL );
+    pthread_mutex_destroy( &all.lock );
+    result = all.stop ? HORIZON_DLLS_CANCELLED : HORIZON_DLLS_OK;
+    for (i = 0; i < connections && result == HORIZON_DLLS_OK; i++) result = jobs[i].result;
+    if (stats) *stats = (struct horizon_dlls_bundle_stats){ .bytes = total, .connections = connections,
+                            .download_ms = (unsigned int)((now_us() - started) / 1000) };
+    if (result != HORIZON_DLLS_OK)
+    {
+        free( *data );
+        *data = NULL;
+        return result;
+    }
+    *size = total;
+    return HORIZON_DLLS_OK;
+}
+
+/* A tar read as zstd unpacks it: a 512-byte header, the file, padding to 512.
+ * The repository's tools write plain ustar with no extended headers. */
+struct bundle
+{
+    const char *root;
+    const struct horizon_dll_manifest *remote;
+    unsigned char *done;
+    unsigned char header[512];
+    size_t have;
+    int in_file, ended;
+    unsigned long long left, padding;
+    /* The entry being read, when it is a file the card wants. */
+    const struct horizon_dll_file *file;
+    unsigned int index;
+    unsigned char *entry;
+    unsigned long long written;
+    hash_context hash;
+    char path[768], what[128];
+    int failed;
+    unsigned long long write_us;
+    unsigned int unpacked, skipped;
+};
+
+static unsigned long long octal( const unsigned char *field, size_t size )
+{
+    unsigned long long value = 0;
+    size_t i;
+
+    for (i = 0; i < size && field[i] == ' '; i++) ;
+    for (; i < size && field[i] >= '0' && field[i] <= '7'; i++) value = value * 8 + (field[i] - '0');
+    return value;
+}
+
+/* Which file of the manifest an entry is, if the card wants it at this size. */
+static const struct horizon_dll_file *bundle_target( struct bundle *b, const char *name, unsigned long long size,
+                                                     unsigned int *index )
+{
+    static const char prefix[] = "switch/wine/";
+    const char *rest, *slash;
+    char folder_path[512];
+    unsigned int i;
+    int folder;
+
+    if (strncmp( name, prefix, sizeof(prefix) - 1 )) return NULL;
+    rest = name + sizeof(prefix) - 1;
+    if (!(slash = strrchr( rest, '/' )) || (size_t)(slash - rest) >= sizeof(folder_path)) return NULL;
+    memcpy( folder_path, rest, slash - rest );
+    folder_path[slash - rest] = 0;
+    if ((folder = folder_index( folder_path )) < 0 || !valid_name( slash + 1 )) return NULL;
+    for (i = 0; i < b->remote->count; i++)
+    {
+        const struct horizon_dll_file *f = &b->remote->files[i];
+
+        if (f->folder != folder || strcasecmp( f->name, slash + 1 ) || b->done[i]) continue;
+        if (f->state != HORIZON_DLL_NEW && f->state != HORIZON_DLL_CHANGED) return NULL;
+        if (f->size != size) return NULL;   /* another version: the file on its own brings it */
+        *index = i;
+        return f;
+    }
+    return NULL;
+}
+
+static void bundle_header( struct bundle *b )
+{
+    char name[512];
+    unsigned long long size;
+    size_t i;
+
+    for (i = 0; i < 512 && !b->header[i]; i++) ;
+    if (i == 512) { b->ended = 1; return; }   /* the end: blocks of zeros */
+    /* The name, and in ustar its prefix before it. */
+    if (!memcmp( b->header + 257, "ustar", 5 ) && b->header[345])
+        snprintf( name, sizeof(name), "%.155s/%.100s", b->header + 345, b->header );
+    else snprintf( name, sizeof(name), "%.100s", b->header );
+    size = octal( b->header + 124, 12 );
+    b->left = size;
+    b->padding = (512 - size % 512) % 512;
+    b->in_file = 1;
+    b->file = NULL;
+    /* Only regular files; folders and anything else pass. */
+    if (b->header[156] != '0' && b->header[156] != 0) return;
+    if (!(b->file = bundle_target( b, name, size, &b->index ))) { b->skipped++; return; }
+    if (!join( b->path, sizeof(b->path), b->root, horizon_dlls_folders[b->file->folder], b->file->name ) ||
+        !make_folders( b->root, horizon_dlls_folders[b->file->folder] ))
+    {
+        b->failed = HORIZON_DLLS_IO;
+        b->file = NULL;
+        return;
+    }
+    if (!(b->entry = malloc( size ? size : 1 ))) { b->failed = HORIZON_DLLS_MEMORY; b->file = NULL; return; }
+    b->written = 0;
+    hash_begin( &b->hash );
+    snprintf( b->what, sizeof(b->what), "%s (%u unpacked)", b->file->name, b->unpacked );
+}
+
+static void bundle_entry_end( struct bundle *b )
+{
+    unsigned char hash[32];
+    char digest[65];
+
+    if (!b->file) return;
+    hash_end( &b->hash, hash );
+    hex( hash, digest );
+    /* One that is not the manifest's is left for the file on its own. */
+    if (b->written == b->file->size && !strcmp( digest, b->file->sha256 ))
+    {
+        unsigned long long start = now_us();
+
+        if (put_file( b->path, b->entry, b->file->size ))
+        {
+            b->done[b->index] = 1;
+            b->unpacked++;
+        }
+        else b->failed = HORIZON_DLLS_IO;
+        b->write_us += now_us() - start;
+    }
+    else b->skipped++;
+    free( b->entry );
+    b->entry = NULL;
+    b->file = NULL;
+}
+
+/* What zstd unpacked, through the tar reader. */
+static void bundle_feed( struct bundle *b, const unsigned char *p, size_t size )
+{
+    while (size && !b->ended && !b->failed)
+    {
+        size_t take;
+
+        if (!b->in_file)
+        {
+            take = 512 - b->have < size ? 512 - b->have : size;
+            memcpy( b->header + b->have, p, take );
+            b->have += take; p += take; size -= take;
+            if (b->have == 512) { b->have = 0; bundle_header( b ); }
+            continue;
+        }
+        if (b->left)
+        {
+            take = b->left < size ? b->left : size;
+            if (b->file)
+            {
+                memcpy( b->entry + b->written, p, take );
+                hash_add( &b->hash, p, take );
+                b->written += take;
+            }
+            b->left -= take; p += take; size -= take;
+            if (!b->left) bundle_entry_end( b );
+            continue;
+        }
+        if (b->file) bundle_entry_end( b );   /* an empty file */
+        take = b->padding < size ? b->padding : size;
+        b->padding -= take; p += take; size -= take;
+        if (!b->padding) b->in_file = 0;
+    }
+}
+
+enum horizon_dlls_result horizon_dlls_apply_bundle( const char *root, const struct horizon_dll_manifest *remote,
+        const struct horizon_dll_manifest *local, const unsigned char *data, unsigned long long size,
+        horizon_dlls_progress progress, void *opaque, struct horizon_dlls_bundle_stats *stats )
+{
+    struct bundle *b = calloc( 1, sizeof(*b) );
+    const size_t out_size = ZSTD_DStreamOutSize() * 8;
+    unsigned char *out = malloc( out_size );
+    ZSTD_DCtx *z = ZSTD_createDCtx();
+    ZSTD_inBuffer in = { data, size, 0 };
+    enum horizon_dlls_result result = HORIZON_DLLS_OK;
+    unsigned long long started = now_us();
+    unsigned char *done;
+    unsigned int i;
+
+    if (!b || !out || !z || !(done = calloc( remote->count + 1, 1 )))
+    {
+        free( b ); free( out ); ZSTD_freeDCtx( z );
+        return HORIZON_DLLS_MEMORY;
+    }
+    for (i = 0; i < remote->count; i++) done[i] = remote->files[i].state == HORIZON_DLL_CURRENT;
+    b->root = root;
+    b->remote = remote;
+    b->done = done;
+    /* The window long-range mode compressed it with. */
+    ZSTD_DCtx_setParameter( z, ZSTD_d_windowLogMax, 27 );
+    while (in.pos < in.size && !b->ended && !b->failed)
+    {
+        ZSTD_outBuffer o = { out, out_size, 0 };
+        size_t status = ZSTD_decompressStream( z, &o, &in );
+
+        if (ZSTD_isError( status )) { result = HORIZON_DLLS_INVALID; break; }
+        bundle_feed( b, out, o.pos );
+        if (progress && progress( opaque, b->what[0] ? b->what : "Unpacking the Windows DLLs", in.pos, in.size ))
+        {
+            result = HORIZON_DLLS_CANCELLED;
+            break;
+        }
+    }
+    if (b->file) { free( b->entry ); b->file = NULL; }
+    if (result == HORIZON_DLLS_OK && b->failed) result = b->failed;
+    if (stats)
+    {
+        stats->unpack_ms = (unsigned int)((now_us() - started) / 1000);
+        stats->write_ms = (unsigned int)(b->write_us / 1000);
+        stats->unpacked = b->unpacked;
+        stats->skipped = b->skipped;
+    }
+    ZSTD_freeDCtx( z );
+    free( out );
+    free( b );
+    /* What came is kept, also when it stopped part of the way; what did not,
+     * or came as another version, comes on its own. */
+    return record( root, remote, local, done, result, 0 );
 }
 
 int horizon_dlls_ready( const char *root, const char *const *features, size_t feature_count,

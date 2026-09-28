@@ -78,6 +78,37 @@ void wine_nx_runtime_network_init(void)
     wine_nx_init_sockets();
 }
 
+/* While the launcher is up, the socket service gets sphaira's buffers for an
+ * application: TCP windows of 64 KiB that grow to 4 MiB. The default's small
+ * ones hold a download to a fraction of what the connection carries, and a
+ * first install of the Windows DLLs is a couple of hundred MB. They lend the
+ * service tens of MB, which go back before a program starts: fast is set
+ * before the launcher and cleared after it, when nothing has a socket open. */
+void wine_nx_runtime_network_fast( int fast )
+{
+    static const SocketInitConfig downloads =
+    {
+        .tcp_tx_buf_size = 1024 * 64,
+        .tcp_rx_buf_size = 1024 * 64,
+        .tcp_tx_buf_max_size = 1024 * 1024 * 4,
+        .tcp_rx_buf_max_size = 1024 * 1024 * 4,
+        .udp_tx_buf_size = 0x2400,
+        .udp_rx_buf_size = 0xA500,
+        .sb_efficiency = 8,
+        .num_bsd_sessions = 3,
+        .bsd_service_type = BsdServiceType_Auto,
+    };
+    Result rc;
+    char buf[96];
+
+    socketExit();
+    rc = fast ? socketInitialize( &downloads ) : socketInitializeDefault();
+    /* Should the larger one not fit, the default still does. */
+    if (R_FAILED( rc ) && fast) rc = socketInitializeDefault();
+    snprintf( buf, sizeof(buf), "[NET] sockets %s: rc=0x%08x", fast ? "for downloads" : "default", (unsigned)rc );
+    wine_nx_runtime_trace( buf );
+}
+
 void wine_nx_runtime_platform_init(void)
 {
     static int paths_initialized;

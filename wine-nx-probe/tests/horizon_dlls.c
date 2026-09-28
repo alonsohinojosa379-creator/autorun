@@ -13,6 +13,7 @@
 #include "horizon_dlls.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,10 @@ static unsigned long long fetched_bytes;
 static const char *features[64];
 static size_t feature_count;
 static int cancel_after = -1, fetches;
+/* The release's parts drop on their first attempt, after their first chunk. */
+static int flaky;
+static pthread_mutex_t flaky_lock = PTHREAD_MUTEX_INITIALIZER;
+static char dropped[8][256];
 
 #define CHECK( cond ) do { if (!(cond)) { fprintf( stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond ); exit( 1 ); } } while (0)
 
@@ -33,6 +38,7 @@ static enum horizon_dlls_result fetch( void *opaque, const char *url, horizon_dl
                                        horizon_dlls_progress progress, void *progress_opaque )
 {
     static const char prefix[] = HORIZON_DLLS_RAW "main/";
+    static const char release[] = "https://github.com/autorunhq/autorun-horizon-dlls/";
     char path[1024], buffer[65536];
     unsigned long long done = 0;
     struct stat st;
@@ -40,23 +46,92 @@ static enum horizon_dlls_result fetch( void *opaque, const char *url, horizon_dl
     FILE *file;
 
     (void)opaque;
-    fetches++;
-    if (strncmp( url, prefix, sizeof(prefix) - 1 )) return HORIZON_DLLS_NOT_FOUND;
-    snprintf( path, sizeof(path), "%s/%s", served, url + sizeof(prefix) - 1 );
-    if (stat( path, &st )) snprintf( path, sizeof(path), "%s/%s", repo, url + sizeof(prefix) - 1 );
+    __atomic_add_fetch( &fetches, 1, __ATOMIC_RELAXED );
+    if (!strncmp( url, release, sizeof(release) - 1 ))
+        snprintf( path, sizeof(path), "%s/%s", served, url + sizeof(release) - 1 );
+    else if (strncmp( url, prefix, sizeof(prefix) - 1 )) return HORIZON_DLLS_NOT_FOUND;
+    else
+    {
+        snprintf( path, sizeof(path), "%s/%s", served, url + sizeof(prefix) - 1 );
+        if (stat( path, &st )) snprintf( path, sizeof(path), "%s/%s", repo, url + sizeof(prefix) - 1 );
+    }
     if (!(file = fopen( path, "rb" ))) return HORIZON_DLLS_NOT_FOUND;
     while ((got = fread( buffer, 1, sizeof(buffer), file )) > 0)
     {
         if (!sink( context, buffer, got )) { fclose( file ); return HORIZON_DLLS_IO; }
         done += got;
-        fetched_bytes += got;
+        __atomic_add_fetch( &fetched_bytes, got, __ATOMIC_RELAXED );
         if (progress && progress( progress_opaque, url, done, 0 )) { fclose( file ); return HORIZON_DLLS_CANCELLED; }
     }
     fclose( file );
     return HORIZON_DLLS_OK;
 }
 
-static const struct horizon_dlls_transport transport = { fetch, NULL };
+/* Four connections at once, as the launcher has six. */
+#define CONNECTIONS 4
+static const char *local_path( const char *url, char *path, size_t size )
+{
+    static const char release[] = "https://github.com/autorunhq/autorun-horizon-dlls/";
+
+    if (strncmp( url, release, sizeof(release) - 1 )) return NULL;
+    snprintf( path, size, "%s/%s", served, url + sizeof(release) - 1 );
+    return path;
+}
+
+static enum horizon_dlls_result size_of( void *opaque, const char *url, unsigned long long *size )
+{
+    char path[1024];
+    struct stat st;
+
+    (void)opaque;
+    if (!local_path( url, path, sizeof(path) ) || stat( path, &st )) return HORIZON_DLLS_NOT_FOUND;
+    *size = st.st_size;
+    return HORIZON_DLLS_OK;
+}
+
+/* A range, dropped once for each range when flaky, after its first chunk. */
+static enum horizon_dlls_result fetch_range( void *opaque, const char *url, unsigned long long offset,
+                                             unsigned long long length, horizon_dlls_sink sink, void *context,
+                                             horizon_dlls_progress progress, void *progress_opaque )
+{
+    char path[1024], buffer[65536], key[300];
+    unsigned long long done = 0;
+    FILE *file;
+    int drop = 0, i;
+
+    (void)opaque;
+    __atomic_add_fetch( &fetches, 1, __ATOMIC_RELAXED );
+    if (!local_path( url, path, sizeof(path) ) || !(file = fopen( path, "rb" ))) return HORIZON_DLLS_NOT_FOUND;
+    snprintf( key, sizeof(key), "%llu", offset );
+    if (flaky)
+    {
+        pthread_mutex_lock( &flaky_lock );
+        for (i = 0, drop = 1; i < 8 && dropped[i][0]; i++) if (!strcmp( dropped[i], key )) drop = 0;
+        if (drop && i < 8) snprintf( dropped[i], sizeof(dropped[i]), "%s", key );
+        pthread_mutex_unlock( &flaky_lock );
+    }
+    fseek( file, (long)offset, SEEK_SET );
+    while (done < length)
+    {
+        size_t want = length - done < sizeof(buffer) ? (size_t)(length - done) : sizeof(buffer);
+        size_t got = fread( buffer, 1, want, file );
+
+        if (!got) break;
+        if (!sink( context, buffer, got )) { fclose( file ); return HORIZON_DLLS_IO; }
+        done += got;
+        __atomic_add_fetch( &fetched_bytes, got, __ATOMIC_RELAXED );
+        if (drop) { fclose( file ); return HORIZON_DLLS_NETWORK; }
+        if (progress && progress( progress_opaque, url, done, length )) { fclose( file ); return HORIZON_DLLS_CANCELLED; }
+    }
+    fclose( file );
+    return HORIZON_DLLS_OK;
+}
+
+static const struct horizon_dlls_transport transport = { fetch, size_of, fetch_range, NULL };
+static const struct horizon_dlls_transport transports[CONNECTIONS] =
+    { { fetch, size_of, fetch_range, NULL }, { fetch, size_of, fetch_range, NULL },
+      { fetch, size_of, fetch_range, NULL }, { fetch, size_of, fetch_range, NULL } };
+static pthread_mutex_t counting = PTHREAD_MUTEX_INITIALIZER;
 
 static int ready( size_t count )
 {
@@ -68,12 +143,16 @@ static int ready( size_t count )
 static int count_files( void *opaque, const char *what, unsigned long long current, unsigned long long total )
 {
     static char last[128];
+    int stop;
 
     (void)opaque; (void)current; (void)total;
-    /* Stop when the given number of files have been done, as the next starts. */
-    if (!strstr( what, " of " ) || !strcmp( what, last )) return 0;
+    /* Stop when the given number of files have been started, as the next starts. */
+    if (!what || !strstr( what, " of " )) return 0;
+    pthread_mutex_lock( &counting );
+    stop = strcmp( what, last ) && cancel_after >= 0 && !cancel_after--;
     snprintf( last, sizeof(last), "%s", what );
-    return cancel_after >= 0 && !cancel_after--;
+    pthread_mutex_unlock( &counting );
+    return stop;
 }
 
 static struct horizon_dll_manifest remote, local;
@@ -95,8 +174,8 @@ static enum horizon_dlls_result check( int verify )
 
 static enum horizon_dlls_result update( void )
 {
-    return horizon_dlls_apply( card, &remote, local.count || local.schema ? &local : NULL, &transport,
-                               count_files, NULL );
+    return horizon_dlls_apply( card, &remote, local.count || local.schema ? &local : NULL, transports,
+                               CONNECTIONS, count_files, NULL );
 }
 
 static const struct horizon_dll_file *named( const char *name )
@@ -175,6 +254,37 @@ static int phase_update( void )
     return 0;
 }
 
+/* An empty card from the release's zip, in one download, and then the one file
+ * the zip had another version of, on its own. */
+static int phase_release( void )
+{
+    struct horizon_dlls_bundle_stats stats;
+    unsigned char *bundle;
+    unsigned long long size;
+    unsigned int i;
+
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == remote.count );
+    /* All of it first, a range on each of four connections, each dropped once. */
+    fetches = 0;
+    flaky = 1;
+    CHECK( horizon_dlls_download( transports, CONNECTIONS, HORIZON_DLLS_BUNDLE_URL, &bundle, &size, NULL, NULL,
+                                  &stats ) == HORIZON_DLLS_OK );
+    flaky = 0;
+    CHECK( stats.connections == CONNECTIONS || size < (unsigned long long)CONNECTIONS << 20 );
+    CHECK( fetches == 2 * (int)stats.connections );
+    /* Then unpacked: all but the one it had another version of. */
+    CHECK( horizon_dlls_apply_bundle( card, &remote, NULL, bundle, size, NULL, NULL, &stats ) == HORIZON_DLLS_OK );
+    free( bundle );
+    CHECK( stats.unpacked == remote.count - 1 );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 1 && named( "quartz.dll" )->state == HORIZON_DLL_NEW );
+    CHECK( update() == HORIZON_DLLS_OK );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.pending == 0 && ready( feature_count ) );
+    for (i = 0; i < remote.count; i++) CHECK( same_as_repo( &remote.files[i] ) );
+    printf( "release: %llu KB over %u connections, each range dropped once and tried again; %u files unpacked, "
+            "the one it had another version of on its own\n", size >> 10, stats.connections, stats.unpacked );
+    return 0;
+}
+
 /* A download whose hash is not the manifest's is not put in place. */
 static int phase_damaged( void )
 {
@@ -216,6 +326,7 @@ int main( int argc, char **argv )
     }
     fclose( list );
     if (!strcmp( argv[1], "update" )) return phase_update();
+    if (!strcmp( argv[1], "release" )) return phase_release();
     if (!strcmp( argv[1], "damaged" )) return phase_damaged();
     CHECK( !strcmp( argv[1], "install" ) );
 
@@ -229,13 +340,16 @@ int main( int argc, char **argv )
     printf( "fresh card: %u files, %.1f MB on the card, %.1f MB to download in %u categories\n", total,
             plan.pending_bytes / 1048576.0, plan.download_bytes / 1048576.0, remote.category_count );
 
-    /* Stopped after two files: those two are kept and recorded, the rest wait. */
-    cancel_after = 2;
+    /* Stopped a few files in: what finished is kept and recorded, the rest,
+     * those being downloaded when it stopped too, wait. Which finished first
+     * depends on the four connections. */
+    cancel_after = 6;
     CHECK( update() == HORIZON_DLLS_CANCELLED );
     cancel_after = -1;
-    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.current == 2 && plan.pending == total - 2 );
+    CHECK( check( 0 ) == HORIZON_DLLS_OK && plan.current < total && plan.current + plan.pending == total );
+    CHECK( local.count == plan.current );
     CHECK( !ready( feature_count ) );
-    printf( "cancelled after two files: %u installed and recorded, %u waiting\n", plan.current, plan.pending );
+    printf( "cancelled a few files in: %u installed and recorded, %u waiting\n", plan.current, plan.pending );
 
     /* The rest, and the card has everything, byte for byte, having fetched the
      * compressed copies rather than the files. */

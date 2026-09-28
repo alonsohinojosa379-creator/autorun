@@ -30,6 +30,8 @@
 /* The runtimes the files are for: an ARM64X system32 and an i386 syswow64. */
 #define HORIZON_DLLS_FLAVOR   "arm64x"
 #define HORIZON_DLLS_CATEGORIES 40
+/* Downloads at once, at most. */
+#define HORIZON_DLLS_CONNECTIONS 16
 
 enum horizon_dlls_result
 {
@@ -137,6 +139,13 @@ struct horizon_dlls_transport
 {
     enum horizon_dlls_result (*fetch)( void *opaque, const char *url, horizon_dlls_sink sink, void *context,
                                        horizon_dlls_progress progress, void *progress_opaque );
+    /* How large what url names is, without downloading it. */
+    enum horizon_dlls_result (*size)( void *opaque, const char *url, unsigned long long *size );
+    /* Bytes offset to offset + length - 1 of it; a server that sends more
+     * than was asked fails it. */
+    enum horizon_dlls_result (*fetch_range)( void *opaque, const char *url, unsigned long long offset,
+                                             unsigned long long length, horizon_dlls_sink sink, void *context,
+                                             horizon_dlls_progress progress, void *progress_opaque );
     void *opaque;
 };
 
@@ -158,10 +167,40 @@ enum horizon_dlls_result horizon_dlls_plan( const char *root, struct horizon_dll
         struct horizon_dlls_plan *plan );
 /* Download and put in place every file the plan left new or changed, and write
  * the card's manifest and classes.reg for what it then holds, also when it
- * stops part of the way. */
+ * stops part of the way. connections downloads run at once, one transport
+ * each (transports[0] to [connections - 1]), and progress is called from
+ * each of them. */
 enum horizon_dlls_result horizon_dlls_apply( const char *root, const struct horizon_dll_manifest *remote,
-        const struct horizon_dll_manifest *local, const struct horizon_dlls_transport *transport,
-        horizon_dlls_progress progress, void *opaque );
+        const struct horizon_dll_manifest *local, const struct horizon_dlls_transport *transports,
+        unsigned int connections, horizon_dlls_progress progress, void *opaque );
+
+/* The repository's latest release: every file as one tar compressed with zstd
+ * (-19, long range), about 90 MB where the files one by one are twice that, for
+ * a card that has little of the set; and as a zip, for a player without a
+ * network. */
+#define HORIZON_DLLS_RELEASE "https://github.com/autorunhq/autorun-horizon-dlls/releases/latest/download/"
+#define HORIZON_DLLS_BUNDLE_URL HORIZON_DLLS_RELEASE "horizon-dlls.tar.zst"
+
+/* How downloading and unpacking the bundle went, for the log. */
+struct horizon_dlls_bundle_stats
+{
+    unsigned long long bytes;
+    unsigned int connections, download_ms, unpack_ms, write_ms, unpacked, skipped;
+};
+
+/* Download url whole into memory, over connections transports at once, each
+ * a range of it; one that fails is tried again on its own. *data is malloc'd. */
+enum horizon_dlls_result horizon_dlls_download( const struct horizon_dlls_transport *transports,
+        unsigned int connections, const char *url, unsigned char **data, unsigned long long *size,
+        horizon_dlls_progress progress, void *opaque, struct horizon_dlls_bundle_stats *stats );
+/* Unpack a downloaded bundle: each file the plan left new or changed, at the
+ * manifest's size and SHA-256, is written to the card whole, one at a time;
+ * the rest -- another version, or damaged -- is left for horizon_dlls_apply to
+ * bring on its own after a new plan. Writes the card's manifest for what it
+ * then holds, also when it stops part of the way. */
+enum horizon_dlls_result horizon_dlls_apply_bundle( const char *root, const struct horizon_dll_manifest *remote,
+        const struct horizon_dll_manifest *local, const unsigned char *data, unsigned long long size,
+        horizon_dlls_progress progress, void *opaque, struct horizon_dlls_bundle_stats *stats );
 
 /* Whether the card holds the DLLs a program needs to start, installed from the
  * repository for this runtime: the core modules in the card's manifest, the
