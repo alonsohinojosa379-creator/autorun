@@ -1,1 +1,1 @@
-#include "../../../wine-nx-probe/syntax/horizon_syntax_shim.h"
+#include "../../../horizon-wine/syntax/horizon_syntax_shim.h"

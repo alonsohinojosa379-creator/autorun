@@ -52,10 +52,10 @@ static struct vulkan_funcs vulkan_funcs;
 static pthread_mutex_t present_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef WINE_NX_LSFG
-#include "../../wine-nx-probe/source/lsfg.h"
+#include "../../horizon-wine/source/lsfg.h"
 #endif
 #ifdef __SWITCH__
-#include "../../wine-nx-probe/source/osk.h"
+#include "../../horizon-wine/source/osk.h"
 #endif
 
 /* The Upscaling setting a scaled swapchain is made with: 0 bilinear, 1 FSR 1.0
@@ -3745,7 +3745,7 @@ done:
 #endif
 
 #ifdef __SWITCH__
-/* The floating keyboard (wine-nx-probe/source/osk.c), copied into the image
+/* The floating keyboard (horizon-wine/source/osk.c), copied into the image
  * about to be shown, on the present's own queue: after everything drawn into
  * it, before the presentation engine takes it. Each image has its own staging
  * buffer, command buffer and semaphore. An image only comes back to the

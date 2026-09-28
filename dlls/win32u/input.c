@@ -2091,7 +2091,7 @@ BOOL WINAPI NtUserReleaseCapture(void)
 }
 
 /* Whether the platform opens an on-screen keyboard by itself on focus, unless
- * the keyboard-on-text-focus setting turns that off (wine-nx-probe/source/runtime.c); absent
+ * the keyboard-on-text-focus setting turns that off (horizon-wine/source/runtime.c); absent
  * (weak) on platforms with no such driver hook, and where user_driver's
  * pShowSoftwareKeyboard is the harmless nulldrv stub. */
 extern int wine_nx_swkbd_auto_enabled __attribute__((weak));

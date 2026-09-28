@@ -70,7 +70,7 @@ runtime; the full package now ships the Mesa 26 one.
   (800x600 or 640x480 in full
   screen) are scaled to it, keeping the aspect ratio. The earlier runtime on
   Mesa 20.1's nouveau driver, patched for pinned 32-bit buffers
-  (`wine-nx-probe/mesa`), can still be built.
+  (`horizon-wine/mesa`), can still be built.
 - **Audio.** `winenxaudio.drv` plays through audout, for mmdevapi and DirectSound.
 - **Input.** The touchscreen, the controller as a mouse or as a keyboard with
   per-game mappings, and XInput, which sees player 1 as an Xbox 360 controller.
@@ -92,7 +92,7 @@ runtime; the full package now ships the Mesa 26 one.
   Vulkan memory in the driver's own mappings.
 - **Launcher.** An SDL2 launcher with a Home and a Library view, per-game
   options, a controls editor, SteamGridDB artwork, and forwarder installation
-  (`wine-nx-probe/source/launcher*.c`, `forwarder.c`). Add Game begins with an
+  (`horizon-wine/source/launcher*.c`, `forwarder.c`). Add Game begins with an
   SD Card / USB picker; mounted USB volumes can then be browsed directly.
 - **Diagnostics.** A thread and core report, a sampling profiler, fatal fault
   reports that name the x86 instruction behind translated code, and a map of
@@ -195,12 +195,12 @@ Requirements:
 
 - Docker with the `devkitpro/devkita64` image, for the Switch build and the Box64
   tests.
-- LLVM-MinGW 20260505 in `wine-nx-probe/toolchains/llvm-mingw-20260505-ucrt-macos-universal`,
+- LLVM-MinGW 20260505 in `horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal`,
   and bison (Homebrew's), for Wine's PE modules.
 - A Wine PE build tree, configured once:
 
 ```sh
-mkdir -p wine-nx-probe/build-wine-wow64-pe && cd wine-nx-probe/build-wine-wow64-pe
+mkdir -p horizon-wine/build-wine-wow64-pe && cd horizon-wine/build-wine-wow64-pe
 PATH="$PWD/../toolchains/llvm-mingw-20260505-ucrt-macos-universal/bin:/opt/homebrew/opt/bison/bin:$PATH" \
     ../../configure --enable-archs=aarch64,i386 --enable-winebox64=aarch64
 ```
@@ -220,22 +220,22 @@ the part of Windows each file belongs to. No Autorun package carries any of it.
 Then, from the repository root:
 
 ```sh
-sh wine-nx-probe/build-wow64-dynarec.sh           # the x86 runtime NROs, and its test stage
-sh wine-nx-probe/build-mesa-switch.sh             # Mesa 26 (OpenGL and Vulkan) into build-mesa-switch/install
+sh horizon-wine/build-wow64-dynarec.sh           # the x86 runtime NROs, and its test stage
+sh horizon-wine/build-mesa-switch.sh             # Mesa 26 (OpenGL and Vulkan) into build-mesa-switch/install
 docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work devkitpro-lsfg sh -ec '
-    cmake -S wine-nx-probe -B wine-nx-probe/build-switch-wow64-mesa-switch -G Ninja \
-        -DCMAKE_TOOLCHAIN_FILE=/work/wine-nx-probe/cmake/switch-devkitA64.cmake \
-        -DWINE_NX_PE_BUILD_DIR=/work/wine-nx-probe/build-wine-wow64-pe \
+    cmake -S horizon-wine -B horizon-wine/build-switch-wow64-mesa-switch -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE=/work/horizon-wine/cmake/switch-devkitA64.cmake \
+        -DWINE_NX_PE_BUILD_DIR=/work/horizon-wine/build-wine-wow64-pe \
         -DWINE_NX_BOX64_DYNAREC=ON -DWINE_NX_USB_STORAGE=ON -DCMAKE_BUILD_TYPE=Release \
-        -DWINE_NX_MESA_SWITCH_DIR=/work/wine-nx-probe/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib
-    cmake --build wine-nx-probe/build-switch-wow64-mesa-switch --target wine-nx-runtime-nro'
-sh wine-nx-probe/build-boot-bundle.sh             # Atmosphere and HOC boot payloads, in devkitPro with hactool
-WINE_NX_LLVM_MINGW="$PWD/wine-nx-probe/toolchains/llvm-mingw-20260505-ucrt-macos-universal" \
-WINE_NX_MESA_SWITCH_DIR=/work/wine-nx-probe/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib \
+        -DWINE_NX_MESA_SWITCH_DIR=/work/horizon-wine/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib
+    cmake --build horizon-wine/build-switch-wow64-mesa-switch --target wine-nx-runtime-nro'
+sh horizon-wine/build-boot-bundle.sh             # Atmosphere and HOC boot payloads, in devkitPro with hactool
+WINE_NX_LLVM_MINGW="$PWD/horizon-wine/toolchains/llvm-mingw-20260505-ucrt-macos-universal" \
+WINE_NX_MESA_SWITCH_DIR=/work/horizon-wine/build-mesa-switch/install/opt/devkitpro/portlibs/switch/lib \
 WINE_NX_FEX=1 WINE_NX_DXVK=1 WINE_NX_VKD3D=1 WINE_NX_DEVKIT_IMAGE=devkitpro-lsfg \
-    sh wine-nx-probe/build-amd64-components.sh    # the AMD64 NRO, and the build-wine-amd64-pe tree
+    sh horizon-wine/build-amd64-components.sh    # the AMD64 NRO, and the build-wine-amd64-pe tree
 horizon-dlls/tools/build-dlls.py                  # the DLL repository: what changed since its manifest
-python3 wine-nx-probe/tools/package-autorun.py    # x86 and AMD64 runtimes merged: autorun-NNN.zip
+python3 horizon-wine/tools/package-autorun.py    # x86 and AMD64 runtimes merged: autorun-NNN.zip
 ```
 
 `devkitpro-lsfg` is devkitPro's image with glslang, which LSFG-VK needs. The
@@ -248,49 +248,49 @@ folder beside it; every package is checked against that tree
 own:
 
 ```sh
-python3 wine-nx-probe/tools/package-wow64-full.py # the whole SD-card payload as one zip
-python3 wine-nx-probe/tools/package-wow64-dxvk.py # the Mesa 26 runtime and the DXVK tests, over that payload
+python3 horizon-wine/tools/package-wow64-full.py # the whole SD-card payload as one zip
+python3 horizon-wine/tools/package-wow64-dxvk.py # the Mesa 26 runtime and the DXVK tests, over that payload
 ```
 
-`build-dlls.py` builds in `wine-nx-probe/build-wine-amd64-pe` and rebuilds
+`build-dlls.py` builds in `horizon-wine/build-wine-amd64-pe` and rebuilds
 only what changed since the commit its manifest names: a Wine module whose
 sources, headers, import libraries or build tools changed (as Wine's make
 knows them), and a file built from other sources whose recipe changed. After
-changing `dlls/winebox64`, `wine-nx-probe/source/wow64_box64_bridge.c` (which
+changing `dlls/winebox64`, `horizon-wine/source/wow64_box64_bridge.c` (which
 `winebox64` compiles in), `dlls/wow64` or anything else a module is built from,
 commit it and run `build-dlls.py`; `--all` rebuilds everything, for a new
 toolchain. Commit and push the DLL repository, then commit the new
 `horizon-dlls` here.
 
 The runtime's version is `WINE_NX_RUNTIME_BUILD` in
-`wine-nx-probe/source/runtime.c`, and archives are written to
-`wine-nx-probe/build-switch-wow64-dynarec`. Other packagers in
-`wine-nx-probe/tools` stage single programs over the full payload (OpenTTD,
+`horizon-wine/source/runtime.c`, and archives are written to
+`horizon-wine/build-switch-wow64-dynarec`. Other packagers in
+`horizon-wine/tools` stage single programs over the full payload (OpenTTD,
 Quake III's engine, WarCraft III's setup, the Direct3D 9, OpenGL and audio
 tests).
 
 ## Tests
 
 ```sh
-sh wine-nx-probe/check-runtime-console.sh      # host unit tests of runtime and server pieces, under ASan and UBSan
-sh wine-nx-probe/check-box64-execution.sh      # Box64 interpreter and dynarec in an ARM64 container, plus their Switch build
-sh wine-nx-probe/check-wow64-box64-bridge.sh   # the x86 system-call gate
-sh wine-nx-probe/check-wow64-box64-unix.sh     # the native side of the CPU DLL
-sh wine-nx-probe/check-amd64.sh                # AMD64, ARM64EC and both Box64 CPU modes
-sh wine-nx-probe/check-audio.sh                # the audio driver
-sh wine-nx-probe/tests/check-launcher-host.sh  # the launcher, headless, with scripted input (Homebrew's sdl2, sdl3, sdl2_ttf, libpng)
-sh wine-nx-probe/tests/check-horizon-dlls.sh   # the DLL manager against the horizon-dlls checkout: install, resume, verify, update
-for t in wine-nx-probe/tests/check_*.py; do python3 "$t"; done  # server pieces run against real host sockets and files
+sh horizon-wine/check-runtime-console.sh      # host unit tests of runtime and server pieces, under ASan and UBSan
+sh horizon-wine/check-box64-execution.sh      # Box64 interpreter and dynarec in an ARM64 container, plus their Switch build
+sh horizon-wine/check-wow64-box64-bridge.sh   # the x86 system-call gate
+sh horizon-wine/check-wow64-box64-unix.sh     # the native side of the CPU DLL
+sh horizon-wine/check-amd64.sh                # AMD64, ARM64EC and both Box64 CPU modes
+sh horizon-wine/check-audio.sh                # the audio driver
+sh horizon-wine/tests/check-launcher-host.sh  # the launcher, headless, with scripted input (Homebrew's sdl2, sdl3, sdl2_ttf, libpng)
+sh horizon-wine/tests/check-horizon-dlls.sh   # the DLL manager against the horizon-dlls checkout: install, resume, verify, update
+for t in horizon-wine/tests/check_*.py; do python3 "$t"; done  # server pieces run against real host sockets and files
 ```
 
-`wine-nx-probe/tests/win32` holds small Windows programs the full package puts
+`horizon-wine/tests/win32` holds small Windows programs the full package puts
 on the card (`C:\APC Test`, `C:\Socket Test`): each does what a game does with
 one piece of the machinery and reports the result in a message box, which the
 log records. Run under desktop Wine first, they give the answers to expect.
 
-Box64 is pinned in `wine-nx-probe/vendor/box64` (fetched by
+Box64 is pinned in `horizon-wine/vendor/box64` (fetched by
 `tools/bootstrap-box64-core.sh`) and never edited:
-`wine-nx-probe/cmake/Box64Core.cmake` builds patched copies of the files it
+`horizon-wine/cmake/Box64Core.cmake` builds patched copies of the files it
 changes, and fails if the pinned text moves.
 
 ## Layout
@@ -300,9 +300,9 @@ changes, and fails if the pinned text moves.
 | `dlls/ntdll/unix/horizon*` | Horizon server, memory, sections, sockets, exception handling |
 | `dlls/win32u/winnx_drv.c`, `winnx_vulkan.c` | Display, input and Vulkan surface driver |
 | `dlls/winebox64`, `dlls/winebox64ec` | x86 WoW64 and AMD64 ARM64EC CPU DLLs |
-| `wine-nx-probe/source` | Runtime: startup, launcher, compositor, Box64 engine, profiler, audio and XInput backends, forwarder installer |
-| `wine-nx-probe/tests` | Host, PE32 and PE32+ tests |
-| `wine-nx-probe/tools` | Packagers and game setups |
+| `horizon-wine/source` | Runtime: startup, launcher, compositor, Box64 engine, profiler, audio and XInput backends, forwarder installer |
+| `horizon-wine/tests` | Host, PE32 and PE32+ tests |
+| `horizon-wine/tools` | Packagers and game setups |
 
 ## Limits
 
@@ -330,7 +330,7 @@ Autorun is built from these projects; each keeps its own copyright and license.
 | Project | Authors | License | Used for |
 |---|---|---|---|
 | [Wine](https://www.winehq.org) | The Wine project authors | LGPL-2.1-or-later | The Windows API, loader, WoW64, and the Direct3D, OpenGL and Vulkan layers; this repository is a Wine fork |
-| [Box64](https://github.com/ptitSeb/box64) | ptitSeb and contributors | MIT | x86 and x86-64 execution through its interpreter and ARM64 dynarec (`wine-nx-probe/vendor/box64`) |
+| [Box64](https://github.com/ptitSeb/box64) | ptitSeb and contributors | MIT | x86 and x86-64 execution through its interpreter and ARM64 dynarec (`horizon-wine/vendor/box64`) |
 | [DXVK](https://github.com/doitsujin/dxvk) | Philip Rebohle, Joshua Ashton, Robin Kertels, Jeffrey Ellison and contributors | zlib/libpng | Direct3D over Vulkan, for programs set to `d3d=dxvk` |
 | [Mesa](https://mesa3d.org) | The Mesa authors | MIT (mostly) | OpenGL through nvc0 and Vulkan through NVK |
 | [mesa-switch](https://github.com/danfromtico/mesa-switch) | danfromtico, NaGaa95 and contributors | Mesa's licenses | The Switch port of Mesa 26 (nvc0 and NVK) that the runtime links |
@@ -361,4 +361,4 @@ References that shaped the port without being part of the build:
 
 ## More
 
-- [Build-by-build notes](../wine-nx-probe/README.md)
+- [Build-by-build notes](../horizon-wine/README.md)

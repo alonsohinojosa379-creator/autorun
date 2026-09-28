@@ -170,7 +170,7 @@ BOOL decorated_mode = TRUE;
 UINT64 thunk_lock_callback = 0;
 
 #ifdef __SWITCH__
-/* wine-nx-probe/source/runtime.c, cleared by switch/wine/no-display-devices.txt */
+/* horizon-wine/source/runtime.c, cleared by switch/wine/no-display-devices.txt */
 extern int wine_nx_display_devices __attribute__((weak));
 #endif
 

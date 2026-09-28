@@ -3,7 +3,7 @@
  *
  * Windows render into ordinary DIB memory (handled by the GDI engine), and the
  * window surface's flush() copies the dirty pixels to the runtime's OpenGL
- * compositor, one layer per window surface (wine-nx-probe/source/compositor.c),
+ * compositor, one layer per window surface (horizon-wine/source/compositor.c),
  * or, with switch/wine/framebuffer.txt, straight to the libnx framebuffer via
  * the runtime hooks wine_nx_fb_*().
  *
@@ -30,9 +30,9 @@
 #include "ntuser_private.h"
 #include "win32u_private.h"
 #include "wine/gdi_driver.h"
-#include "../../wine-nx-probe/source/compositor.h"
+#include "../../horizon-wine/source/compositor.h"
 
-/* Framebuffer hooks implemented in the runtime (wine-nx-probe/source/runtime.c). */
+/* Framebuffer hooks implemented in the runtime (horizon-wine/source/runtime.c). */
 extern void *wine_nx_fb_lock( int *width, int *height, int *stride_px );
 extern void  wine_nx_fb_unlock( void );
 extern void  wine_nx_fb_present( void );
@@ -48,7 +48,7 @@ extern void  wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
 extern int   wine_nx_runtime_verbose __attribute__((weak));
 /* Whether the runtime's OpenGL compositor presents the screen instead of the
  * framebuffer (starting it on the first call); each window surface then feeds
- * a layer of it (wine-nx-probe/source/compositor.h). */
+ * a layer of it (horizon-wine/source/compositor.h). */
 extern int   wine_nx_compositor_enabled( void );
 
 /* Buttons reported by wine_nx_pointer_poll(). */
@@ -617,7 +617,7 @@ static void wine_nx_pointer_flags( unsigned int last, unsigned int held, unsigne
 
 /* The controller stands in for the keyboard the console does not have. The
  * runtime polls it and keeps the held controls in wine_nx_pad_key_state, with
- * the virtual-key code of each in wine_nx_pad_keys (wine-nx-probe/source/
+ * the virtual-key code of each in wine_nx_pad_keys (horizon-wine/source/
  * runtime.c, overridable through switch/wine/keys.txt and a program's own
  * NAME.keys.txt). */
 #define WINE_NX_PAD_KEY_COUNT 28
@@ -714,7 +714,7 @@ static void wine_nx_send_vk( HKL layout, BYTE vk, BOOL up )
     NtUserSendHardwareInput( 0, 0, &input, 0 );
 }
 
-/* The floating keyboard (wine-nx-probe/source/osk.c) queues the keys pressed
+/* The floating keyboard (horizon-wine/source/osk.c) queues the keys pressed
  * on it, each due at its time; they go to whichever window has focus, as the
  * controller's do. */
 extern int wine_nx_osk_next_key( unsigned long long now_ns, unsigned short *vk, int *up ) __attribute__((weak));

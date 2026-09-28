@@ -31,7 +31,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
 /* The runtime hands the screen's NWindow to one surface at a time
- * (wine-nx-probe/source/runtime.c); OpenGL and Vulkan take turns with it. */
+ * (horizon-wine/source/runtime.c); OpenGL and Vulkan take turns with it. */
 extern void *wine_nx_gl_acquire_window( void );
 extern void wine_nx_gl_release_window( void );
 extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));

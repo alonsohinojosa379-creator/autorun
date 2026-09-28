@@ -124,7 +124,7 @@ static BOOL get_current_state(UINT index, XINPUT_STATE *state)
 }
 
 /* Wine-NX: the Switch's controller, read by the runtime through a static unix
- * call table (wine-nx-probe/source/xinput_unix.c). There is no HID device on
+ * call table (horizon-wine/source/xinput_unix.c). There is no HID device on
  * the console. Elsewhere __wine_init_unix_call fails and the HID path runs. */
 static BOOL nx_backend;
 

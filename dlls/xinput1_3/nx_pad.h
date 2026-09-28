@@ -2,7 +2,7 @@
  * The Switch controller as an XInput gamepad, for Wine-NX.
  *
  * Shared by xinput1_3's main.c, which calls the runtime through a static unix
- * call table (wine-nx-probe/source/xinput_unix.c), and by the host test. The
+ * call table (horizon-wine/source/xinput_unix.c), and by the host test. The
  * buttons sit where an Xbox pad has them: the Switch's bottom button (B) is A,
  * its right one (A) is B, and so on. ZL and ZR are digital, so the triggers are
  * either released or fully pressed.

@@ -1,7 +1,7 @@
 /* Copyright 2026 Wine-NX contributors. LGPL-2.1-or-later. */
 /*
  * Kernel code memory placed by this runtime instead of by libnx: the dynarec's
- * arenas (wine-nx-probe/source/wow64_box64_dynarec.c) mapped into the window
+ * arenas (horizon-wine/source/wow64_box64_dynarec.c) mapped into the window
  * horizon.c keeps for the runtime's own mappings.
  *
  * jitCreate asks libnx for the two addresses, and libnx probes the address

@@ -1,7 +1,7 @@
 /* Copyright 2026 Wine-NX contributors. LGPL-2.1-or-later. */
 #ifndef WINEBOX64_UNIXLIB_H
 #define WINEBOX64_UNIXLIB_H
-#include "../../wine-nx-probe/source/wow64_box64_bridge.h"
+#include "../../horizon-wine/source/wow64_box64_bridge.h"
 #define WINEBOX64_ABI_VERSION 4
 
 enum winebox64_run_operation { winebox64_query_abi, winebox64_execute };

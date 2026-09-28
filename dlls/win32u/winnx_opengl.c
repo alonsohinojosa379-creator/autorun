@@ -27,12 +27,12 @@
 #include "win32u_private.h"
 #include "wine/opengl_driver.h"
 #include "wine/debug.h"
-#include "../../wine-nx-probe/source/osk.h"
+#include "../../horizon-wine/source/osk.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(wgl);
 
 /* The runtime hands the screen's NWindow to one OpenGL surface at a time
- * (wine-nx-probe/source/runtime.c). */
+ * (horizon-wine/source/runtime.c). */
 extern void *wine_nx_gl_acquire_window( void );
 extern void wine_nx_gl_release_window( void );
 extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
@@ -121,7 +121,7 @@ extern unsigned long long horizon_interrupt_time(void);
 unsigned int wine_nx_gl_swaps;
 unsigned long long wine_nx_gl_swap_time;  /* 100 ns */
 
-/* The floating keyboard (wine-nx-probe/source/osk.c), put into the back
+/* The floating keyboard (horizon-wine/source/osk.c), put into the back
  * buffer just before it is shown: its picture in a texture of each context's
  * own, blitted from a framebuffer of its own onto the window's. Everything
  * the blit and the upload depend on is put back as the program left it. */
