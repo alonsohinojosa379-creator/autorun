@@ -1,7 +1,25 @@
-/* Exercise pool exhaustion, fragmented page reuse and live-allocation isolation. */
+/* Exercise pool growth, fragmented page reuse and live-allocation isolation. */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+static int fail_metadata, fail_pages;
+static void *test_realloc(void *ptr, size_t size)
+{
+    if (fail_metadata) { fail_metadata = 0; return NULL; }
+    return realloc(ptr, size);
+}
+static void *test_aligned_alloc(size_t alignment, size_t size)
+{
+    if (fail_pages) { fail_pages = 0; return NULL; }
+    return aligned_alloc(alignment, size);
+}
+#define realloc test_realloc
+#define aligned_alloc test_aligned_alloc
 #include "../../dlls/ntdll/unix/horizon_pool.h"
+#undef realloc
+#undef aligned_alloc
+
+#define TEST_ARENAS 512
 
 struct object { void *link; unsigned long long value[6]; };
 static struct object storage[4];
@@ -13,7 +31,7 @@ static unsigned int random_next(void) { return random_state = random_state * 166
 int main(void)
 {
     struct object *items[5];
-    void *whole[HORIZON_POOL_ARENAS];
+    void *whole[TEST_ARENAS];
     struct { unsigned char *ptr; size_t size; unsigned char tag; } live[128] = {0};
     unsigned int i, j, round;
     size_t bytes;
@@ -31,7 +49,7 @@ int main(void)
     assert(!horizon_pages_alloc(&pool, 4097));
     assert(!horizon_pages_alloc(&pool, (HORIZON_POOL_PAGES + 1) * HORIZON_POOL_PAGE));
     bytes = HORIZON_POOL_ARENA;
-    for (i = 0; i < HORIZON_POOL_ARENAS; i++)
+    for (i = 0; i < TEST_ARENAS; i++)
     {
         whole[i] = horizon_pages_alloc(&pool, bytes);
         /* One arena is one kernel memory block, and shares it with nothing:
@@ -39,27 +57,35 @@ int main(void)
         assert(whole[i] && !((uintptr_t)whole[i] % HORIZON_POOL_ARENA));
         ((unsigned char *)whole[i])[bytes - 1] = (unsigned char)(i + 1);
     }
-    assert(pool.active_arenas == HORIZON_POOL_ARENAS && pool.peak_arenas == HORIZON_POOL_ARENAS);
+    assert(pool.active_arenas == TEST_ARENAS && pool.peak_arenas == TEST_ARENAS);
+    assert(pool.capacity == TEST_ARENAS);
+    fail_metadata = 1;
     assert(!horizon_pages_alloc(&pool, HORIZON_POOL_PAGE));
-    /* A full pool, and anything too large for an arena, take blocks of their
-     * own rather than pages the general heap shares with other allocations. */
+    assert(pool.capacity == TEST_ARENAS && pool.active_arenas == TEST_ARENAS);
+    fail_pages = 1;
+    assert(!horizon_pages_alloc(&pool, HORIZON_POOL_PAGE));
+    assert(pool.capacity > TEST_ARENAS && pool.active_arenas == TEST_ARENAS);
+    /* Growing the metadata leaves all existing page allocations in place. */
     {
         void *one = horizon_pages_alloc_any(&pool, HORIZON_POOL_PAGE);
+        void *two = horizon_pages_alloc_any(&pool, HORIZON_POOL_PAGE);
         void *large = horizon_pages_alloc_any(&pool, HORIZON_POOL_ARENA + HORIZON_POOL_PAGE);
         assert(one && !((uintptr_t)one % HORIZON_POOL_ARENA));
+        assert(two == (char *)one + HORIZON_POOL_PAGE);
+        assert(pool.active_arenas == TEST_ARENAS + 1);
         assert(large && !((uintptr_t)large % HORIZON_POOL_ARENA));
-        assert(!horizon_pages_free(&pool, one, HORIZON_POOL_PAGE));
-        assert(pool.blocks == 2 && !pool.shared);
-        free(one);
+        assert(horizon_pages_free(&pool, one, HORIZON_POOL_PAGE));
+        assert(horizon_pages_free(&pool, two, HORIZON_POOL_PAGE));
+        assert(pool.blocks == 1 && !pool.shared);
         free(large);
     }
     /* Release and reuse a middle arena while every other arena remains live. */
     assert(horizon_pages_free(&pool, whole[7], bytes));
-    assert(pool.active_arenas == HORIZON_POOL_ARENAS - 1);
+    assert(pool.active_arenas == TEST_ARENAS - 1);
     whole[7] = horizon_pages_alloc(&pool, bytes);
-    assert(whole[7] && pool.active_arenas == HORIZON_POOL_ARENAS);
+    assert(whole[7] && pool.active_arenas == TEST_ARENAS);
     ((unsigned char *)whole[7])[bytes - 1] = 8;
-    for (i = 0; i < HORIZON_POOL_ARENAS; i++)
+    for (i = 0; i < TEST_ARENAS; i++)
     {
         assert(((unsigned char *)whole[i])[bytes - 1] == (unsigned char)(i + 1));
         assert(horizon_pages_free(&pool, whole[i], bytes));
@@ -78,7 +104,7 @@ int main(void)
         {
             live[i].size = (1 + (random_next() >> 8) % 128) * HORIZON_POOL_PAGE;
             live[i].ptr = horizon_pages_alloc(&pool, live[i].size);
-            if (!live[i].ptr) continue; /* bounded pool; production falls back */
+            assert(live[i].ptr);
             assert(!((uintptr_t)live[i].ptr % HORIZON_POOL_PAGE));
             for (j = 0; j < 128; j++) if (j != i && live[j].ptr)
                 assert((uintptr_t)live[i].ptr + live[i].size <= (uintptr_t)live[j].ptr ||
@@ -89,9 +115,9 @@ int main(void)
     }
     for (i = 0; i < 128; i++) if (live[i].ptr)
         assert(horizon_pages_free(&pool, live[i].ptr, live[i].size));
-    assert(pool.active_arenas == HORIZON_POOL_RETAIN_EMPTY && pool.reclaims >= HORIZON_POOL_ARENAS - HORIZON_POOL_RETAIN_EMPTY);
+    assert(pool.active_arenas == HORIZON_POOL_RETAIN_EMPTY && pool.reclaims >= TEST_ARENAS - HORIZON_POOL_RETAIN_EMPTY);
     j = 0;
-    for (i = 0; i < HORIZON_POOL_ARENAS; i++)
+    for (i = 0; i < pool.capacity; i++)
     {
         if (!pool.arenas[i].memory) continue;
         j++;
@@ -107,7 +133,12 @@ int main(void)
     for (i = 0; i < HORIZON_POOL_PAGE; i++) assert(((unsigned char *)whole[0])[i] == 0xa5);
     assert(horizon_pages_free(&pool, whole[0], HORIZON_POOL_PAGE));
     assert(horizon_pages_trim(&pool) == HORIZON_POOL_ARENA);
-    assert(!pool.active_arenas);
-    puts("Mapping pools: descriptor fallback, bounded idle arenas, reclamation, alignment and 20000 fragmented allocation cycles passed");
+    assert(!pool.active_arenas && !pool.capacity && !pool.arenas);
+    whole[0] = horizon_pages_alloc(&pool, HORIZON_POOL_PAGE);
+    assert(whole[0] && pool.active_arenas == 1);
+    assert(horizon_pages_free(&pool, whole[0], HORIZON_POOL_PAGE));
+    assert(horizon_pages_trim(&pool) == HORIZON_POOL_ARENA);
+    assert(!horizon_pages_alloc_dedicated(&pool, SIZE_MAX & ~(size_t)(HORIZON_POOL_PAGE - 1)));
+    puts("Mapping pools: growth failures, packed overflow, reclamation, alignment and 20000 fragmented allocation cycles passed");
     return 0;
 }

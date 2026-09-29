@@ -17850,7 +17850,7 @@ static void swap_report_resident(void)
         else if (swap_pinned_locked( backing->code_addr, backing->size )) pinned += backing->size;
         else eligible += backing->size;
     }
-    for (i = 0; i < HORIZON_POOL_ARENAS; i++)
+    for (i = 0; i < backing_pages.capacity; i++)
         if (backing_pages.arenas[i].memory)
             pool_free += backing_pages.arenas[i].free_pages * HORIZON_POOL_PAGE;
     pthread_mutex_unlock( &mapping_mutex );

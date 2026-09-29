@@ -116,7 +116,7 @@ int main(void)
     assert(!((uintptr_t)b->heap_addr % HORIZON_POOL_ARENA) && backing_pages.blocks == 1);
     destroy_backing(b);
     /* No alias source shares a kernel memory block with anything else. */
-    for (i=0; i<HORIZON_POOL_ARENAS; i++) if (backing_pages.arenas[i].memory)
+    for (i=0; i<backing_pages.capacity; i++) if (backing_pages.arenas[i].memory)
         assert(!((uintptr_t)backing_pages.arenas[i].memory % HORIZON_POOL_ARENA));
 
     /* The kernel leaves the source of an alias unmapped, so a backing freed
@@ -150,11 +150,11 @@ int main(void)
     assert(!strcmp(line, "[EXC] alias=none"));
     assert(horizon_pages_free(&backing_pages, original, 2*page));  /* the run leaks these */
 
-    for (i=0; i<HORIZON_POOL_ARENAS; i++) if (backing_pages.arenas[i].memory)
+    for (i=0; i<backing_pages.capacity; i++) if (backing_pages.arenas[i].memory)
     {
         assert(backing_pages.arenas[i].free_pages == HORIZON_POOL_PAGES);
-        free(backing_pages.arenas[i].memory);
     }
+    horizon_pages_trim(&backing_pages);
     puts("Backing integration: failed unmaps, split views, last-reference release, zero fill, "
          "writeback, own blocks and live alias sources passed");
     return 0;

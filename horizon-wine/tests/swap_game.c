@@ -22,7 +22,6 @@
 #define HORIZON_LAZY_MAPPING_CHUNK 0x200000u
 #define HORIZON_POOL_ARENA 0x200000u
 #define HORIZON_POOL_PAGE 4096
-#define HORIZON_POOL_ARENAS 1
 typedef int BOOL;
 typedef unsigned int Result;
 typedef uint64_t u64;
@@ -30,9 +29,10 @@ typedef void VirtmemReservation;
 struct horizon_page_pool
 {
     unsigned int active_arenas;
-    struct { void *memory; unsigned int free_pages; } arenas[HORIZON_POOL_ARENAS];
+    size_t capacity;
+    struct { void *memory; unsigned int free_pages; } arenas[1];
 };
-static struct horizon_page_pool backing_pages;
+static struct horizon_page_pool backing_pages = { .capacity = 1 };
 static pthread_mutex_t mapping_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int allocations, fail_alloc, fail_map, fail_perm, fail_unmap, fail_store;
 static uintptr_t fail_unmap_at;
