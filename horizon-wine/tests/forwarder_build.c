@@ -323,6 +323,7 @@ static void check_exefs_npdm( const u8 *data, u64 tid, int relay )
     assert( !memcmp( &meta->magic, "META", 4 ) );
     /* The three bits that decide where the program's address space begins. */
     assert( ((meta->flags >> 1) & 7) == 3 );
+    assert( meta->sys_resource_size == 16 * 1024 * 1024 );
     aci0 = (const struct npdm_aci0 *)((const u8 *)meta + meta->aci0_offset);
     acid = (const struct npdm_acid *)((const u8 *)meta + meta->acid_offset);
     assert( !memcmp( &aci0->magic, "ACI0", 4 ) && !memcmp( &acid->magic, "ACID", 4 ) );

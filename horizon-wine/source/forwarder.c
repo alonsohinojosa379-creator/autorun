@@ -700,6 +700,7 @@ static int npdm_patch( u8 *npdm, size_t size, u64 tid )
     snprintf( meta.title_name, sizeof(meta.title_name), "%s", "Application" );
     memset( meta.product_code, 0, sizeof(meta.product_code) );
     meta.flags = (meta.flags & ~ADDRESS_SPACE_MASK) | (3u << ADDRESS_SPACE_SHIFT);
+    meta.sys_resource_size = 16 * 1024 * 1024;
     aci0.program_id = tid;
     acid.program_id_min = tid;
     acid.program_id_max = tid;
