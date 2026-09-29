@@ -71,7 +71,7 @@ docker pull -q "$image" >/dev/null
 # against devkitPro's released libnx, which the image keeps apart.
 if [ ! -f "$hw/toolchains/boot-payloads/bundle/setup_boot_manifest.h" ]; then
     step "Building the boot payloads (Atmosphere and Horizon-OC), once"
-    docker run --rm --platform linux/arm64 -v "$root:/work" -w /work -e WINE_NX_JOBS="$jobs" \
+    docker run --rm -v "$root:/work" -w /work -e WINE_NX_JOBS="$jobs" \
         -e DEVKITPRO=/opt/devkitpro-release "$image" sh horizon-wine/build-boot-bundle.sh
 fi
 
