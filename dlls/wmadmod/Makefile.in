@@ -1,6 +1,10 @@
 MODULE    = wmadmod.dll
-IMPORTS   = combase mfplat msdmo mfuuid dmoguids strmiids wmcodecdspuuid uuid winegstreamer
+IMPORTS   = combase mfplat msdmo mfuuid dmoguids strmiids wmcodecdspuuid uuid ntdll
+PARENTSRC = ../winegstreamer
+EXTRADEFS = -DWMA_NATIVE_BACKEND
 
 SOURCES = \
+	native.c \
+	wma_decoder.c \
 	wmadmod.c \
 	wmadmod.idl

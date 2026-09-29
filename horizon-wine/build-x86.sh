@@ -16,6 +16,7 @@ fi
 # DLL repository's (horizon-dlls/tools/build-dlls.py); none are built here.
 make -C "$pe" -j8 include/all
 sh "$root/horizon-wine/tools/bootstrap-box64-core.sh"
+sh "$root/horizon-wine/tools/bootstrap-wma.sh"
 docker run --rm -v "$root:/work" -w /work -e NX_MESA="${WINE_NX_MESA_SWITCH_DIR:-}" \
     "${WINE_NX_DEVKIT_IMAGE:-$(cat "$root/horizon-wine/switch-dev.txt")}" sh -ec '
     cmake -S horizon-wine -B horizon-wine/build-switch-wow64-mesa-switch -G Ninja \

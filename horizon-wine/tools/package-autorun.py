@@ -383,6 +383,7 @@ if args.x86:
     shutil.copy2(nro, stage / 'wine-nx-runtime.nro')
     # The build copies LSFG-VK's license out of the switch-dev image.
     shutil.copy2(nro.parent / 'licenses/LSFG-VK-GPL-3.0.txt', licenses / 'LSFG-VK-GPL-3.0.txt')
+    shutil.copy2(nro.parent / 'licenses/FFmpeg-LGPL-2.1.txt', licenses / 'FFmpeg-LGPL-2.1.txt')
     print('x86 runtime staged')
 else:
     assert args.amd64.is_file(), f'{args.amd64} is missing; run build-amd64-components.sh, or pass --x86'

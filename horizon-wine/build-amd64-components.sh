@@ -44,11 +44,13 @@ fi
     make -j"$jobs" include/all
 )
 sh "$root/horizon-wine/tools/bootstrap-box64-core.sh"
+sh "$root/horizon-wine/tools/bootstrap-wma.sh"
 # The switch-dev image (switch-dev.txt) has libnx, mesa-switch, LSFG-VK and
 # libusbhsfs in portlibs. WINE_NX_MESA_SWITCH_DIR links another mesa-switch.
 docker run --rm --network none -v "$root:/work" -w /work \
     -e NX_PE="/work/${pe#"$root/"}" -e NX_BUILD="/work/${build#"$root/"}" \
     -e NX_JOBS="$jobs" -e NX_DYNAREC="${WINE_NX_BOX64_DYNAREC:-ON}" \
+    -e WINE_NX_JOBS="$jobs" \
     -e NX_MESA="${WINE_NX_MESA_SWITCH_DIR:-}" -e NX_FEX="$fex" -e NX_BOOT_BUNDLE="$boot_bundle" \
     "${WINE_NX_DEVKIT_IMAGE:-$(cat "$root/horizon-wine/switch-dev.txt")}" sh -ec '
     cmake -S horizon-wine -B "$NX_BUILD" -G Ninja \

@@ -634,6 +634,7 @@ add_executable(wine-nx-runtime
     source/ws2_32_unix_stub.c
     source/dnsapi_unix.c
     source/audio_unix.c
+    source/wma_unix.c
     source/xinput_unix.c
     source/thread_profile.c
     source/compositor.c
@@ -738,7 +739,8 @@ endif()
 # libnx's service macros use C11's static_assert, which the rest of the tree,
 # built as gnu99, does not have.
 set_source_files_properties(source/forwarder.c PROPERTIES COMPILE_OPTIONS "-std=gnu11")
-set_source_files_properties(source/audio_unix.c source/xinput_unix.c PROPERTIES COMPILE_DEFINITIONS WINE_UNIX_LIB)
+set_source_files_properties(source/audio_unix.c source/wma_unix.c source/xinput_unix.c PROPERTIES COMPILE_DEFINITIONS WINE_UNIX_LIB)
+include(cmake/Wma.cmake)
 target_include_directories(wine-nx-runtime PRIVATE "${WINE_NX_PE_BUILD_DIR}/include")
 find_package(Git QUIET)
 set(AUTORUN_BUILD_TAG "")

@@ -24,14 +24,13 @@ horizon_wine = root / 'horizon-wine'
 
 
 def static_unix_libs():
-    """The modules the runtime's static unix-call tables name: native ones by a
-    wide string, WoW64 ones by a narrow one."""
+    """The modules the runtime's native and WoW64 unix-call tables name."""
     text = (root / 'dlls/ntdll/unix/virtual.c').read_text()
     native = text[text.index('wine_nx_static_unix_libs[] ='):]
     native = native[:native.index('};')]
     wow64 = text[text.index('wine_nx_static_wow64_unix_libs[] ='):]
     wow64 = wow64[:wow64.index('};')]
-    return ({''.join(re.findall(r"'(.)'", entry)) for entry in re.findall(r'\{\s*\{([^}]*)\}', native)},
+    return (set(re.findall(r'\{\s*"([^"]+)"', native)),
             set(re.findall(r'\{\s*"([^"]+)"', wow64)))
 
 

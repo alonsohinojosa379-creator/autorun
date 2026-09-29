@@ -130,7 +130,9 @@ static ULONG WINAPI unknown_Release(IUnknown *iface)
         if (decoder->wg_transform)
             wg_transform_destroy(decoder->wg_transform);
 
+#ifndef WMA_NATIVE_BACKEND
         wg_sample_queue_destroy(decoder->wg_sample_queue);
+#endif
 
         MoFreeMediaType(&decoder->input_type);
         MoFreeMediaType(&decoder->output_type);
@@ -524,8 +526,24 @@ static HRESULT WINAPI transform_ProcessEvent(IMFTransform *iface, DWORD id, IMFM
 
 static HRESULT WINAPI transform_ProcessMessage(IMFTransform *iface, MFT_MESSAGE_TYPE message, ULONG_PTR param)
 {
+#ifdef WMA_NATIVE_BACKEND
+    struct wma_decoder *decoder = impl_from_IMFTransform(iface);
+    if (!decoder->wg_transform) return MF_E_TRANSFORM_TYPE_NOT_SET;
+    switch (message)
+    {
+    case MFT_MESSAGE_COMMAND_FLUSH:
+    case MFT_MESSAGE_NOTIFY_START_OF_STREAM:
+        return wg_transform_flush(decoder->wg_transform);
+    case MFT_MESSAGE_COMMAND_DRAIN:
+    case MFT_MESSAGE_NOTIFY_END_OF_STREAM:
+        return wg_transform_drain(decoder->wg_transform);
+    default:
+        return S_OK;
+    }
+#else
     FIXME("iface %p, message %#x, param %p stub!\n", iface, message, (void *)param);
     return S_OK;
+#endif
 }
 
 static HRESULT WINAPI transform_ProcessInput(IMFTransform *iface, DWORD id, IMFSample *sample, DWORD flags)
@@ -572,8 +590,11 @@ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags, 
         return MF_E_TRANSFORM_NEED_MORE_INPUT;
     }
 
-    if (SUCCEEDED(hr = wg_transform_read_mf(decoder->wg_transform, samples->pSample, 0, &samples->dwStatus, NULL)))
+    hr = wg_transform_read_mf(decoder->wg_transform, samples->pSample, 0, &samples->dwStatus, NULL);
+#ifndef WMA_NATIVE_BACKEND
+    if (SUCCEEDED(hr))
         wg_sample_queue_flush(decoder->wg_sample_queue, false);
+#endif
 
     return hr;
 }
@@ -927,7 +948,9 @@ static HRESULT WINAPI media_object_Flush(IMediaObject *iface)
     if (FAILED(hr = wg_transform_flush(decoder->wg_transform)))
         return hr;
 
+#ifndef WMA_NATIVE_BACKEND
     wg_sample_queue_flush(decoder->wg_sample_queue, TRUE);
+#endif
 
     return S_OK;
 }
@@ -991,7 +1014,9 @@ static HRESULT WINAPI media_object_ProcessOutput(IMediaObject *iface, DWORD flag
     {
         /* WMA Lossless emits anything from 0 to 12 packets of output for each packet of input */
         buffers[0].dwStatus |= DMO_OUTPUT_DATA_BUFFERF_INCOMPLETE;
+#ifndef WMA_NATIVE_BACKEND
         wg_sample_queue_flush(decoder->wg_sample_queue, false);
+#endif
     }
     else if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT)
     {
@@ -1084,6 +1109,7 @@ static const IPropertyBagVtbl property_bag_vtbl =
 
 HRESULT wma_decoder_create(IUnknown *outer, IUnknown **out)
 {
+#ifndef WMA_NATIVE_BACKEND
     static const WAVEFORMATEX output_format =
     {
         .wFormatTag = WAVE_FORMAT_IEEE_FLOAT, .wBitsPerSample = 32, .nSamplesPerSec = 44100, .nChannels = 1,
@@ -1094,25 +1120,30 @@ HRESULT wma_decoder_create(IUnknown *outer, IUnknown **out)
                 .nAvgBytesPerSec = 3000, .nBlockAlign = 139, .cbSize = sizeof(input_format) - sizeof(WAVEFORMATEX)},
         .wEncodeOptions = 1,
     };
-    struct wma_decoder *decoder;
     HRESULT hr;
+#endif
+    struct wma_decoder *decoder;
 
     TRACE("outer %p, out %p.\n", outer, out);
 
+#ifndef WMA_NATIVE_BACKEND
     if (FAILED(hr = check_audio_transform_support(&input_format.wfx, &output_format)))
     {
         ERR_(winediag)("GStreamer doesn't support WMA decoding, please install appropriate plugins.\n");
         return hr;
     }
+#endif
 
     if (!(decoder = calloc(1, sizeof(*decoder))))
         return E_OUTOFMEMORY;
 
+#ifndef WMA_NATIVE_BACKEND
     if (FAILED(hr = wg_sample_queue_create(&decoder->wg_sample_queue)))
     {
         free(decoder);
         return hr;
     }
+#endif
 
     decoder->IUnknown_inner.lpVtbl = &unknown_vtbl;
     decoder->IMFTransform_iface.lpVtbl = &transform_vtbl;
@@ -1126,15 +1157,21 @@ HRESULT wma_decoder_create(IUnknown *outer, IUnknown **out)
     return S_OK;
 }
 
+#ifdef WMA_NATIVE_BACKEND
+HRESULT WINAPI native_create_wma_decoder(IUnknown *outer, REFIID riid, void **out)
+#else
 HRESULT WINAPI winegstreamer_create_wma_decoder(IUnknown *outer, REFIID riid, void **out)
+#endif
 {
     IUnknown *unk;
     HRESULT hr;
 
     TRACE("outer %p, riid %s, out %p\n", outer, debugstr_guid(riid), out);
 
+#ifndef WMA_NATIVE_BACKEND
     if (!init_gstreamer())
         return E_FAIL;
+#endif
 
     if (outer && !IsEqualGUID(riid, &IID_IUnknown))
         return E_NOINTERFACE;

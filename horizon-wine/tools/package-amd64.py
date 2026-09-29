@@ -100,6 +100,7 @@ for name in ('fonts', 'nls'):
             stage_file(path, drive / 'windows/fonts' / path.name)
 stage_file(nro, stage / nro.name)
 licenses = stage / 'licenses'
+stage_file(build / 'licenses/FFmpeg-LGPL-2.1.txt', licenses / 'FFmpeg-LGPL-2.1.txt')
 if lsfg_revision:
     stage_file(build / 'licenses/LSFG-VK-GPL-3.0.txt', licenses / 'LSFG-VK-GPL-3.0.txt')
     (stage / 'lsfg').mkdir()

@@ -31,15 +31,41 @@
 #include "wmcodecdsp.h"
 
 #include "wine/debug.h"
+#include "wine/unixlib.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(dmo);
 
-extern HRESULT WINAPI winegstreamer_create_wma_decoder(IUnknown *outer, REFIID riid, void **out);
+extern HRESULT WINAPI native_create_wma_decoder(IUnknown *outer, REFIID riid, void **out);
+static BOOL native_backend;
+static INIT_ONCE factory_once = INIT_ONCE_STATIC_INIT;
+static HRESULT (WINAPI *gstreamer_create)(IUnknown *, REFIID, void **);
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        DisableThreadLibraryCalls(instance);
+        native_backend = !__wine_init_unix_call();
+    }
+    return TRUE;
+}
+
+static BOOL WINAPI load_gstreamer(INIT_ONCE *once, void *param, void **context)
+{
+    HMODULE module = LoadLibraryW(L"winegstreamer.dll");
+    if (module)
+        gstreamer_create = (void *)GetProcAddress(module, "winegstreamer_create_wma_decoder");
+    return TRUE;
+}
 
 static HRESULT WINAPI wma_decoder_factory_CreateInstance(IClassFactory *iface, IUnknown *outer,
         REFIID riid, void **out)
 {
-    return winegstreamer_create_wma_decoder(outer, riid, out);
+    if (native_backend) return native_create_wma_decoder(outer, riid, out);
+    InitOnceExecuteOnce(&factory_once, load_gstreamer, NULL, NULL);
+    if (gstreamer_create) return gstreamer_create(outer, riid, out);
+    *out = NULL;
+    return E_FAIL;
 }
 
 static HRESULT WINAPI class_factory_QueryInterface(IClassFactory *iface, REFIID riid, void **out)
