@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the runtime's core-3 policy with mocked kernel permissions."""
+"""Exercise runtime thread placement with mocked kernel permissions."""
 from pathlib import Path
 import re
 import subprocess
@@ -25,11 +25,13 @@ fixture = r'''
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include "thread_profile.h"
 typedef uint64_t u64;
 typedef uint32_t u32, Handle, Result;
 typedef int32_t s32;
 #define NX_PROF_MAX_THREADS 4
+#define NX_PROF_LINE 1000
 #define CUR_PROCESS_HANDLE 0
 #define InfoType_CoreMask 0
 #define InfoType_PriorityMask 1
@@ -39,6 +41,7 @@ typedef int32_t s32;
 static u64 allowed_cores = 7, priorities = ~(UINT64_C(1) << 63), current_mask = 2;
 static s32 current_core = 1, current_priority = 59;
 static int fail_info, fail_core, fail_priority, calls, followed;
+static u64 tick;
 static char log_line[160];
 static int svcGetInfo(u64 *out, int type, Handle process, int subtype) {
     (void)process; (void)subtype;
@@ -65,7 +68,16 @@ static int svcSetThreadPriority(Handle handle, s32 priority) {
 }
 static void wine_nx_runtime_trace(const char *line) { snprintf(log_line, sizeof(log_line), "%s", line); }
 static Handle threadGetCurHandle(void) { return 10; }
-static uint64_t thread_ticks(Handle handle) { assert(handle == 10); return 100; }
+static uint64_t thread_ticks(Handle handle) { assert(handle == 10); return tick; }
+static u64 armGetSystemTick(void) { return tick += 100; }
+static int appendf(char *line, int len, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(line + len, NX_PROF_LINE - len, format, args);
+    va_end(args);
+    assert(n >= 0 && n < NX_PROF_LINE - len);
+    return len + n;
+}
 void horizon_follow_thread_cores(void *teb, unsigned mask) __attribute__((weak));
 void horizon_follow_thread_cores(void *teb, unsigned mask) { assert(teb == (void *)123); followed = mask; }
 '''
@@ -73,6 +85,7 @@ globals_ = r'''
 static struct nx_prof_thread registry[NX_PROF_MAX_THREADS];
 static pthread_mutex_t registry_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int four_cores_enabled;
+int wine_nx_balance_enabled = 1;
 static __thread int affinity_fixed;
 '''
 test = r'''
@@ -94,6 +107,13 @@ int main(void) {
     assert(nx_thread_graphics_worker("vkd3d_queue"));
     assert(!nx_thread_graphics_worker("dxvk-submit"));
     assert(!nx_thread_graphics_worker("game-render-thread"));
+    assert(nx_thread_shader_worker("dxvk-shader"));
+    assert(nx_thread_shader_worker("dxvk-shader-h"));
+    assert(nx_thread_shader_worker("dxvk-shader-n"));
+    assert(nx_thread_shader_worker("dxvk-shader-l"));
+    assert(!nx_thread_shader_worker("dxvk-submit"));
+    assert(!nx_thread_shader_worker("dxvk-cache"));
+    assert(!nx_thread_shader_worker("dxvk-shader-helper"));
     registry[0] = (struct nx_prof_thread){.handle = 10, .tid = 4, .kind = 'w', .teb = 123};
     wine_nx_thread_configure_cores(0);
     wine_nx_thread_set_name(4, "dxvk-cs");
@@ -138,13 +158,49 @@ int main(void) {
     wine_nx_thread_register('w', 5, (void *)123);
     assert(!registry[0].helper && !registry[0].name[0] && registry[0].tid == 5);
     assert(current_mask == 2 && current_priority == 59);
-    puts("Core affinity: permissions, opt-in, workers, native defaults, rollback, rename, explicit affinity and slot reuse passed");
+    wine_nx_thread_configure_cores(0);
+    wine_nx_thread_set_name(5, "dxvk-shader-h");
+    assert(registry[0].migratable && !registry[0].helper);
+    assert(current_mask == 7 && current_core == -1 && current_priority == 59 && followed == 7);
+    previous = calls;
+    wine_nx_thread_set_name(5, "dxvk-shader-l");
+    assert(calls == previous && registry[0].app_mask == 2);
+    wine_nx_thread_balance();
+    wine_nx_thread_balance();
+    assert(calls == previous && current_mask == 7);
+    wine_nx_thread_set_name(5, "ordinary-worker");
+    assert(!registry[0].migratable && current_mask == 2 && current_priority == 59 && followed == 2);
+    fail_info = 1;
+    wine_nx_thread_set_name(5, "dxvk-shader-h");
+    assert(!registry[0].migratable && current_mask == 2);
+    fail_info = 0; fail_core = 1;
+    wine_nx_thread_set_name(5, "dxvk-shader-h");
+    assert(!registry[0].migratable && current_mask == 2 && current_priority == 59);
+    fail_core = 0;
+    wine_nx_thread_set_name(5, "dxvk-shader-h");
+    wine_nx_thread_set_affinity(5, 4);
+    assert(!registry[0].migratable && registry[0].fixed && current_mask == 4 && followed == 4);
+    previous = calls;
+    wine_nx_thread_set_name(5, "dxvk-shader-l");
+    assert(calls == previous && current_mask == 4);
+    registry[0].fixed = 0;
+    allowed_cores = 5;
+    wine_nx_thread_set_name(5, "dxvk-shader-h");
+    assert(current_mask == 5 && registry[0].migratable && current_priority == 59);
+    assert(!svcSetThreadCoreMask(10, 2, 4));
+    wine_nx_thread_affinity_fixed();
+    assert(registry[0].fixed && !registry[0].migratable && affinity_fixed);
+    previous = calls;
+    wine_nx_thread_set_name(5, "dxvk-shader-n");
+    assert(calls == previous && current_mask == 4);
+    puts("Core affinity: graphics offload, shader migration, balancing, rollback and explicit affinity passed");
 }
 '''
 functions = "".join(definition(name) for name in (
     "__wrap_svcSetThreadCoreMask",
     "wine_nx_four_cores_available", "wine_nx_thread_configure_cores", "offload_thread_locked",
-    "restore_thread_locked", "wine_nx_thread_set_name", "wine_nx_thread_set_affinity", "wine_nx_thread_register"))
+    "restore_thread_locked", "migrate_shader_locked", "wine_nx_thread_set_name", "wine_nx_thread_set_affinity",
+    "wine_nx_thread_register", "wine_nx_thread_affinity_fixed", "wine_nx_thread_balance"))
 with tempfile.TemporaryDirectory(prefix="wine-nx-cores-") as tmp:
     c, exe = Path(tmp) / "test.c", Path(tmp) / "test"
     c.write_text(fixture + definition("nx_prof_thread", True) + globals_ + functions + test)

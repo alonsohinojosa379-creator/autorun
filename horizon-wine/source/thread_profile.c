@@ -55,6 +55,7 @@ struct nx_prof_thread
     s32 core;       /* as the thread saw itself when it registered */
     int fixed;      /* the program chose its cores */
     int helper;
+    int migratable;
     char name[32];
     s32 app_core, app_priority;
     u64 app_mask;
@@ -150,7 +151,27 @@ static int restore_thread_locked( struct nx_prof_thread *thread, s32 core, u32 m
         return 0;
     }
     thread->helper = 0;
+    thread->migratable = 0;
+    if (thread->teb && &horizon_follow_thread_cores)
+        horizon_follow_thread_cores( (void *)(uintptr_t)thread->teb, mask );
     return 1;
+}
+
+static int migrate_shader_locked( struct nx_prof_thread *thread )
+{
+    u64 mask, previous_mask;
+    s32 previous_core;
+
+    if (thread->fixed || thread->migratable) return 0;
+    if (R_FAILED( svcGetInfo( &mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0 ) ) || !(mask &= 7) ||
+        R_FAILED( svcGetThreadCoreMask( &previous_core, &previous_mask, thread->handle ) ) ||
+        R_FAILED( svcSetThreadCoreMask( thread->handle, -1, mask ) )) return -1;
+    thread->app_core = previous_core;
+    thread->app_mask = previous_mask;
+    thread->migratable = 1;
+    if (thread->teb && &horizon_follow_thread_cores)
+        horizon_follow_thread_cores( (void *)(uintptr_t)thread->teb, mask );
+    return (int)mask;
 }
 
 void wine_nx_thread_set_name( unsigned int tid, const char *name )
@@ -165,14 +186,23 @@ void wine_nx_thread_set_name( unsigned int tid, const char *name )
         int moved;
 
         if (!thread->handle || thread->kind != 'w' || thread->tid != tid) continue;
+        if ((thread->helper && !nx_thread_graphics_worker( name )) ||
+            (thread->migratable && !nx_thread_shader_worker( name )))
+            if (!restore_thread_locked( thread, thread->app_core, thread->app_mask )) break;
         snprintf( thread->name, sizeof(thread->name), "%s", name );
-        if (nx_thread_graphics_worker( name ))
+        if (nx_thread_shader_worker( name ))
+        {
+            if ((moved = migrate_shader_locked( thread )) > 0)
+                snprintf( line, sizeof(line), "[CORES] %u %s: affinity %#x, priority unchanged", tid, name, moved );
+            else if (moved < 0)
+                snprintf( line, sizeof(line), "[CORES] %u %s: could not change shader affinity", tid, name );
+        }
+        else if (nx_thread_graphics_worker( name ))
         {
             if ((moved = offload_thread_locked( thread )))
                 snprintf( line, sizeof(line), "[CORES] %u %s: %s", tid, name,
                           moved > 0 ? "core 3, priority 63" : "could not offload graphics worker" );
         }
-        else if (thread->helper) restore_thread_locked( thread, thread->app_core, thread->app_mask );
         break;
     }
     pthread_mutex_unlock( &registry_mutex );
@@ -192,11 +222,7 @@ void wine_nx_thread_set_affinity( unsigned int tid, unsigned int mask )
 
         if (!thread->handle || thread->kind != 'w' || thread->tid != tid) continue;
         if (restore_thread_locked( thread, __builtin_ctz( mask ), mask ))
-        {
             thread->fixed = 1;
-            if (thread->teb && &horizon_follow_thread_cores)
-                horizon_follow_thread_cores( (void *)(uintptr_t)thread->teb, mask );
-        }
         break;
     }
     pthread_mutex_unlock( &registry_mutex );
@@ -856,7 +882,11 @@ void wine_nx_thread_affinity_fixed( void )
     affinity_fixed = 1;
     pthread_mutex_lock( &registry_mutex );
     for (i = 0; i < NX_PROF_MAX_THREADS; i++)
-        if (registry[i].handle == handle) registry[i].fixed = 1;
+        if (registry[i].handle == handle)
+        {
+            registry[i].fixed = 1;
+            registry[i].migratable = 0;
+        }
     pthread_mutex_unlock( &registry_mutex );
 }
 
@@ -900,14 +930,14 @@ void wine_nx_thread_balance( void )
 
         if (!thread->handle || thread->kind != 'w' || thread->helper) continue;
         balance[count].load = loads[i];
-        balance[count].fixed = thread->fixed;
+        balance[count].fixed = thread->fixed || thread->migratable;
         balance[count].core = -1;
         if (R_SUCCEEDED( svcGetThreadCoreMask( &core, &mask, thread->handle ) ) && mask && !(mask & (mask - 1)))
             for (j = 0; j < cores; j++) if (mask == 1ull << core_ids[j]) balance[count].core = (int)j;
         for (j = 0; j < NX_PROF_MAX_THREADS; j++)
             if (registry[j].handle && registry[j].kind == 's' && registry[j].tid == thread->tid)
                 balance[count].load += loads[j];
-        if (balance[count].core < 0 && !thread->fixed && balance[count].load >= 2 * NX_BALANCE_LIGHT) urgent = 1;
+        if (balance[count].core < 0 && !balance[count].fixed && balance[count].load >= 2 * NX_BALANCE_LIGHT) urgent = 1;
         owner[count++] = i;
     }
     if (!count)

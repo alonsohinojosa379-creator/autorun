@@ -19,6 +19,12 @@ static inline int nx_thread_graphics_worker( const char *name )
     return !strcmp( name, "dxvk-cs" ) || !strcmp( name, "wined3d_cs" ) || !strcmp( name, "vkd3d_queue" );
 }
 
+static inline int nx_thread_shader_worker( const char *name )
+{
+    return !strcmp( name, "dxvk-shader" ) || !strcmp( name, "dxvk-shader-h" ) ||
+           !strcmp( name, "dxvk-shader-n" ) || !strcmp( name, "dxvk-shader-l" );
+}
+
 static inline int nx_thread_helper_available( uint64_t cores, uint64_t priorities )
 {
     return !!(cores & 8) && !!(priorities & (UINT64_C(1) << 63));
