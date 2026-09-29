@@ -1630,6 +1630,38 @@ end:
     return nt_status;
 }
 
+#elif defined(__SWITCH__)
+
+static NTSTATUS create_logical_proc_info(void)
+{
+    ULONG_PTR mask = horizon_get_system_affinity_mask();
+    CACHE_DESCRIPTOR l1i = { 1, 3, 64, 48 * 1024, CacheInstruction };
+    CACHE_DESCRIPTOR l1d = { 1, 2, 64, 32 * 1024, CacheData };
+    CACHE_DESCRIPTOR l2 = { 2, 16, 64, 2 * 1024 * 1024, CacheUnified };
+    unsigned int i;
+
+    if (!logical_proc_info_add_by_id( RelationProcessorPackage, 0, mask ))
+        return STATUS_NO_MEMORY;
+
+    for (i = 0; i < sizeof(mask) * 8; ++i)
+    {
+        ULONG_PTR core_mask = (ULONG_PTR)1 << i;
+
+        if (!(mask & core_mask)) continue;
+        if (!logical_proc_info_add_by_id( RelationProcessorCore, i, core_mask ) ||
+            !logical_proc_info_add_cache( core_mask, &l1i ) ||
+            !logical_proc_info_add_cache( core_mask, &l1d ))
+            return STATUS_NO_MEMORY;
+    }
+
+    if (!logical_proc_info_add_cache( mask, &l2 ) ||
+        !logical_proc_info_add_numa_node( mask, 0 ) ||
+        !logical_proc_info_add_group( count_bits( mask ), mask ))
+        return STATUS_NO_MEMORY;
+
+    return STATUS_SUCCESS;
+}
+
 #else
 
 static NTSTATUS create_logical_proc_info(void)
