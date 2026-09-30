@@ -46,7 +46,16 @@ jobs:
           sudo apt-get install -y bison make curl python3
 
       - name: Compilar
-        run: sh horizon-wine/build-theforest.sh
+        run: |
+          # Docker compila como root: la carpeta tiene que ser de root, o git
+          # se niega a leer vendor/box64 ("dubious ownership").
+          sudo chown -R root:root "$GITHUB_WORKSPACE"
+          sudo git config --global --add safe.directory '*'
+          sudo -E env "PATH=$PATH" sh horizon-wine/build-theforest.sh
+
+      - name: Devolver la carpeta al usuario normal
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
 
       - name: Subir el zip para la SD
         uses: actions/upload-artifact@v4
