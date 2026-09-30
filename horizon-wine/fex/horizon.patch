@@ -1782,6 +1782,33 @@ diff --git a/Source/Windows/WOW64/Module.cpp b/Source/Windows/WOW64/Module.cpp
 index 62a8dd2..5847633 100644
 --- a/Source/Windows/WOW64/Module.cpp
 +++ b/Source/Windows/WOW64/Module.cpp
+@@ -452,7 +452,7 @@ public:
+   static void HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame) {
+     const uint64_t ReturnRIP = *(uint32_t*)(Frame->State.gregs[FEXCore::X86State::REG_RSP]); // Return address from the stack
+     uint64_t ReturnRSP = Frame->State.gregs[FEXCore::X86State::REG_RSP] + 4;                 // Stack pointer after popping return address
+-    uint64_t ReturnRAX = 0;
++    uint32_t ReturnRAX = 0;
+ 
+     if (Frame->State.rip == (uint64_t)BridgeInstrs::UnixCall) {
+       struct StackLayout {
+@@ -466,7 +466,7 @@ public:
+ 
+       const auto TLS = GetTLS();
+       Context::UnlockJITContext(TLS);
+-      ReturnRAX = static_cast<uint64_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, ULongToPtr(StackArgs->Args)));
++      ReturnRAX = static_cast<uint32_t>(WineUnixCall(StackArgs->Handle, StackArgs->ID, ULongToPtr(StackArgs->Args)));
+       Context::LockJITContext(TLS);
+       Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
+     } else if (Frame->State.rip == (uint64_t)BridgeInstrs::Syscall) {
+@@ -478,7 +478,7 @@ public:
+       const auto TLS = GetTLS();
+       Context::UnlockJITContext(TLS);
+       Wow64ProcessPendingCrossProcessItems();
+-      ReturnRAX = static_cast<uint64_t>(Wow64SystemServiceEx(static_cast<UINT>(EntryRAX), reinterpret_cast<UINT*>(ReturnRSP + 4)));
++      ReturnRAX = static_cast<uint32_t>(Wow64SystemServiceEx(static_cast<UINT>(EntryRAX), reinterpret_cast<UINT*>(ReturnRSP + 4)));
+       Context::LockJITContext(TLS);
+       Frame->State.gregs[FEXCore::X86State::REG_RAX] = ReturnRAX;
+     }
 @@ -546,6 +546,9 @@ void BTCpuProcessInit() {
  
    FEX::Windows::Allocator::SetupHooks(NtDll);
