@@ -1,0 +1,67 @@
+name: The Forest build
+
+# Pestaña Actions -> "The Forest build" -> Run workflow.
+# Al terminar, el zip para la SD queda en "Artifacts" al final de la página.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Liberar espacio en disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup
+          sudo docker image prune -af >/dev/null
+          df -h /
+
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Aplicar el parche de The Forest
+        run: |
+          cp theforest.patch /tmp/theforest.patch
+          git config user.name "build"
+          git config user.email "build@localhost"
+          if ! git am -3 /tmp/theforest.patch; then
+            echo "El parche no entra en esta version; uso la version para la que se hizo."
+            git am --abort || true
+            base=c889e4eb722ba6435e50500d9dde51f59781ce99
+            git fetch --depth 1 origin "$base"
+            git checkout --force "$base"
+            git am /tmp/theforest.patch
+          fi
+          git log -2 --oneline
+
+      - name: Descargar las DLL de Windows (horizon-dlls)
+        run: git submodule update --init --depth 1 horizon-dlls
+
+      - name: Instalar herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bison make curl python3
+
+      - name: Compilar
+        run: sh horizon-wine/build-theforest.sh
+
+      - name: Subir el zip para la SD
+        uses: actions/upload-artifact@v4
+        with:
+          name: theforest-card
+          path: horizon-wine/build-autorun/theforest-card.zip
+          compression-level: 0
+          retention-days: 7
+
+      - name: Subir registros si fallo
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            horizon-wine/build-*/**/*.log
+            horizon-wine/build-*/config.log
+          if-no-files-found: ignore
