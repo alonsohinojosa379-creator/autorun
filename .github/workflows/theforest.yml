@@ -7,8 +7,6 @@ on:
 
 jobs:
   build:
-    # ARM, como la Switch: la imagen switch-dev para PC (amd64) trae un
-    # libvulkan.a con una pieza x86 que no enlaza ("file in wrong format").
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
@@ -44,8 +42,10 @@ jobs:
 
       - name: Arreglar la ruta del compilador de Windows
         run: |
-          sed -i "s#^toolchain = .*#toolchain = Path(os.environ.get('WINE_NX_LLVM_MINGW', horizon_wine / 'toolchains/llvm-mingw-20260505-ucrt-macos-universal')) / 'bin'#" horizon-wine/tools/package-autorun.py
-          grep -n "^toolchain" horizon-wine/tools/package-autorun.py
+          # Los scripts de empaquetado traen escrita la ruta de macOS; aqui es Linux ARM.
+          tc="llvm-mingw-20260505-ucrt-ubuntu-22.04-$(uname -m)"
+          sed -i "s/llvm-mingw-20260505-ucrt-macos-universal/$tc/g" horizon-wine/tools/package-autorun.py horizon-wine/tools/verify-package.py
+          grep -n "llvm-mingw" horizon-wine/tools/package-autorun.py horizon-wine/tools/verify-package.py
 
       - name: Instalar herramientas
         run: |
