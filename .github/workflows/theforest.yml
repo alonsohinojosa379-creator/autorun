@@ -37,6 +37,18 @@ jobs:
           fi
           git log -2 --oneline
 
+      - name: Usar la imagen de compilacion vigente
+        run: |
+          # El autor del proyecto retira las etiquetas viejas de la imagen de
+          # compilacion ("manifest unknown"); se toma la etiqueta actual del original.
+          if git fetch --depth 1 https://github.com/autorunhq/autorun.git main &&
+             git show FETCH_HEAD:horizon-wine/switch-dev.txt > /tmp/switch-dev.txt && [ -s /tmp/switch-dev.txt ]; then
+            cp /tmp/switch-dev.txt horizon-wine/switch-dev.txt
+          else
+            echo "ghcr.io/autorunhq/switch-dev:2026.10.01" > horizon-wine/switch-dev.txt
+          fi
+          cat horizon-wine/switch-dev.txt
+
       - name: Descargar las DLL de Windows (horizon-dlls)
         run: git submodule update --init --depth 1 horizon-dlls
 
@@ -81,4 +93,3 @@ jobs:
             horizon-wine/build-*/**/*.log
             horizon-wine/build-*/config.log
           if-no-files-found: ignore
-          
