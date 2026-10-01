@@ -7,6 +7,8 @@ on:
 
 jobs:
   build:
+    # ARM, como la Switch: la imagen switch-dev para PC (amd64) trae un
+    # libvulkan.a con una pieza x86 que no enlaza ("file in wrong format").
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
@@ -74,3 +76,4 @@ jobs:
             horizon-wine/build-*/**/*.log
             horizon-wine/build-*/config.log
           if-no-files-found: ignore
+          
