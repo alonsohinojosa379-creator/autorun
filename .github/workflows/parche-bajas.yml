@@ -1,0 +1,85 @@
+name: Parche direcciones bajas
+
+# Pestaña Actions -> "Parche direcciones bajas" -> Run workflow.
+# Compila solo mesosphere.bin + autorun-loader.kip (sin Autorun completo).
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - name: Liberar espacio en disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup
+          sudo docker image prune -af >/dev/null
+          df -h /
+
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Usar la imagen de compilacion vigente
+        run: |
+          # El autor del proyecto retira las etiquetas viejas de la imagen de
+          # compilacion ("manifest unknown"); se toma la etiqueta actual del original.
+          if git fetch --depth 1 https://github.com/autorunhq/autorun.git main &&
+             git show FETCH_HEAD:horizon-wine/switch-dev.txt > /tmp/switch-dev.txt && [ -s /tmp/switch-dev.txt ]; then
+            cp /tmp/switch-dev.txt horizon-wine/switch-dev.txt
+          else
+            echo "ghcr.io/autorunhq/switch-dev:2026.10.01" > horizon-wine/switch-dev.txt
+          fi
+          cat horizon-wine/switch-dev.txt
+
+      - name: Compilar el parche (Mesosphere + loader)
+        run: |
+          sudo chown -R root:root "$GITHUB_WORKSPACE"
+          sudo git config --global --add safe.directory '*'
+          image="$(cat horizon-wine/switch-dev.txt)"
+          sudo docker pull -q "$image" >/dev/null
+          sudo docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work -e WINE_NX_JOBS=4 \
+            -e DEVKITPRO=/opt/devkitpro-release "$image" sh horizon-wine/build-boot-bundle.sh
+          t=horizon-wine/toolchains/boot-payloads/atmosphere
+          b=out/nintendo_nx_arm64_armv8a/release
+          mkdir -p pkg/atmosphere/kips pkg/bootloader
+          cp "$t/mesosphere/$b/mesosphere.bin" pkg/atmosphere/mesosphere.bin
+          cp "$t/stratosphere/loader/$b/loader.kip" pkg/atmosphere/kips/autorun-loader.kip
+          cat > pkg/LEEME.txt <<'EOT'
+          PARCHE DE DIRECCIONES BAJAS (Atmosphere 1.11.2)
+          1. Con la consola apagada, copia la carpeta "atmosphere" a la raiz de la SD (mezclar).
+          2. Abre bootloader/hekate_ipl.ini, duplica tu entrada de Atmosphere que ya funciona
+             (la que tiene fss0= o pkg3=) y a la copia agregale DESPUES de la linea fss0/pkg3:
+               kernel=atmosphere/mesosphere.bin
+               kip1=atmosphere/kips/autorun-loader.kip
+             Ponle otro nombre, ej: [Atmosphere low-addr]. Deja la original sin tocar.
+          3. Apaga del todo, arranca en frio y entra por la entrada nueva.
+          Solo vale con Atmosphere 1.11.2 (package3 y fusee iguales).
+          Revertir: borra mesosphere.bin y autorun-loader.kip.
+          EOT
+          cd pkg && zip -qr ../parche-direcciones-bajas.zip . && cd ..
+          ls -l parche-direcciones-bajas.zip
+
+      - name: Devolver la carpeta al usuario normal
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
+      - name: Subir el zip para la SD
+        uses: actions/upload-artifact@v4
+        with:
+          name: parche-direcciones-bajas
+          path: parche-direcciones-bajas.zip
+          compression-level: 0
+          retention-days: 7
+
+      - name: Subir registros si fallo
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            horizon-wine/build-*/**/*.log
+            horizon-wine/build-*/config.log
+          if-no-files-found: ignore
