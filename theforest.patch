@@ -1,42 +1,156 @@
-From d3e4d0caba68fbd96e3a691ddc90a71945b46b7f Mon Sep 17 00:00:00 2001
+From 856e3df0384c4ee2c2c053acecf44b9e4eb60b18 Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
-Date: Wed, 30 Sep 2026 19:11:33 -0600
-Subject: [PATCH 1/9] The Forest edition: single-game build with its own
- folder, name and icon
+Date: Sat, 10 Oct 2026 16:15:18 -0600
+Subject: [PATCH 1/2] The Forest para Nintendo Switch: build de un solo juego,
+ con hasta 256 hilos (Port Hecho por Ascencion H.O)
 
-- WINE_NX_ROOT_NAME moves sdmc:/switch/wine to sdmc:/switch/<name>
-- WINE_NX_APP_NAME/AUTHOR/ICON set the HOME menu name and icon
-- WINE_NX_FIXED_TARGET starts one game with no launcher, offers to
-  install its HOME icon, and returns to HOME on exit
-- tools/package-single-game.py builds the card zip with the DLLs in place
-- build-theforest.sh builds it all
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Xpq6Y5HJQCU7wqc58mHiJA
+Todo el fork de Autorun encima de c889e4eb en un solo parche, mas:
+- runtime.c: al arrancar pide a pm:shell BoostApplicationThreadResourceLimit,
+  que sube el limite de hilos de la aplicacion de 96 a 256 (los hilos extra
+  que el kernel guarda para aplicaciones, HOS 11.0+). En Wine cada hilo del
+  programa lleva su hilo de conexion al servidor, y un juego Unity se quedaba
+  sin hilos. Las placeholder de TLS cubren ahora 256 lugares.
+- games/theforest.conf: version de 32 bits (Unity 5.6) con Box64 y orden de
+  memoria (STRONGMEM=1), DXVK 1.10.3 del juego, 960x540 con
+  -force-gfx-direct, Goldberg sin red y sin conexion (steam_appid 242760).
 ---
- dlls/ntdll/unix/horizon.c                  |   6 +-
- dlls/ntdll/unix/horizon_runtime_paths.h    |   8 +-
- dlls/ntdll/unix/loader.c                   |  11 +-
- horizon-wine/CMakeLists.txt                |  25 ++++-
- horizon-wine/assets/theforest-splash.jpg   | Bin 0 -> 149994 bytes
- horizon-wine/assets/theforest.jpg          | Bin 0 -> 34097 bytes
- horizon-wine/build-amd64-components.sh     |  12 ++-
- horizon-wine/build-theforest.sh            |  21 ++++
- horizon-wine/source/forwarder_launch.h     |   3 +-
- horizon-wine/source/launcher_list.h        |   3 +-
- horizon-wine/source/lsfg.cpp               |   5 +-
- horizon-wine/source/runtime.c              | 116 ++++++++++++++++++++-
- horizon-wine/tools/drop-foreign-objects.sh |  32 ++++++
- horizon-wine/tools/package-single-game.py  |  86 +++++++++++++++
- 14 files changed, 307 insertions(+), 21 deletions(-)
+ dlls/ntdll/unix/env.c                         |  14 +-
+ dlls/ntdll/unix/file.c                        |  28 +++
+ dlls/ntdll/unix/horizon.c                     | 147 ++++++++++-
+ dlls/ntdll/unix/horizon_private.h             |   6 +
+ dlls/ntdll/unix/horizon_runtime_paths.h       |   8 +-
+ dlls/ntdll/unix/loader.c                      |  11 +-
+ dlls/ntdll/unix/signal_arm64.c                |  13 +-
+ dlls/win32u/vulkan.c                          |  28 +++
+ horizon-wine/CMakeLists.txt                   |  38 ++-
+ horizon-wine/assets/left4dead.jpg             | Bin 0 -> 30146 bytes
+ horizon-wine/assets/theforest-splash.jpg      | Bin 0 -> 149994 bytes
+ horizon-wine/assets/theforest.jpg             | Bin 0 -> 34097 bytes
+ horizon-wine/build-amd64-components.sh        |  15 +-
+ horizon-wine/build-game.sh                    |  49 ++++
+ horizon-wine/build-theforest.sh               |   3 +
+ horizon-wine/games/left4dead.conf             |  18 ++
+ .../bin/steam_settings/disable_networking.txt |   0
+ .../drive_c/Left 4 Dead/left4dead.wine-nx.txt |   3 +
+ .../Left 4 Dead/left4dead/cfg/autoexec.cfg    |   3 +
+ .../drive_c/Left 4 Dead/steam_appid.txt       |   1 +
+ .../steam_settings/disable_networking.txt     |   0
+ horizon-wine/games/theforest.conf             |  16 ++
+ .../drive_c/The Forest/TheForest.args.txt     |   1 +
+ .../drive_c/The Forest/TheForest.wine-nx.txt  |  12 +
+ .../theforest/drive_c/The Forest/dxvk.conf    |  13 +
+ .../drive_c/The Forest/steam_appid.txt        |   1 +
+ .../steam_settings/disable_networking.txt     |   0
+ .../The Forest/steam_settings/offline.txt     |   0
+ horizon-wine/source/audio_unix.c              |  96 ++++++-
+ horizon-wine/source/forwarder.c               |  20 ++
+ horizon-wine/source/forwarder_launch.h        |   3 +-
+ horizon-wine/source/launcher_list.h           |   3 +-
+ horizon-wine/source/lsfg.cpp                  |   5 +-
+ horizon-wine/source/runtime.c                 | 238 +++++++++++++++++-
+ horizon-wine/source/thread_profile.c          |  87 ++++++-
+ horizon-wine/source/thread_profile.h          |  10 +
+ horizon-wine/source/wow64_box64_dynarec.c     |  19 ++
+ horizon-wine/tools/drop-foreign-objects.sh    |  32 +++
+ horizon-wine/tools/package-single-game.py     | 106 ++++++++
+ 39 files changed, 1007 insertions(+), 40 deletions(-)
+ create mode 100644 horizon-wine/assets/left4dead.jpg
  create mode 100644 horizon-wine/assets/theforest-splash.jpg
  create mode 100644 horizon-wine/assets/theforest.jpg
+ create mode 100644 horizon-wine/build-game.sh
  create mode 100755 horizon-wine/build-theforest.sh
+ create mode 100644 horizon-wine/games/left4dead.conf
+ create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/bin/steam_settings/disable_networking.txt
+ create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead.wine-nx.txt
+ create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead/cfg/autoexec.cfg
+ create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_appid.txt
+ create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_settings/disable_networking.txt
+ create mode 100644 horizon-wine/games/theforest.conf
+ create mode 100644 horizon-wine/games/theforest/drive_c/The Forest/TheForest.args.txt
+ create mode 100644 horizon-wine/games/theforest/drive_c/The Forest/TheForest.wine-nx.txt
+ create mode 100644 horizon-wine/games/theforest/drive_c/The Forest/dxvk.conf
+ create mode 100644 horizon-wine/games/theforest/drive_c/The Forest/steam_appid.txt
+ create mode 100644 horizon-wine/games/theforest/drive_c/The Forest/steam_settings/disable_networking.txt
+ create mode 100644 horizon-wine/games/theforest/drive_c/The Forest/steam_settings/offline.txt
  create mode 100755 horizon-wine/tools/drop-foreign-objects.sh
  create mode 100755 horizon-wine/tools/package-single-game.py
 
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 89cf7d8..ddfcdc8 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -245,11 +245,11 @@ static void init_unix_codepage(void)
+     nfc_table = read_nls_file( "normnfc.nls" );
+ }
+ 
+-#elif defined(__ANDROID__)  /* Android always uses UTF-8 */
++#elif defined(__ANDROID__) || defined(__SWITCH__)  /* Android and Horizon always use UTF-8 (libnx's locale is "C", which would mean ASCII) */
+ 
+ static void init_unix_codepage(void) { }
+ 
+-#else  /* __APPLE__ || __ANDROID__ */
++#else  /* __APPLE__ || __ANDROID__ || __SWITCH__ */
+ 
+ /* charset to codepage map, sorted by name */
+ static const struct { const char *name; UINT cp; } charset_names[] =
+@@ -1931,8 +1931,14 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
+     static const WCHAR pathW[] = {'P','A','T','H'};
+     RTL_USER_PROCESS_PARAMETERS *params = NULL;
+     SIZE_T size, env_pos, env_size;
+-    WCHAR *dst, *cmdline, *path, *bootstrap;
+-    WCHAR *env = get_initial_environment( &env_pos, &env_size );
++    WCHAR *dst, *cmdline, *path, *bootstrap, *env;
++#ifdef __SWITCH__
++    /* Test build: Unity's Boehm collector corrupts the heap here (objects freed while
++     * still referenced) after its first stop-the-world. Turn the collector off through
++     * its own switch to tell whether that is the cause. */
++    setenv( "GC_DONT_GC", "1", 0 );
++#endif
++    env = get_initial_environment( &env_pos, &env_size );
+     WCHAR *curdir = get_initial_directory();
+     UNICODE_STRING nt_name;
+     NTSTATUS status;
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index fe07207..85b04c1 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -6690,6 +6690,34 @@ err:
+         TRACE("= 0x%08x\n", status);
+         if (status != STATUS_PENDING && event) NtResetEvent( event, NULL );
+     }
++#ifdef __SWITCH__
++    /* Always on: a failed or short read of a regular file, with the size the
++     * file system reports for it. */
++    if (type == FD_TYPE_FILE && length && (status != STATUS_SUCCESS || total < length))
++    {
++        extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
++        static unsigned int anomaly_traces;
++
++        if (&wine_nx_runtime_trace && __atomic_fetch_add( &anomaly_traces, 1, __ATOMIC_RELAXED ) < 120)
++        {
++            char msg[256];
++            struct stat st;
++            long long size = -1;
++
++            /* unix_handle may be closed already; ask the server's fd again */
++            if (!server_get_unix_fd( handle, FILE_READ_DATA, &unix_handle, &needs_close, &type, &options ))
++            {
++                if (!fstat( unix_handle, &st )) size = st.st_size;
++                if (needs_close) close( unix_handle );
++            }
++            snprintf( msg, sizeof(msg),
++                      "[READFAIL] handle=%p requested=%u returned=%u status=%08x offset=%lld filesize=%lld",
++                      handle, length, total, status,
++                      offset ? (long long)offset->QuadPart : -2LL, size );
++            wine_nx_runtime_trace( msg );
++        }
++    }
++#endif
+ 
+     ret_status = async_read && type == FD_TYPE_FILE && (status == STATUS_SUCCESS || status == STATUS_END_OF_FILE)
+             ? STATUS_PENDING : status;
 diff --git a/dlls/ntdll/unix/horizon.c b/dlls/ntdll/unix/horizon.c
-index e36dbb7..ea17b86 100644
+index e36dbb7..95b43ac 100644
 --- a/dlls/ntdll/unix/horizon.c
 +++ b/dlls/ntdll/unix/horizon.c
 @@ -15,6 +15,8 @@
@@ -48,7 +162,16 @@ index e36dbb7..ea17b86 100644
  #ifdef __SWITCH__
  
  #ifdef HORIZON_STANDALONE_SYNTAX
-@@ -5635,7 +5637,7 @@ static unsigned int horizon_server_ensure_session_locked(void)
+@@ -3290,6 +3292,8 @@ struct horizon_server_object
+ #endif
+     unsigned int thread_context_count;
+     int thread_context_valid;
++    int thread_frozen_x86;  /* held paused by the runtime for a 32-bit GetThreadContext */
++    unsigned int frozen_regs[10];  /* struct wine_nx_x86_regs */
+     struct horizon_user_apc *apc_first, *apc_last;
+     unsigned int rootdir;
+     unsigned int name_len;
+@@ -5635,7 +5639,7 @@ static unsigned int horizon_server_ensure_session_locked(void)
      if (!(horizon_session_data = calloc( 1, HORIZON_SESSION_MAPPING_SIZE )))
          return HORIZON_STATUS_NO_MEMORY;
  
@@ -57,7 +180,185 @@ index e36dbb7..ea17b86 100644
      fd = open( path, O_RDWR | O_CREAT | O_TRUNC, 0600 );
      if (fd == -1)
      {
-@@ -13744,7 +13746,7 @@ void horizon_trace( const char *fmt, ... )
+@@ -11487,7 +11491,15 @@ static int horizon_server_handle_resume_thread( struct horizon_server_connection
+         status = horizon_thread_resume( &object->thread, &reply.count );
+ #ifndef HORIZON_STANDALONE_SYNTAX
+         if (!status && reply.count == 1)
++        {
+             horizon_server_set_suspend_doorbell_locked( object, 0 );
++            if (object->thread_frozen_x86)
++            {
++                object->thread_frozen_x86 = 0;
++                if (&wine_nx_thread_thaw)
++                    wine_nx_thread_thaw( (void *)(ULONG_PTR)object->thread.teb, object->thread.tid );
++            }
++        }
+ #endif
+     }
+     horizon_server_signal_changed_locked();  /* the start gate */
+@@ -11559,6 +11571,70 @@ static void horizon_server_merge_context( struct context_data *dst, const struct
+     dst->flags |= flags;
+ }
+ 
++/* A 32-bit thread under the emulator only hands its registers to the server when
++ * it calls it. A thread that is suspended while running guest code never does,
++ * and Mono's garbage collector, which suspends every thread and reads its
++ * registers, then hangs or fails with "GetThreadContext failed". Fill in the
++ * i386 context from the best source there is. */
++static void horizon_server_fill_i386_context( struct context_data *context, const struct wine_nx_x86_regs *r )
++{
++    memset( context, 0, sizeof(*context) );
++    context->machine = HORIZON_IMAGE_FILE_MACHINE_I386;
++    context->flags = SERVER_CTX_CONTROL | SERVER_CTX_INTEGER | SERVER_CTX_SEGMENTS;
++    context->ctl.i386_regs.eip = r->eip;
++    context->ctl.i386_regs.ebp = r->ebp;
++    context->ctl.i386_regs.esp = r->esp;
++    context->ctl.i386_regs.eflags = r->eflags;
++    context->ctl.i386_regs.cs = 0x23;
++    context->ctl.i386_regs.ss = 0x2b;
++    context->integer.i386_regs.eax = r->eax;
++    context->integer.i386_regs.ebx = r->ebx;
++    context->integer.i386_regs.ecx = r->ecx;
++    context->integer.i386_regs.edx = r->edx;
++    context->integer.i386_regs.esi = r->esi;
++    context->integer.i386_regs.edi = r->edi;
++    context->seg.i386_regs.ds = 0x2b;
++    context->seg.i386_regs.es = 0x2b;
++    context->seg.i386_regs.fs = 0x53;
++    context->seg.i386_regs.gs = 0x2b;
++}
++
++/* The thread's i386 state as exported at its last system call or unix call: a
++ * thread waiting in the server is stopped at one, so this is its real state. */
++static int horizon_server_cpu_area_regs( const struct horizon_server_object *object, struct wine_nx_x86_regs *r )
++{
++    const TEB *teb = (const TEB *)(ULONG_PTR)object->thread.teb;
++    const unsigned char *cpu, *c;
++
++    if (!teb || !(cpu = teb->TlsSlots[WOW64_TLS_CPURESERVED])) return 0;
++    c = cpu + 4;  /* after WOW64_CPURESERVED; an I386_CONTEXT */
++    r->edi = *(const unsigned int *)(c + 0x9c);
++    r->esi = *(const unsigned int *)(c + 0xa0);
++    r->ebx = *(const unsigned int *)(c + 0xa4);
++    r->edx = *(const unsigned int *)(c + 0xa8);
++    r->ecx = *(const unsigned int *)(c + 0xac);
++    r->eax = *(const unsigned int *)(c + 0xb0);
++    r->ebp = *(const unsigned int *)(c + 0xb4);
++    r->eip = *(const unsigned int *)(c + 0xb8);
++    r->eflags = *(const unsigned int *)(c + 0xc0);
++    r->esp = *(const unsigned int *)(c + 0xc4);
++    return r->esp != 0;
++}
++
++static void horizon_gcfix_trace( const char *fmt, ... )
++{
++    extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
++    static unsigned int count;
++    char buf[200];
++    va_list args;
++
++    if (!&wine_nx_runtime_trace || __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED ) > 64) return;
++    va_start( args, fmt );
++    vsnprintf( buf, sizeof(buf), fmt, args );
++    va_end( args );
++    wine_nx_runtime_trace( buf );
++}
++
+ static int horizon_server_handle_get_thread_context( struct horizon_server_connection *connection,
+                                                      const unsigned char *message )
+ {
+@@ -11578,13 +11654,63 @@ static int horizon_server_handle_get_thread_context( struct horizon_server_conne
+         else if (!object->thread.started) status = HORIZON_STATUS_NOT_SUPPORTED;
+         else
+         {
++            unsigned int slices = 0;
++
+             while (!object->thread_context_valid && object->thread.suspend &&
+                    !object->thread.terminated)
+             {
++                /* A 32-bit thread caught in guest code will not answer: after a short wait,
++                 * freeze it from the kernel and read its registers. */
++                if (request->machine == HORIZON_IMAGE_FILE_MACHINE_I386 &&
++                    (slices >= 2 || object->thread_frozen_x86) && &wine_nx_thread_freeze_x86)
++                {
++                    struct wine_nx_x86_regs regs;
++
++                    if (object->thread_frozen_x86 ||
++                        wine_nx_thread_freeze_x86( (void *)(ULONG_PTR)object->thread.teb,
++                                                   object->thread.tid, &regs ))
++                    {
++                        if (!object->thread_frozen_x86)
++                        {
++                            object->thread_frozen_x86 = 1;
++                            memcpy( object->frozen_regs, &regs, sizeof(regs) );
++                            horizon_gcfix_trace( "[GCFIX] froze thread %u in translated code eip=%08x esp=%08x",
++                                                 object->thread.tid, regs.eip, regs.esp );
++                        }
++                        horizon_server_fill_i386_context( &context, (const struct wine_nx_x86_regs *)object->frozen_regs );
++                        context.flags &= request->flags | request->native_flags | SERVER_CTX_EXEC_SPACE;
++                        found = 1;
++                        break;
++                    }
++                    if (slices >= 240)  /* it never entered translated code: use its last gate */
++                    {
++                        struct wine_nx_x86_regs regs2;
++
++                        if (horizon_server_cpu_area_regs( object, &regs2 ))
++                        {
++                            horizon_gcfix_trace( "[GCFIX] thread %u not caught; using its last exported context esp=%08x",
++                                                 object->thread.tid, regs2.esp );
++                            horizon_server_fill_i386_context( &context, &regs2 );
++                            context.flags &= request->flags | request->native_flags | SERVER_CTX_EXEC_SPACE;
++                            found = 1;
++                        }
++                        break;
++                    }
++                    /* Try again in a moment: the thread may be in native code just now. */
++                    slices++;
++                    horizon_server_sleep_locked( 2000 );
++                    continue;
++                }
++                slices++;
+                 horizon_server_sleep_locked( HORIZON_SERVER_WAIT_SLICE );
+                 horizon_server_quit_check_locked();
+             }
+-            if (object->thread.terminated) status = HORIZON_STATUS_ACCESS_DENIED;
++            if (request->machine == HORIZON_IMAGE_FILE_MACHINE_I386 && !found && !object->thread_context_valid)
++                horizon_gcfix_trace( "[GCFIX] thread %u: no context after waiting (suspend=%d terminated=%d frozen_ok=%d)",
++                                     object->thread.tid, object->thread.suspend, object->thread.terminated,
++                                     object->thread_frozen_x86 );
++            if (found) status = 0;
++            else if (object->thread.terminated) status = HORIZON_STATUS_ACCESS_DENIED;
+             else if (!object->thread.suspend) status = HORIZON_STATUS_UNSUCCESSFUL;
+             else for (i = 0; i < object->thread_context_count; i++)
+             {
+@@ -11594,10 +11720,25 @@ static int horizon_server_handle_get_thread_context( struct horizon_server_conne
+                 found = 1;
+                 break;
+             }
++            /* It handed over its native context only: the i386 one is in its cpu area. */
++            if (!found && !status && request->machine == HORIZON_IMAGE_FILE_MACHINE_I386)
++            {
++                struct wine_nx_x86_regs regs;
++
++                if (horizon_server_cpu_area_regs( object, &regs ))
++                {
++                    horizon_server_fill_i386_context( &context, &regs );
++                    context.flags &= request->flags | request->native_flags | SERVER_CTX_EXEC_SPACE;
++                    found = 1;
++                }
++            }
+             if (!found && !status) status = HORIZON_STATUS_NOT_SUPPORTED;
+         }
+     }
+     pthread_mutex_unlock( &horizon_server_objects_mutex );
++    if (request->machine == HORIZON_IMAGE_FILE_MACHINE_I386 && (status || !found) && !reply.self)
++        horizon_gcfix_trace( "[GCFIX] get_thread_context handle=%08x machine=%04x failed status=%08x",
++                             request->handle, (unsigned int)request->machine, status );
+     reply.header.error = status;
+     if (!status && found) reply.header.reply_size = sizeof(context);
+     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply),
+@@ -13744,7 +13885,7 @@ void horizon_trace( const char *fmt, ... )
      /* Each verbose line reopens the separate trace file on the SD card. */
      if (!&wine_nx_runtime_verbose || !wine_nx_runtime_verbose) return;
      pthread_mutex_lock( &lock );
@@ -66,6 +367,23 @@ index e36dbb7..ea17b86 100644
      {
          __builtin_va_start( args, fmt );
          vfprintf( f, fmt, args );
+diff --git a/dlls/ntdll/unix/horizon_private.h b/dlls/ntdll/unix/horizon_private.h
+index 6d35ce3..ec27dbc 100644
+--- a/dlls/ntdll/unix/horizon_private.h
++++ b/dlls/ntdll/unix/horizon_private.h
+@@ -27,6 +27,12 @@ extern void wine_nx_thread_unregister( void ) __attribute__((weak));
+ extern void wine_nx_thread_affinity_fixed( void ) __attribute__((weak));
+ extern void wine_nx_thread_set_name( unsigned int tid, const char *name ) __attribute__((weak));
+ extern void wine_nx_thread_set_affinity( unsigned int tid, unsigned int mask ) __attribute__((weak));
++#ifndef WINE_NX_X86_REGS_DEFINED
++#define WINE_NX_X86_REGS_DEFINED
++struct wine_nx_x86_regs { unsigned int eax, ecx, edx, ebx, esp, ebp, esi, edi, eip, eflags; };
++#endif
++extern int wine_nx_thread_freeze_x86( void *teb, unsigned int tid, struct wine_nx_x86_regs *out ) __attribute__((weak));
++extern void wine_nx_thread_thaw( void *teb, unsigned int tid ) __attribute__((weak));
+ extern __thread int horizon_suspend_pending;
+ extern void horizon_wait_suspend_arm64ec(void);
+ extern void horizon_get_memory_info( unsigned long long *total, unsigned long long *used );
 diff --git a/dlls/ntdll/unix/horizon_runtime_paths.h b/dlls/ntdll/unix/horizon_runtime_paths.h
 index 02349db..bd6e51e 100644
 --- a/dlls/ntdll/unix/horizon_runtime_paths.h
@@ -120,11 +438,88 @@ index 3426e11..e1b5953 100644
      if (!name) name = "wine";
  #else
      if (!home || !name)
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index db9a7a2..fa6d06c 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -154,7 +154,18 @@ NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
+     NTSTATUS status;
+ 
+     if (size != sizeof(I386_CONTEXT)) return STATUS_INFO_LENGTH_MISMATCH;
+-    if ((status = check_current_thread_context_access( handle, THREAD_GET_CONTEXT ))) return status;
++    status = check_current_thread_context_access( handle, THREAD_GET_CONTEXT );
++    if (status == STATUS_NOT_IMPLEMENTED)
++    {
++        /* Another thread's 32-bit context, as the garbage collector of a 32-bit
++         * program asks for after suspending it: from the server, which holds the
++         * registers a suspended thread handed over (or has frozen it for). */
++        BOOL self = FALSE;
++
++        status = get_thread_context( handle, ctx, &self, IMAGE_FILE_MACHINE_I386 );
++        if (status || !self) return status;
++    }
++    else if (status) return status;
+     if (!cpu) return STATUS_INVALID_PARAMETER;
+     return horizon_transfer_i386_context( cpu,
+                                           get_cpu_area( get_thread_data(), IMAGE_FILE_MACHINE_I386 ), ctx, FALSE );
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index a6a0dc2..6d9d9c2 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -65,6 +65,15 @@ static pthread_mutex_t present_lock = PTHREAD_MUTEX_INITIALIZER;
+ static int nx_upscaling_mode;
+ static float nx_upscaling_sharpness = 0.4f;
+ 
++#ifdef __SWITCH__
++/* Where a scaled swapchain's image lands on the screen, for the touchscreen
++ * (wine_nx_pointer_poll): a finger at screen x is at Wine's
++ * map[0] + (x - map[2]) * map[4], and y likewise with map[1], map[3], map[5].
++ * Zero in wine_nx_present_mapped while nothing is scaled. */
++float wine_nx_present_map[6];
++int wine_nx_present_mapped;
++#endif
++
+ #if defined(__SWITCH__) && defined(WINE_NX_MESA_SWITCH)
+ /* mesa-switch's loaderless NVK (build-mesa-switch.sh) is linked into the Switch
+  * runtime, which has no dynamic linker. */
+@@ -3178,6 +3187,11 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+     swapchain->extents = create_info->imageExtent;
+     instance->p_insert_object( instance, &swapchain->obj.obj );
+ 
++#ifdef __SWITCH__
++    /* Set again by the blit of a scaled swapchain; one at the screen's size is
++     * where the finger is. */
++    __atomic_store_n( &wine_nx_present_mapped, 0, __ATOMIC_RELEASE );
++#endif
+     if (swapchain->fshack_dpi)
+     {
+         /* EASU is made for enlarging; a game drawing more than the screen
+@@ -3515,6 +3529,20 @@ static VkResult record_compute_cmd( struct vulkan_device *device, struct swapcha
+         }
+         constants.extents[0] = width;
+         constants.extents[1] = height;
++        if (width > 0 && height > 0)
++        {
++            HWND hwnd = swapchain->surface->hwnd;
++            POINT origin = { 0, 0 };
++
++            client_to_screen( hwnd, &origin );
++            wine_nx_present_map[0] = origin.x;
++            wine_nx_present_map[1] = origin.y;
++            wine_nx_present_map[2] = (swapchain->host_extents.width - width) / 2;
++            wine_nx_present_map[3] = (swapchain->host_extents.height - height) / 2;
++            wine_nx_present_map[4] = swapchain->extents.width / width;
++            wine_nx_present_map[5] = swapchain->extents.height / height;
++            __atomic_store_n( &wine_nx_present_mapped, 1, __ATOMIC_RELEASE );
++        }
+     }
+ #else
+     if (swapchain->fsr)
 diff --git a/horizon-wine/CMakeLists.txt b/horizon-wine/CMakeLists.txt
-index d4afd30..4d9195e 100644
+index d4afd30..3f28b9e 100644
 --- a/horizon-wine/CMakeLists.txt
 +++ b/horizon-wine/CMakeLists.txt
-@@ -3,6 +3,21 @@ cmake_minimum_required(VERSION 3.18)
+@@ -3,6 +3,34 @@ cmake_minimum_required(VERSION 3.18)
  project(wine_nx_probe LANGUAGES C CXX ASM)
  
  set(WINE_NX_BOOT_BUNDLE "" CACHE PATH "Verified Atmosphere/HOC boot payload bundle")
@@ -136,17 +531,30 @@ index d4afd30..4d9195e 100644
 +set(WINE_NX_APP_VERSION "0.0.1" CACHE STRING "Version the HOME menu shows")
 +set(WINE_NX_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/autorun.jpg" CACHE FILEPATH "256x256 JPEG icon")
 +set(WINE_NX_FIXED_TARGET "" CACHE STRING "sdmc: path of the one program to start, instead of the launcher")
++set(WINE_NX_SPLASH "" CACHE STRING "Credits shown before the game starts; '|' starts a new line")
++set(WINE_NX_FIXED_ARGS "" CACHE STRING "Command line after the program's name, unless NAME.args.txt is beside it")
++set(WINE_NX_LOW_WINDOW OFF CACHE BOOL "Single-game build: HOME icon with Autorun's title ID, for the low-address patch")
++set(WINE_NX_BOX64_CODE_MAX_MB "288" CACHE STRING "Most memory Box64 may take for translated code, in MB")
++add_compile_definitions("NX_ARENA_TOTAL_MAX_MB=${WINE_NX_BOX64_CODE_MAX_MB}")
 +add_compile_definitions("WINE_NX_ROOT_NAME=\"${WINE_NX_ROOT_NAME}\""
 +                        "WINE_NX_APP_NAME=\"${WINE_NX_APP_NAME}\""
 +                        "WINE_NX_APP_AUTHOR=\"${WINE_NX_APP_AUTHOR}\"")
 +if(WINE_NX_FIXED_TARGET)
-+    add_compile_definitions("WINE_NX_FIXED_TARGET=\"${WINE_NX_FIXED_TARGET}\"")
++    add_compile_definitions("WINE_NX_FIXED_TARGET=\"${WINE_NX_FIXED_TARGET}\""
++                            "WINE_NX_FIXED_ARGS=\"${WINE_NX_FIXED_ARGS}\"")
++    if(WINE_NX_SPLASH)
++        add_compile_definitions("WINE_NX_SPLASH=\"${WINE_NX_SPLASH}\"")
++    endif()
 +    message(STATUS "Single-game build: ${WINE_NX_APP_NAME} -> ${WINE_NX_FIXED_TARGET}")
++    if(WINE_NX_LOW_WINDOW)
++        add_compile_definitions("WINE_NX_LOW_WINDOW=1")
++        message(STATUS "Single-game build uses Autorun's title ID for the low-address window")
++    endif()
 +endif()
  if(WINE_NX_BOOT_BUNDLE)
      set(WINE_NX_BOOT_ROMFS_FILES "")
      foreach(file setup_boot_manifest.h romfs/setup/loader-stock.kip romfs/setup/loader-hoc.kip
-@@ -725,10 +740,10 @@ if(ELF2NSO AND NPDMTOOL)
+@@ -725,10 +753,10 @@ if(ELF2NSO AND NPDMTOOL)
                  wine_nx_hbl_main "${HBL_NSO}"
                  wine_nx_game_forwarder_main "${GAME_FORWARDER_NSO}"
                  wine_nx_hbl_npdm "${HBL_NPDM}"
@@ -159,7 +567,7 @@ index d4afd30..4d9195e 100644
                  "${CMAKE_CURRENT_SOURCE_DIR}/assets/logo.png"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tools/make-embed.py"
          VERBATIM
-@@ -1110,7 +1125,7 @@ if(NACPTOOL AND ELF2NRO)
+@@ -1110,7 +1138,7 @@ if(NACPTOOL AND ELF2NRO)
  
      add_custom_command(
          OUTPUT "${RUNTIME_NACP_FILE}"
@@ -168,7 +576,7 @@ index d4afd30..4d9195e 100644
          VERBATIM
      )
  
-@@ -1121,8 +1136,8 @@ if(NACPTOOL AND ELF2NRO)
+@@ -1121,8 +1149,8 @@ if(NACPTOOL AND ELF2NRO)
      add_custom_command(
          OUTPUT "${RUNTIME_NRO_FILE}"
          COMMAND "${ELF2NRO}" "$<TARGET_FILE:wine-nx-runtime>" "${RUNTIME_NRO_FILE}" "--nacp=${RUNTIME_NACP_FILE}"
@@ -179,6 +587,592 @@ index d4afd30..4d9195e 100644
                  ${WINE_NX_BOOT_ROMFS_FILES}
          VERBATIM
      )
+diff --git a/horizon-wine/assets/left4dead.jpg b/horizon-wine/assets/left4dead.jpg
+new file mode 100644
+index 0000000000000000000000000000000000000000..acb6f36549e33b6c553cb8669cf9d42a78cd1e9f
+GIT binary patch
+literal 30146
+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
+
+literal 0
+HcmV?d00001
+
 diff --git a/horizon-wine/assets/theforest-splash.jpg b/horizon-wine/assets/theforest-splash.jpg
 new file mode 100644
 index 0000000000000000000000000000000000000000..d7546c38026f49eccaac51a9d2cba4262aed0ecb
@@ -3734,16 +4728,17 @@ literal 0
 HcmV?d00001
 
 diff --git a/horizon-wine/build-amd64-components.sh b/horizon-wine/build-amd64-components.sh
-index 40cfd4f..121b266 100644
+index 40cfd4f..2e355b4 100644
 --- a/horizon-wine/build-amd64-components.sh
 +++ b/horizon-wine/build-amd64-components.sh
-@@ -52,13 +52,23 @@ docker run --rm --network none -v "$root:/work" -w /work \
+@@ -52,13 +52,26 @@ docker run --rm --network none -v "$root:/work" -w /work \
      -e NX_JOBS="$jobs" -e NX_DYNAREC="${WINE_NX_BOX64_DYNAREC:-ON}" \
      -e WINE_NX_JOBS="$jobs" \
      -e NX_MESA="${WINE_NX_MESA_SWITCH_DIR:-}" -e NX_FEX="$fex" -e NX_BOOT_BUNDLE="$boot_bundle" \
 +    -e NX_ROOT_NAME="${WINE_NX_ROOT_NAME:-}" -e NX_APP_NAME="${WINE_NX_APP_NAME:-}" \
 +    -e NX_APP_AUTHOR="${WINE_NX_APP_AUTHOR:-}" -e NX_APP_ICON="${WINE_NX_APP_ICON:+/work/$WINE_NX_APP_ICON}" \
-+    -e NX_FIXED_TARGET="${WINE_NX_FIXED_TARGET:-}" \
++    -e NX_FIXED_TARGET="${WINE_NX_FIXED_TARGET:-}" -e NX_FIXED_ARGS="${WINE_NX_FIXED_ARGS:-}" -e NX_SPLASH="${WINE_NX_SPLASH:-}" \
++    -e NX_BOX64_CODE_MAX_MB="${WINE_NX_BOX64_CODE_MAX_MB:-}" -e NX_LOW_WINDOW="${WINE_NX_LOW_WINDOW:-0}" \
      "${WINE_NX_DEVKIT_IMAGE:-$(cat "$root/horizon-wine/switch-dev.txt")}" sh -ec '
 +    # The image libvulkan.a can carry a host (x86-64) object; ld rejects it.
 +    sh /work/horizon-wine/tools/drop-foreign-objects.sh \
@@ -3758,37 +4753,440 @@ index 40cfd4f..121b266 100644
 +        -DWINE_NX_BOOT_BUNDLE="$NX_BOOT_BUNDLE" -DCMAKE_BUILD_TYPE=Release \
 +        ${NX_ROOT_NAME:+-DWINE_NX_ROOT_NAME="$NX_ROOT_NAME"} ${NX_APP_NAME:+-DWINE_NX_APP_NAME="$NX_APP_NAME"} \
 +        ${NX_APP_AUTHOR:+-DWINE_NX_APP_AUTHOR="$NX_APP_AUTHOR"} ${NX_APP_ICON:+-DWINE_NX_APP_ICON="$NX_APP_ICON"} \
-+        -DWINE_NX_FIXED_TARGET="$NX_FIXED_TARGET"
++        -DWINE_NX_FIXED_TARGET="$NX_FIXED_TARGET" -DWINE_NX_FIXED_ARGS="$NX_FIXED_ARGS" -DWINE_NX_SPLASH="$NX_SPLASH" \
++        ${NX_BOX64_CODE_MAX_MB:+-DWINE_NX_BOX64_CODE_MAX_MB="$NX_BOX64_CODE_MAX_MB"} \
++        -DWINE_NX_LOW_WINDOW="$NX_LOW_WINDOW"
      cmake --build "$NX_BUILD" --target wine-nx-runtime-nro -j "$NX_JOBS"
      '
  # The Windows modules this runtime runs -- system32, syswow64, FEX's CPU modules,
-diff --git a/horizon-wine/build-theforest.sh b/horizon-wine/build-theforest.sh
-new file mode 100755
-index 0000000..6ed6323
+diff --git a/horizon-wine/build-game.sh b/horizon-wine/build-game.sh
+new file mode 100644
+index 0000000..c503b62
 --- /dev/null
-+++ b/horizon-wine/build-theforest.sh
-@@ -0,0 +1,21 @@
++++ b/horizon-wine/build-game.sh
+@@ -0,0 +1,49 @@
 +#!/bin/sh
-+# The Forest edition: Autorun built for one game, in sdmc:/switch/theforest,
-+# with its own name and icon and no launcher. Run from the repository root,
-+# with the same options as build.sh; the card archive is written to
-+# horizon-wine/build-autorun/theforest-card.zip.
++# A single-game edition of Autorun: one game, in its own sdmc:/switch/<folder>,
++# with its own name, icon and HOME icon, and no launcher. Each game is a
++# profile in horizon-wine/games/<game>.conf. Run from anywhere, with the same
++# options as build.sh after the game's name:
++#
++#   sh horizon-wine/build-game.sh left4dead [--clean] [--jobs N]
++#
++# The card archive is written to horizon-wine/build-autorun/<game>-card.zip.
++# Builds of different games install side by side: each has its own folder
++# and, because the HOME icon's title ID comes from that folder, its own icon.
 +set -eu
 +root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 +cd "$root"
 +
-+export WINE_NX_ROOT_NAME="${WINE_NX_ROOT_NAME:-theforest}"
-+export WINE_NX_APP_NAME="${WINE_NX_APP_NAME:-The Forest}"
-+export WINE_NX_APP_AUTHOR="${WINE_NX_APP_AUTHOR:-Endnight Games}"
-+export WINE_NX_APP_ICON="${WINE_NX_APP_ICON:-horizon-wine/assets/theforest.jpg}"
-+# Where the game's .exe is on the card; drive_c is the game's C: drive.
-+export WINE_NX_FIXED_TARGET="${WINE_NX_FIXED_TARGET:-sdmc:/switch/$WINE_NX_ROOT_NAME/drive_c/The Forest/TheForest.exe}"
++game="${1:-}"
++if [ -z "$game" ] || [ ! -f "horizon-wine/games/$game.conf" ]; then
++    echo "Usage: sh horizon-wine/build-game.sh GAME [build.sh options]" >&2
++    echo "Games:" $(ls horizon-wine/games/*.conf | sed 's|.*/||; s|\.conf$||') >&2
++    exit 1
++fi
++shift
++
++ROOT_NAME= APP_NAME= APP_AUTHOR= APP_ICON= EXE= ARGS= FILES= BOX64_CODE_MAX_MB= SPLASH= LOW_WINDOW=
++. "horizon-wine/games/$game.conf"
++for v in ROOT_NAME APP_NAME APP_ICON EXE; do
++    eval "[ -n \"\${$v}\" ]" || { echo "games/$game.conf has no $v." >&2; exit 1; }
++done
++[ -f "$APP_ICON" ] || { echo "The icon $APP_ICON is missing." >&2; exit 1; }
++
++export WINE_NX_ROOT_NAME="$ROOT_NAME"
++export WINE_NX_APP_NAME="$APP_NAME"
++export WINE_NX_APP_AUTHOR="${APP_AUTHOR:-Autorun}"
++export WINE_NX_APP_ICON="$APP_ICON"
++export WINE_NX_FIXED_TARGET="sdmc:/switch/$ROOT_NAME/drive_c/$EXE"
++export WINE_NX_FIXED_ARGS="$ARGS"
++export WINE_NX_SPLASH="$SPLASH"
++[ -n "$BOX64_CODE_MAX_MB" ] && export WINE_NX_BOX64_CODE_MAX_MB="$BOX64_CODE_MAX_MB"
++# LOW_WINDOW=1: the HOME icon takes Autorun's own title ID, the only one the
++# Atmosphere low-address patch serves, for an .exe that only loads low.
++export WINE_NX_LOW_WINDOW="${LOW_WINDOW:-0}"
++printf '==> %s: %s %s\n' "$APP_NAME" "$WINE_NX_FIXED_TARGET" "$ARGS"
 +
 +sh "$root/build.sh" "$@"
 +
 +archive="$(ls -t "$root"/horizon-wine/build-autorun/autorun-*.zip | head -n 1)"
 +python3 "$root/horizon-wine/tools/package-single-game.py" --autorun "$archive" \
-+    --root-name "$WINE_NX_ROOT_NAME" --out "$root/horizon-wine/build-autorun/theforest-card.zip"
++    --root-name "$ROOT_NAME" ${FILES:+--extra "$root/$FILES"} \
++    --out "$root/horizon-wine/build-autorun/$game-card.zip"
+diff --git a/horizon-wine/build-theforest.sh b/horizon-wine/build-theforest.sh
+new file mode 100755
+index 0000000..eb893be
+--- /dev/null
++++ b/horizon-wine/build-theforest.sh
+@@ -0,0 +1,3 @@
++#!/bin/sh
++# The Forest edition; kept so older workflows still work. See build-game.sh.
++exec sh "$(dirname -- "$0")/build-game.sh" theforest "$@"
+diff --git a/horizon-wine/games/left4dead.conf b/horizon-wine/games/left4dead.conf
+new file mode 100644
+index 0000000..319bcb6
+--- /dev/null
++++ b/horizon-wine/games/left4dead.conf
+@@ -0,0 +1,18 @@
++# Left 4 Dead (2008): 32-bit x86, through WoW64 + FEX. Read by build-game.sh.
++ROOT_NAME=left4dead
++APP_NAME="Left 4 Dead"
++APP_AUTHOR="Port hecho por Asce22"
++APP_ICON=horizon-wine/assets/left4dead.jpg
++# Shown before the game starts; '|' starts a new line.
++SPLASH="Left 4 Dead para Nintendo Switch||Port hecho por Asce22"
++# Copy the whole game folder from Steam to switch/left4dead/drive_c/Left 4 Dead.
++# Steam is Goldberg's steam_api.dll in the game folder and in bin; a d3d9.dll
++# of the game's own in bin must go, or it is used instead of Autorun's DXVK.
++EXE="Left 4 Dead/left4dead.exe"
++# What works on the Switch: windowed at 960x540, no Steam servers, the
++# controller as an Xbox pad (360controller.cfg binds it). To change them
++# without rebuilding, put the line in drive_c/Left 4 Dead/left4dead.args.txt.
++ARGS="-game left4dead -novid -windowed -noborder -w 960 -h 540 -insecure +sv_lan 1 +joystick 1 +exec 360controller"
++# Files copied onto the card as they are, under switch/left4dead: DXVK and FEX
++# with TSO (left4dead.wine-nx.txt), Goldberg without networking, the pad config.
++FILES=horizon-wine/games/left4dead
+diff --git a/horizon-wine/games/left4dead/drive_c/Left 4 Dead/bin/steam_settings/disable_networking.txt b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/bin/steam_settings/disable_networking.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead.wine-nx.txt b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead.wine-nx.txt
+new file mode 100644
+index 0000000..4e319d5
+--- /dev/null
++++ b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead.wine-nx.txt	
+@@ -0,0 +1,3 @@
++cpu=fex
++d3d=dxvk
++FEX_TSOENABLED=1
+diff --git a/horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead/cfg/autoexec.cfg b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead/cfg/autoexec.cfg
+new file mode 100644
+index 0000000..5e19667
+--- /dev/null
++++ b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead/cfg/autoexec.cfg	
+@@ -0,0 +1,3 @@
++// Switch: el mando de Xbox de Autorun
++joystick 1
++exec 360controller
+diff --git a/horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_appid.txt b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_appid.txt
+new file mode 100644
+index 0000000..1b79f38
+--- /dev/null
++++ b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_appid.txt	
+@@ -0,0 +1 @@
++500
+diff --git a/horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_settings/disable_networking.txt b/horizon-wine/games/left4dead/drive_c/Left 4 Dead/steam_settings/disable_networking.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/horizon-wine/games/theforest.conf b/horizon-wine/games/theforest.conf
+new file mode 100644
+index 0000000..62b2491
+--- /dev/null
++++ b/horizon-wine/games/theforest.conf
+@@ -0,0 +1,16 @@
++# The Forest: 32-bit build (Unity 5.6), Box64 + DXVK 1.10.3 (the game's own
++# d3d11.dll and dxgi.dll, 32-bit, beside the .exe). The 64-bit build fails in
++# Mono's garbage collector (GetThreadContext is only served for 32-bit code
++# under Box64). Read by horizon-wine/build-game.sh.
++ROOT_NAME=theforest
++APP_NAME="The Forest"
++APP_AUTHOR="Port Hecho por Ascencion H.O"
++APP_ICON=horizon-wine/assets/theforest.jpg
++SPLASH="The Forest para Nintendo Switch||Port Hecho por Ascencion H.O"
++# The game's .exe inside drive_c, which is the game's C: drive.
++EXE="The Forest/TheForest.exe"
++# Resolution and the single-threaded renderer (one fewer thread pair) are in
++# drive_c/The Forest/TheForest.args.txt, so they change without rebuilding.
++ARGS=""
++# Box64 with ordered memory, DXVK settings, Goldberg offline settings.
++FILES=horizon-wine/games/theforest
+diff --git a/horizon-wine/games/theforest/drive_c/The Forest/TheForest.args.txt b/horizon-wine/games/theforest/drive_c/The Forest/TheForest.args.txt
+new file mode 100644
+index 0000000..9493c8d
+--- /dev/null
++++ b/horizon-wine/games/theforest/drive_c/The Forest/TheForest.args.txt	
+@@ -0,0 +1 @@
++-screen-width 960 -screen-height 540 -force-gfx-direct
+diff --git a/horizon-wine/games/theforest/drive_c/The Forest/TheForest.wine-nx.txt b/horizon-wine/games/theforest/drive_c/The Forest/TheForest.wine-nx.txt
+new file mode 100644
+index 0000000..35ec5bd
+--- /dev/null
++++ b/horizon-wine/games/theforest/drive_c/The Forest/TheForest.wine-nx.txt	
+@@ -0,0 +1,12 @@
++lsfg=0
++lsfg-flow=0.125
++d3d=dxvk
++cpu=box64
++BOX64_DYNAREC_STRONGMEM=2
++BOX64_DYNAREC_BIGBLOCK=0
++BOX64_DYNAREC_CALLRET=0
++BOX64_DYNAREC_SAFEFLAGS=2
++frame-limit=30
++vsync=0
++upscaling=fsr
++dxvk-hud=fps
+diff --git a/horizon-wine/games/theforest/drive_c/The Forest/dxvk.conf b/horizon-wine/games/theforest/drive_c/The Forest/dxvk.conf
+new file mode 100644
+index 0000000..b220fdf
+--- /dev/null
++++ b/horizon-wine/games/theforest/drive_c/The Forest/dxvk.conf	
+@@ -0,0 +1,13 @@
++# Sin vsync
++dxgi.syncInterval = 0
++
++# Sin compilacion asincrona (la de 1.10.3 da problemas con Unity)
++dxvk.enableAsync = False
++dxvk.enableStateCache = True
++
++# 1 hilo compilando shaders: ahorra hilos del Switch
++dxvk.numCompilerThreads = 1
++
++# Memoria de video que ve el juego
++dxgi.maxDeviceMemory = 512
++dxgi.maxSharedMemory = 512
+diff --git a/horizon-wine/games/theforest/drive_c/The Forest/steam_appid.txt b/horizon-wine/games/theforest/drive_c/The Forest/steam_appid.txt
+new file mode 100644
+index 0000000..86c83d0
+--- /dev/null
++++ b/horizon-wine/games/theforest/drive_c/The Forest/steam_appid.txt	
+@@ -0,0 +1 @@
++242760
+diff --git a/horizon-wine/games/theforest/drive_c/The Forest/steam_settings/disable_networking.txt b/horizon-wine/games/theforest/drive_c/The Forest/steam_settings/disable_networking.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/horizon-wine/games/theforest/drive_c/The Forest/steam_settings/offline.txt b/horizon-wine/games/theforest/drive_c/The Forest/steam_settings/offline.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/horizon-wine/source/audio_unix.c b/horizon-wine/source/audio_unix.c
+index 315bdcd..a895c2d 100644
+--- a/horizon-wine/source/audio_unix.c
++++ b/horizon-wine/source/audio_unix.c
+@@ -2,6 +2,8 @@
+  * Native audout backend behind the packaged winenxaudio.drv PE module.
+  * Shared render clients, stereo 48 kHz signed 16-bit PCM.
+  * Wine's shared-mode converter handles other application formats. */
++#include <stdarg.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <malloc.h>
+@@ -46,6 +48,45 @@ static BOOL audio_quit, audio_closing, output_running;
+ static BOOL initialized;
+ static struct nx_audio_stream *nx_stream(stream_handle handle) { return (void *)(UINT_PTR)handle; }
+ 
++/* [NXAUDIO] lines in the runtime's log, for programs whose sound hangs. */
++extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
++static unsigned int nx_trace_budget = 64;
++static void nx_trace(const char *format, ...) __attribute__((format(printf,1,2)));
++static void nx_vtrace(const char *format, va_list args)
++{
++    char buffer[256];
++    vsnprintf(buffer, sizeof(buffer), format, args);
++    wine_nx_runtime_trace(buffer);
++}
++static void nx_trace(const char *format, ...)
++{
++    va_list args;
++    if (!&wine_nx_runtime_trace || !nx_trace_budget) return;
++    nx_trace_budget--;
++    va_start(args, format);
++    nx_vtrace(format, args);
++    va_end(args);
++}
++static void nx_report(const char *format, ...) __attribute__((format(printf,1,2)));
++static void nx_report(const char *format, ...)
++{
++    va_list args;
++    if (!&wine_nx_runtime_trace) return;
++    va_start(args, format);
++    nx_vtrace(format, args);
++    va_end(args);
++}
++static unsigned int nx_calls_padding, nx_calls_get, nx_calls_release, nx_fail_get, nx_fail_release;
++
++/* The ring holds 48 kHz frames; a client that opened the stream at another
++ * rate counts its buffer, padding and writes in its own frames. */
++static unsigned int nx_to_source(const struct nx_audio_stream *s, unsigned int frames, BOOL round_up)
++{
++    unsigned long long scaled = (unsigned long long)frames * s->source_rate;
++    if (s->source_rate == NX_RATE) return frames;
++    return (unsigned int)((scaled + (round_up ? NX_RATE - 1 : 0)) / NX_RATE);
++}
++
+ static NTSTATUS nx_not_implemented(void *args) { (void)args; return STATUS_NOT_IMPLEMENTED; }
+ static NTSTATUS nx_process_attach(void *args) { (void)args; return STATUS_SUCCESS; }
+ static NTSTATUS nx_test_connect(void *args)
+@@ -107,6 +148,10 @@ static NTSTATUS nx_is_format_supported(void *args)
+     struct is_format_supported_params *p = args;
+     p->result = p->flow == eRender && nx_format(p->fmt_in) ? S_OK : AUDCLNT_E_UNSUPPORTED_FORMAT;
+     if (p->share != AUDCLNT_SHAREMODE_SHARED) p->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
++    if (p->fmt_in)
++        nx_trace("[NXAUDIO] format query: flow %d share %d tag 0x%x %u Hz %u ch %u bits -> 0x%08x",
++                 (int)p->flow, (int)p->share, p->fmt_in->wFormatTag, (unsigned)p->fmt_in->nSamplesPerSec,
++                 p->fmt_in->nChannels, p->fmt_in->wBitsPerSample, (unsigned)p->result);
+     return STATUS_SUCCESS;
+ }
+ static NTSTATUS nx_get_mix_format(void *args)
+@@ -151,12 +196,12 @@ static NTSTATUS nx_create_stream(void *args)
+     SIZE_T bytes;
+     unsigned int i;
+     p->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
+-    if (p->flow != eRender || !nx_format(p->fmt)) return STATUS_SUCCESS;
++    if (p->flow != eRender || !nx_format(p->fmt)) goto refused;
+     p->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
+-    if (p->share != AUDCLNT_SHAREMODE_SHARED) return STATUS_SUCCESS;
++    if (p->share != AUDCLNT_SHAREMODE_SHARED) goto refused;
+     p->result = E_INVALIDARG;
+-    if (p->flags & AUDCLNT_STREAMFLAGS_RATEADJUST) return STATUS_SUCCESS;
+-    if (p->duration < 0 || p->duration > 20000000) return STATUS_SUCCESS;
++    if (p->flags & AUDCLNT_STREAMFLAGS_RATEADJUST) goto refused;
++    if (p->duration < 0 || p->duration > 20000000) goto refused;
+     pthread_mutex_lock(&audio_lock);
+     while (audio_closing) pthread_cond_wait(&audio_cond, &audio_lock);
+     p->result = AUDCLNT_E_DEVICE_INVALIDATED;
+@@ -193,6 +238,18 @@ static NTSTATUS nx_create_stream(void *args)
+     p->result = S_OK;
+ done:
+     pthread_mutex_unlock(&audio_lock);
++    if (0)
++    {
++refused:
++        if (p->fmt)
++            nx_trace("[NXAUDIO] stream refused: flow %d share %d flags 0x%lx duration %lld, %u Hz %u ch %u bits -> 0x%08x",
++                     (int)p->flow, (int)p->share, (unsigned long)p->flags, (long long)p->duration,
++                     (unsigned)p->fmt->nSamplesPerSec, p->fmt->nChannels, p->fmt->wBitsPerSample, (unsigned)p->result);
++        return STATUS_SUCCESS;
++    }
++    nx_trace("[NXAUDIO] stream: share %d flags 0x%lx duration %lld period %lld, %u Hz %u ch %u bits -> 0x%08x",
++             (int)p->share, (unsigned long)p->flags, (long long)p->duration, (long long)p->period,
++             (unsigned)p->fmt->nSamplesPerSec, p->fmt->nChannels, p->fmt->wBitsPerSample, (unsigned)p->result);
+     return STATUS_SUCCESS;
+ }
+ unsigned int wine_nx_audio_underruns;
+@@ -305,6 +362,7 @@ static void nx_timer_loop(void *args)
+ {
+     struct nx_audio_stream *s;
+     LARGE_INTEGER delay;
++    unsigned int ticks = 0, reports = 0;
+ 
+     (void)args;
+     svcSetThreadPriority(CUR_THREAD_HANDLE, 0x38);
+@@ -318,6 +376,16 @@ static void nx_timer_loop(void *args)
+             nx_pump();
+             for (s = active; s; s = s->next) if (s->running && s->event) NtSetEvent(s->event, NULL);
+         }
++        if (++ticks % 400 == 0 && reports < 15)
++        {
++            reports++;
++            for (s = active; s; s = s->next)
++                nx_report("[NXAUDIO] %us: running %d failed %d %u Hz held %u/%u played %llu event %p; "
++                         "calls padding %u get %u release %u; output %d underruns %u",
++                         ticks / 200, s->running, s->failed, s->source_rate, s->held, s->capacity,
++                         (unsigned long long)s->played, s->event, nx_calls_padding, nx_calls_get,
++                         nx_calls_release, output_running, wine_nx_audio_underruns);
++        }
+         pthread_mutex_unlock(&audio_lock);
+         NtDelayExecution(FALSE, &delay);
+     }
+@@ -387,6 +455,7 @@ static NTSTATUS nx_start(void *args)
+         if (FAILED(p->result)) s->running = FALSE;
+     }
+     pthread_mutex_unlock(&audio_lock);
++    nx_trace("[NXAUDIO] start: event %p -> 0x%08x", s->event, (unsigned)p->result);
+     return STATUS_SUCCESS;
+ }
+ static NTSTATUS nx_stop(void *args)
+@@ -427,8 +496,14 @@ static NTSTATUS nx_get_render_buffer(void *args)
+     pthread_mutex_lock(&audio_lock);
+     if (s->locked) p->result = AUDCLNT_E_OUT_OF_ORDER;
+     else if (s->failed) p->result = AUDCLNT_E_DEVICE_INVALIDATED;
+-    else if (p->frames > s->capacity - s->held) p->result = AUDCLNT_E_BUFFER_TOO_LARGE;
++    else if (nx_to_source(s, s->held, TRUE) > nx_to_source(s, s->capacity, FALSE) ||
++             p->frames > nx_to_source(s, s->capacity, FALSE) - nx_to_source(s, s->held, TRUE))
++        p->result = AUDCLNT_E_BUFFER_TOO_LARGE;
+     else { s->locked = p->frames; *p->data = p->frames ? s->scratch : NULL; p->result = S_OK; }
++    nx_calls_get++;
++    if (FAILED(p->result) && nx_fail_get++ < 8)
++        nx_trace("[NXAUDIO] get buffer %u frames (held %u of %u, locked %u) -> 0x%08x",
++                 p->frames, s->held, s->capacity, s->locked, (unsigned)p->result);
+     pthread_mutex_unlock(&audio_lock);
+     return STATUS_SUCCESS;
+ }
+@@ -445,7 +520,7 @@ static NTSTATUS nx_release_render_buffer(void *args)
+     {
+         unsigned int out_frames = p->written_frames * NX_RATE / s->source_rate;
+         if (p->written_frames && !out_frames) out_frames = 1;
+-        if (out_frames > s->capacity - s->held) { p->result = AUDCLNT_E_BUFFER_TOO_LARGE; goto release_done; }
++        if (out_frames > s->capacity - s->held) out_frames = s->capacity - s->held;
+         for (i = 0; i < out_frames; i++)
+         {
+             BYTE *dst = s->ring + ((s->read + s->held + i) % s->capacity) * 4;
+@@ -479,7 +554,10 @@ static NTSTATUS nx_release_render_buffer(void *args)
+         s->locked = 0;
+         p->result = S_OK;
+     }
+-release_done:
++    nx_calls_release++;
++    if (FAILED(p->result) && nx_fail_release++ < 8)
++        nx_trace("[NXAUDIO] release %u frames flags 0x%x (locked %u) -> 0x%08x",
++                 p->written_frames, (unsigned)p->flags, s->locked, (unsigned)p->result);
+     pthread_mutex_unlock(&audio_lock);
+     return STATUS_SUCCESS;
+ }
+@@ -487,9 +565,9 @@ release_done:
+ static NTSTATUS nx_##name(void *args) { struct name##_params *p = args; \
+ struct nx_audio_stream *s = nx_stream(p->stream); (void)s; pthread_mutex_lock(&audio_lock); \
+ *p->member = (value); p->result = S_OK; pthread_mutex_unlock(&audio_lock); return STATUS_SUCCESS; }
+-NX_QUERY(get_buffer_size, frames, s->capacity)
++NX_QUERY(get_buffer_size, frames, nx_to_source(s, s->capacity, FALSE))
+ NX_QUERY(get_latency, latency, (REFERENCE_TIME)NX_BUFFERS * NX_CHUNK * 10000000 / NX_RATE)
+-NX_QUERY(get_current_padding, padding, s->held)
++NX_QUERY(get_current_padding, padding, (nx_calls_padding++, nx_to_source(s, s->held, TRUE)))
+ NX_QUERY(get_next_packet_size, frames, 0)
+ NX_QUERY(get_frequency, freq, NX_RATE * 4)
+ static NTSTATUS nx_get_position(void *args)
+diff --git a/horizon-wine/source/forwarder.c b/horizon-wine/source/forwarder.c
+index 9183048..16e0c35 100644
+--- a/horizon-wine/source/forwarder.c
++++ b/horizon-wine/source/forwarder.c
+@@ -930,10 +930,24 @@ static void forwarder_hash( const char *nro_path, const char *args, int generati
+     sha256CalculateHash( hash, both, strlen( both ) );
+ }
+ 
++/* A single-game build for an .exe that only loads at a low address: its own
++ * HOME icon takes Autorun's title ID, the only one the Atmosphere low-address
++ * patch serves. The name and icon stay the game's. */
++static int forwarder_is_low_window_own( const char *nro_path, const char *args )
++{
++#ifdef WINE_NX_LOW_WINDOW
++    return nro_path && (!args || !args[0]) && !strcmp( nro_path, WINE_NX_RUNTIME_NRO );
++#else
++    (void)nro_path; (void)args;
++    return 0;
++#endif
++}
++
+ unsigned long long wine_nx_forwarder_title_id( const char *nro_path, const char *args )
+ {
+     u64 hash[SHA256_HASH_SIZE / sizeof(u64)];
+ 
++    if (forwarder_is_low_window_own( nro_path, args )) return AUTORUN_TITLE_ID;
+     forwarder_hash( nro_path, args, FORWARDER_GENERATION, hash );
+     return 0x0500000000000000ull | (hash[0] & 0x00FFFFFFFFFFF000ull);
+ }
+@@ -1219,6 +1233,12 @@ unsigned int wine_nx_forwarder_install( const struct wine_nx_forwarder *request,
+      * made for the same NRO, so they are taken away rather than left behind. */
+     forwarder_hash( request->nro_path, request->args, 0, hash );
+     plain_tid = 0x0500000000000000ull | (hash[0] & 0x00FFFFFFFFFFF000ull);
++    /* The game's icon under its own hashed ID goes away; it takes Autorun's. */
++    if (!request->game_id && forwarder_is_low_window_own( request->nro_path, request->args ))
++    {
++        old_tid = tid;
++        tid = AUTORUN_TITLE_ID;
++    }
+     if (request->game_id)
+     {
+         tid = old_tid = plain_tid = wine_nx_forwarder_game_title_id( request->game_id );
 diff --git a/horizon-wine/source/forwarder_launch.h b/horizon-wine/source/forwarder_launch.h
 index ef8cef2..dd64601 100644
 --- a/horizon-wine/source/forwarder_launch.h
@@ -3834,7 +5232,7 @@ index c52fc59..7ec891d 100644
  float flow_scale = 0.25f;
  
 diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
-index 8def52b..29fd3be 100644
+index 8def52b..0673ea0 100644
 --- a/horizon-wine/source/runtime.c
 +++ b/horizon-wine/source/runtime.c
 @@ -75,7 +75,13 @@ uint64_t __nx_exception_stack_size = sizeof(__nx_exception_stack);
@@ -3852,7 +5250,112 @@ index 8def52b..29fd3be 100644
  #define WINE_DRIVE_C WINE_ROOT "/drive_c"
  #define WINE_SYSTEM_DIR WINE_NX_RUNTIME_SYSTEM32
  /* The profile shell32 resolves: it ignores %USERPROFILE% and builds every
-@@ -3672,8 +3678,8 @@ static unsigned int launcher_install_forwarder( const char **step )
+@@ -894,6 +900,10 @@ unsigned short wine_nx_pad_keys[WINE_NX_KEY_COUNT] =
+  * competes with what the program reads there itself. */
+ unsigned int wine_nx_pad_key_state;
+ 
++/* How a scaled game image sits on the screen (dlls/win32u/vulkan.c). */
++extern float wine_nx_present_map[6] __attribute__((weak));
++extern int wine_nx_present_mapped __attribute__((weak));
++
+ /* When a program last read the controller through XInput (xinput_unix.c). */
+ extern u64 wine_nx_xinput_last_poll;
+ 
+@@ -986,7 +996,16 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
+         {
+             int old_x = (int)wine_nx_pointer.x, old_y = (int)wine_nx_pointer.y;
+ 
+-            pointer_cursor_place( &wine_nx_pointer, touch.touches[0].x, touch.touches[0].y );
++            double tx = touch.touches[0].x, ty = touch.touches[0].y;
++
++            /* A game drawing at another size is scaled onto the screen
++             * (dlls/win32u/vulkan.c): the finger is where that image shows. */
++            if (&wine_nx_present_mapped && __atomic_load_n( &wine_nx_present_mapped, __ATOMIC_ACQUIRE ))
++            {
++                tx = wine_nx_present_map[0] + (tx - wine_nx_present_map[2]) * wine_nx_present_map[4];
++                ty = wine_nx_present_map[1] + (ty - wine_nx_present_map[3]) * wine_nx_present_map[5];
++            }
++            pointer_cursor_place( &wine_nx_pointer, tx, ty );
+             moved = (int)wine_nx_pointer.x != old_x || (int)wine_nx_pointer.y != old_y;
+             wine_nx_pointer_placed |= moved;
+             pressed |= WINE_NX_POINTER_LEFT;
+@@ -2035,6 +2054,17 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
+         cmdline_str = cmdline;
+         log_line( "[ARGS] from %s; CommandLine='%s'", args_path, cmdline_str );
+     }
++#ifdef WINE_NX_FIXED_ARGS
++    /* A single-game build's own command line, when no NAME.args.txt beside
++     * the game replaces it: the card works as copied, and the file is still
++     * the way to change it without rebuilding. */
++    else if (WINE_NX_FIXED_ARGS[0] && !strcmp( target, WINE_NX_FIXED_TARGET ) &&
++             launcher_command_line( dos_path, WINE_NX_FIXED_ARGS, cmdline, sizeof(cmdline) ))
++    {
++        cmdline_str = cmdline;
++        log_line( "[ARGS] built in; CommandLine='%s'", cmdline_str );
++    }
++#endif
+     else if (!read_first_line( RUNTIME_DIR "/args.txt", args_buf, sizeof(args_buf) ) || !args_buf[0])
+         log_line( "[ARGS] no args.txt; CommandLine='%s'", cmdline_str );
+     else if (!launcher_args_match( args_buf, dos_path ))
+@@ -3332,7 +3362,9 @@ void wine_nx_leave_process( const char *why )
+  * behind to keep its page, and those pages are taken out of the program's
+  * reservations. Threads made later take slots in pages already out of its way.
+  */
+-#define TLS_PLACEHOLDERS_MAX 96   /* Horizon's thread limit for an application */
++/* Horizon's thread limit for an application: 96, or 256 once pm:shell has
++ * raised it (boost_application_threads). The placeholders fill every slot. */
++#define TLS_PLACEHOLDERS_MAX 256
+ 
+ static Thread tls_threads[TLS_PLACEHOLDERS_MAX];
+ static unsigned long long tls_page[TLS_PLACEHOLDERS_MAX];
+@@ -3351,6 +3383,24 @@ static void tls_placeholder( void *arg )
+     waitSingle( waiterForUEvent( &tls_released ), UINT64_MAX );
+ }
+ 
++/* Asce22: an application gets 96 threads, and Wine pairs each program thread
++ * with a server connection thread, so a Unity game (Mono, FMOD, Steam, input,
++ * DXVK...) runs out and its thread pools fail. pm:shell raises the application
++ * limit to 256 with the extra threads the kernel keeps for applications (what
++ * HOS 11.0+ grants when asked). It holds until the console restarts, so later
++ * calls just fail harmlessly. */
++static void boost_application_threads( void )
++{
++    Result rc = pmshellInitialize();
++
++    if (R_SUCCEEDED( rc ))
++    {
++        rc = pmshellBoostApplicationThreadResourceLimit();
++        pmshellExit();
++    }
++    log_line( "[THREADS] application thread limit boost: rc=%#x", rc );
++}
++
+ static void hold_thread_local_pages( void )
+ {
+     extern unsigned int horizon_drop_thread_local_pages( unsigned int *found );
+@@ -3393,6 +3443,21 @@ static void hold_thread_local_pages( void )
+         threadClose( &tls_threads[i] );
+     }
+     dropped = horizon_drop_thread_local_pages( &found );
++    if (!found)
++    {
++        /* No thread-local page is below 4 GB, so the kept placeholders protect
++         * nothing; give their thread slots back to the program (96 in all). */
++        ueventSignal( &tls_released );
++        for (i = 0; i < tls_count; i++)
++        {
++            if (!tls_keep[i]) continue;
++            threadWaitForExit( &tls_threads[i] );
++            threadClose( &tls_threads[i] );
++        }
++        log_line( "[TLS] no pages below 4 GB: %u kept placeholder threads released", kept );
++        kept = 0;
++        tls_count = 0;
++    }
+     log_line( "[TLS] %u placeholder threads (the next refused: rc=%#x), %u kept to hold a thread-local page "
+               "each; of %u such pages below 4 GB, %u were inside the program's reserved memory and were taken "
+               "out of it", tls_count, rc, kept, found, dropped );
+@@ -3672,8 +3737,8 @@ static unsigned int launcher_install_forwarder( const char **step )
      {
          .nro_path = RUNTIME_DIR "/wine-nx-runtime.nro",
          .args = NULL,
@@ -3863,7 +5366,7 @@ index 8def52b..29fd3be 100644
          .icon = wine_nx_icon_any,
          .icon_size = wine_nx_icon_any_size,
      };
-@@ -3741,6 +3747,81 @@ static unsigned long long runtime_title_id( void )
+@@ -3741,6 +3806,124 @@ static unsigned long long runtime_title_id( void )
      return id;
  }
  
@@ -3890,6 +5393,49 @@ index 8def52b..29fd3be 100644
 +    leave_cleanly();
 +    return 0;
 +}
++
++#ifdef WINE_NX_SPLASH
++/* The build's own credits, centred on the console for a few seconds before the
++ * game takes the screen; A, B or + skips them. Lines are split at '|'. */
++static void fixed_target_credits( void )
++{
++    static const char text[] = WINE_NX_SPLASH;
++    const char *line = text;
++    int lines = 1, row, i;
++    PadState pad;
++    u64 start;
++
++    if (!text[0]) return;
++    for (i = 0; text[i]; i++) if (text[i] == '|') lines++;
++    wine_nx_console_quiet = 0;
++    consoleClear();
++    row = (45 - lines * 2) / 2;  /* the console is 80x45 */
++    while (line)
++    {
++        const char *bar = strchr( line, '|' );
++        int len = bar ? (int)(bar - line) : (int)strlen( line ), col = (80 - len) / 2;
++
++        printf( "\x1b[%d;%dH%.*s", row, col < 1 ? 1 : col + 1, len, line );
++        row += 2;
++        line = bar ? bar + 1 : NULL;
++    }
++    consoleUpdate( NULL );
++    log_line( "[FIXED] credits: %s", text );
++    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
++    padInitializeDefault( &pad );
++    start = armGetSystemTick();
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    {
++        padUpdate( &pad );
++        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;
++        consoleUpdate( NULL );
++        svcSleepThread( 16000000 );
++    }
++    consoleClear();
++    consoleUpdate( NULL );
++    wine_nx_console_quiet = 1;
++}
++#endif
 +
 +/* Started from the Homebrew Menu rather than from its own HOME icon: offer to
 + * make that icon (a 39-bit forwarder, which 64-bit games need). Returns 1 to go
@@ -3945,7 +5491,7 @@ index 8def52b..29fd3be 100644
  int main( int argc, char **argv )
  {
      char target[512] = DEFAULT_TARGET;
-@@ -3897,6 +3978,9 @@ int main( int argc, char **argv )
+@@ -3897,6 +4080,9 @@ int main( int argc, char **argv )
      /* Both are wanted on the way out, when the card is a poor thing to ask. */
      runtime_loader_anyway = config_bool( "hand-the-process-back-anyway", 0, "loader-anyway.txt", 0 );
      runtime_reopen_launcher = config_bool( "reopen-the-launcher-on-exit", 1, "reload-launcher.txt", 0 );
@@ -3955,7 +5501,7 @@ index 8def52b..29fd3be 100644
      runtime_dxvk_on_add = wine_nx_config_bool( &runtime_config, "dxvk-for-new-games", 1 );
      wine_nx_swkbd_auto_enabled = config_bool( "keyboard-on-text-focus", 1, "no-swkbd-auto.txt", 1 );
      log_line( "[INIT] on-screen keyboard opens on text focus: %s", wine_nx_swkbd_auto_enabled ? "yes" : "no" );
-@@ -3939,6 +4023,25 @@ int main( int argc, char **argv )
+@@ -3939,6 +4125,40 @@ int main( int argc, char **argv )
          autorun = resumed_program = 1;
          log_line( "[SETUP] resuming %s", target );
      }
@@ -3970,10 +5516,25 @@ index 8def52b..29fd3be 100644
 +            leave_cleanly();
 +            return 0;
 +        }
++#ifdef WINE_NX_SPLASH
++        fixed_target_credits();
++#endif
 +        snprintf( target, sizeof(target), "%s", WINE_NX_FIXED_TARGET );
 +        launch_error = NULL;
 +        if (access( target, R_OK ))
 +            return fixed_target_stop( "No se encuentra el juego en " WINE_NX_FIXED_TARGET );
++        /* What the launcher checks before it starts a game: an .exe with no
++         * relocations only loads at its own address, in the low window. */
++        if (launcher_program_address_space( target ) == LAUNCHER_ADDRESS_LOW && !low_window_available)
++#ifdef WINE_NX_LOW_WINDOW
++            return fixed_target_stop( "Este juego necesita el parche de direcciones bajas de Atmosphere.\n"
++                                      "  1. Instalalo con Quick setup en Autorun (switch/wine).\n"
++                                      "  2. Arranca con la entrada Autorun de Hekate.\n"
++                                      "  3. Abre este juego desde su icono del menu HOME." );
++#else
++            return fixed_target_stop( "Este juego necesita el parche de direcciones bajas de Atmosphere.\n"
++                                      "  Instalalo con Quick setup en Autorun y reinicia la consola." );
++#endif
 +        forwarded_game = 1;
 +        log_line( "[FIXED] %s", target );
 +    }
@@ -3981,7 +5542,7 @@ index 8def52b..29fd3be 100644
      /* A program started without the launcher -- from its forwarder, resumed
       * after the components setup, or named on the command line -- needs the
       * card's Windows DLLs as much as one chosen there. Without them, or with
-@@ -3970,6 +4073,13 @@ int main( int argc, char **argv )
+@@ -3970,6 +4190,13 @@ int main( int argc, char **argv )
      }
      else
      {
@@ -3995,393 +5556,14 @@ index 8def52b..29fd3be 100644
          struct wine_nx_launcher_options options =
          {
              .runtime_dir = RUNTIME_DIR,
-diff --git a/horizon-wine/tools/drop-foreign-objects.sh b/horizon-wine/tools/drop-foreign-objects.sh
-new file mode 100755
-index 0000000..3993979
---- /dev/null
-+++ b/horizon-wine/tools/drop-foreign-objects.sh
-@@ -0,0 +1,32 @@
-+#!/bin/sh
-+# Drop members that are not AArch64 objects from static libraries.
-+#
-+# switch-dev 2026.09.28.4's libvulkan.a (Mesa NVK, partly Rust) carries a
-+# host-built compiler_builtins object (x86-64, ELF machine 62) next to the
-+# AArch64 ones; ld then stops with "file in wrong format". The image is
-+# read-only to us, so the build works on a copy: this script edits the
-+# libraries in place inside the throwaway container.
-+#
-+#   sh drop-foreign-objects.sh AR LIB...
-+set -eu
-+ar="$1"; shift
-+tmp="${TMPDIR:-/tmp}/drop-foreign.$$"
-+mkdir -p "$tmp"
-+trap 'rm -rf "$tmp"' EXIT
-+for lib in "$@"; do
-+    [ -f "$lib" ] || continue
-+    "$ar" t "$lib" > "$tmp/members"
-+    dropped=0
-+    while IFS= read -r m; do
-+        # e_machine is the 16-bit field at offset 18 of an ELF header; AArch64 is 183.
-+        magic="$("$ar" p "$lib" "$m" | od -An -c -N4 | tr -d ' \n')"
-+        [ "$magic" = '177ELF' ] || continue
-+        em="$("$ar" p "$lib" "$m" | od -An -tu2 -j18 -N2 | tr -d ' \n')"
-+        if [ "$em" != 183 ]; then
-+            echo "drop-foreign-objects: $lib: removing $m (ELF machine $em)"
-+            "$ar" d "$lib" "$m"
-+            dropped=$((dropped + 1))
-+        fi
-+    done < "$tmp/members"
-+    [ "$dropped" = 0 ] || "$ar" s "$lib"
-+done
-diff --git a/horizon-wine/tools/package-single-game.py b/horizon-wine/tools/package-single-game.py
-new file mode 100755
-index 0000000..8e0bb6f
---- /dev/null
-+++ b/horizon-wine/tools/package-single-game.py
-@@ -0,0 +1,86 @@
-+#!/usr/bin/env python3
-+"""Turn an Autorun card archive into a single-game one, in its own folder.
-+
-+Takes the zip package-autorun.py writes and the DLL repository's switch/wine
-+tree, and writes one zip whose contents all live in sdmc:/switch/<root-name>,
-+with the Windows DLLs already in place: a single-game build has no launcher to
-+download them.
-+
-+    python3 horizon-wine/tools/package-single-game.py \\
-+        --autorun build/autorun-NNN.zip --root-name theforest \\
-+        --out theforest-card.zip
-+
-+The runtime inside the archive must have been built with the same
-+-DWINE_NX_ROOT_NAME, or it will look for its files in the old folder.
-+"""
-+import argparse
-+import sys
-+from pathlib import Path
-+from zipfile import ZipFile, ZIP_DEFLATED
-+
-+root = Path(__file__).resolve().parents[2]
-+
-+parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-+parser.add_argument('--autorun', type=Path, required=True, help="the archive package-autorun.py wrote")
-+parser.add_argument('--dlls', type=Path, default=root / 'horizon-dlls/switch/wine',
-+                    help="the DLL repository's switch/wine folder")
-+parser.add_argument('--root-name', required=True, help='folder under sdmc:/switch, e.g. theforest')
-+parser.add_argument('--out', type=Path, required=True)
-+args = parser.parse_args()
-+
-+name = args.root_name.strip('/')
-+if not name or '/' in name or name == 'wine':
-+    sys.exit('--root-name must be one folder name other than "wine"')
-+if not (args.dlls / 'horizon-dlls/manifest.json').is_file():
-+    sys.exit(f'{args.dlls} has no horizon-dlls/manifest.json: fetch the horizon-dlls submodule first')
-+
-+OLD, NEW = 'switch/wine/', f'switch/{name}/'
-+# Launcher-only files: what it preselects or runs on its own.
-+SKIP = {'target.txt', 'run-entry.txt', 'vulkan-probe.txt'}
-+TEXT = ('.txt', '.json', '.ini', '.cfg', '.conf', '.md')
-+
-+
-+def remap_text(data: bytes) -> bytes:
-+    try:
-+        text = data.decode('utf-8')
-+    except UnicodeDecodeError:
-+        return data
-+    return text.replace('sdmc:/switch/wine', f'sdmc:/switch/{name}') \
-+               .replace('switch\\wine', f'switch\\{name}').encode('utf-8')
-+
-+
-+written = set()
-+with ZipFile(args.out, 'w', ZIP_DEFLATED) as out:
-+    # The runtime and its files first, so they win over anything of the same name.
-+    with ZipFile(args.autorun) as z:
-+        for info in z.infolist():
-+            if info.is_dir():
-+                continue
-+            if not info.filename.startswith(OLD):
-+                print(f'kept as is (outside switch/wine): {info.filename}')
-+                dest = info.filename
-+            else:
-+                rel = info.filename[len(OLD):]
-+                if rel in SKIP:
-+                    continue
-+                dest = NEW + rel
-+            data = z.read(info)
-+            if dest.lower().endswith(TEXT):
-+                data = remap_text(data)
-+            out.writestr(dest, data)
-+            written.add(dest)
-+    dll_count = 0
-+    for path in sorted(args.dlls.rglob('*')):
-+        if not path.is_file():
-+            continue
-+        dest = NEW + path.relative_to(args.dlls).as_posix()
-+        if dest in written:
-+            continue
-+        out.write(path, dest)
-+        written.add(dest)
-+        dll_count += 1
-+
-+nro = NEW + 'wine-nx-runtime.nro'
-+if nro not in written:
-+    sys.exit(f'{nro} is missing: is {args.autorun} a card archive?')
-+print(f'{args.out}: {len(written)} files ({dll_count} from the DLL repository) in sdmc:/{NEW}')
--- 
-2.43.0
-
-
-From 1dfe86b72bff676ef918b8d9e1b23e43e54e6bb9 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Wed, 30 Sep 2026 23:21:46 -0600
-Subject: [PATCH 2/9] ntdll/horizon: give 32-bit threads a context when the GC
- suspends them
-
-A suspended WoW64 thread running guest code never reaches the server, so
-GetThreadContext hung (FEX) or failed (Box64). Freeze the thread from the
-kernel when it sits in Box64-translated code, read its x86 registers from
-the dynarec's host registers, and fall back to the cpu-area context.
-
-Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Xpq6Y5HJQCU7wqc58mHiJA
----
- dlls/ntdll/unix/horizon.c            | 141 ++++++++++++++++++++++++++-
- dlls/ntdll/unix/horizon_private.h    |   6 ++
- dlls/ntdll/unix/signal_arm64.c       |  13 ++-
- horizon-wine/source/thread_profile.c |  87 ++++++++++++++++-
- horizon-wine/source/thread_profile.h |  10 ++
- 5 files changed, 253 insertions(+), 4 deletions(-)
-
-diff --git a/dlls/ntdll/unix/horizon.c b/dlls/ntdll/unix/horizon.c
-index ea17b86..95b43ac 100644
---- a/dlls/ntdll/unix/horizon.c
-+++ b/dlls/ntdll/unix/horizon.c
-@@ -3292,6 +3292,8 @@ struct horizon_server_object
- #endif
-     unsigned int thread_context_count;
-     int thread_context_valid;
-+    int thread_frozen_x86;  /* held paused by the runtime for a 32-bit GetThreadContext */
-+    unsigned int frozen_regs[10];  /* struct wine_nx_x86_regs */
-     struct horizon_user_apc *apc_first, *apc_last;
-     unsigned int rootdir;
-     unsigned int name_len;
-@@ -11489,7 +11491,15 @@ static int horizon_server_handle_resume_thread( struct horizon_server_connection
-         status = horizon_thread_resume( &object->thread, &reply.count );
- #ifndef HORIZON_STANDALONE_SYNTAX
-         if (!status && reply.count == 1)
-+        {
-             horizon_server_set_suspend_doorbell_locked( object, 0 );
-+            if (object->thread_frozen_x86)
-+            {
-+                object->thread_frozen_x86 = 0;
-+                if (&wine_nx_thread_thaw)
-+                    wine_nx_thread_thaw( (void *)(ULONG_PTR)object->thread.teb, object->thread.tid );
-+            }
-+        }
- #endif
-     }
-     horizon_server_signal_changed_locked();  /* the start gate */
-@@ -11561,6 +11571,70 @@ static void horizon_server_merge_context( struct context_data *dst, const struct
-     dst->flags |= flags;
- }
+@@ -4325,6 +4552,7 @@ int main( int argc, char **argv )
  
-+/* A 32-bit thread under the emulator only hands its registers to the server when
-+ * it calls it. A thread that is suspended while running guest code never does,
-+ * and Mono's garbage collector, which suspends every thread and reads its
-+ * registers, then hangs or fails with "GetThreadContext failed". Fill in the
-+ * i386 context from the best source there is. */
-+static void horizon_server_fill_i386_context( struct context_data *context, const struct wine_nx_x86_regs *r )
-+{
-+    memset( context, 0, sizeof(*context) );
-+    context->machine = HORIZON_IMAGE_FILE_MACHINE_I386;
-+    context->flags = SERVER_CTX_CONTROL | SERVER_CTX_INTEGER | SERVER_CTX_SEGMENTS;
-+    context->ctl.i386_regs.eip = r->eip;
-+    context->ctl.i386_regs.ebp = r->ebp;
-+    context->ctl.i386_regs.esp = r->esp;
-+    context->ctl.i386_regs.eflags = r->eflags;
-+    context->ctl.i386_regs.cs = 0x23;
-+    context->ctl.i386_regs.ss = 0x2b;
-+    context->integer.i386_regs.eax = r->eax;
-+    context->integer.i386_regs.ebx = r->ebx;
-+    context->integer.i386_regs.ecx = r->ecx;
-+    context->integer.i386_regs.edx = r->edx;
-+    context->integer.i386_regs.esi = r->esi;
-+    context->integer.i386_regs.edi = r->edi;
-+    context->seg.i386_regs.ds = 0x2b;
-+    context->seg.i386_regs.es = 0x2b;
-+    context->seg.i386_regs.fs = 0x53;
-+    context->seg.i386_regs.gs = 0x2b;
-+}
-+
-+/* The thread's i386 state as exported at its last system call or unix call: a
-+ * thread waiting in the server is stopped at one, so this is its real state. */
-+static int horizon_server_cpu_area_regs( const struct horizon_server_object *object, struct wine_nx_x86_regs *r )
-+{
-+    const TEB *teb = (const TEB *)(ULONG_PTR)object->thread.teb;
-+    const unsigned char *cpu, *c;
-+
-+    if (!teb || !(cpu = teb->TlsSlots[WOW64_TLS_CPURESERVED])) return 0;
-+    c = cpu + 4;  /* after WOW64_CPURESERVED; an I386_CONTEXT */
-+    r->edi = *(const unsigned int *)(c + 0x9c);
-+    r->esi = *(const unsigned int *)(c + 0xa0);
-+    r->ebx = *(const unsigned int *)(c + 0xa4);
-+    r->edx = *(const unsigned int *)(c + 0xa8);
-+    r->ecx = *(const unsigned int *)(c + 0xac);
-+    r->eax = *(const unsigned int *)(c + 0xb0);
-+    r->ebp = *(const unsigned int *)(c + 0xb4);
-+    r->eip = *(const unsigned int *)(c + 0xb8);
-+    r->eflags = *(const unsigned int *)(c + 0xc0);
-+    r->esp = *(const unsigned int *)(c + 0xc4);
-+    return r->esp != 0;
-+}
-+
-+static void horizon_gcfix_trace( const char *fmt, ... )
-+{
-+    extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
-+    static unsigned int count;
-+    char buf[200];
-+    va_list args;
-+
-+    if (!&wine_nx_runtime_trace || __atomic_add_fetch( &count, 1, __ATOMIC_RELAXED ) > 64) return;
-+    va_start( args, fmt );
-+    vsnprintf( buf, sizeof(buf), fmt, args );
-+    va_end( args );
-+    wine_nx_runtime_trace( buf );
-+}
-+
- static int horizon_server_handle_get_thread_context( struct horizon_server_connection *connection,
-                                                      const unsigned char *message )
- {
-@@ -11580,13 +11654,63 @@ static int horizon_server_handle_get_thread_context( struct horizon_server_conne
-         else if (!object->thread.started) status = HORIZON_STATUS_NOT_SUPPORTED;
-         else
-         {
-+            unsigned int slices = 0;
-+
-             while (!object->thread_context_valid && object->thread.suspend &&
-                    !object->thread.terminated)
-             {
-+                /* A 32-bit thread caught in guest code will not answer: after a short wait,
-+                 * freeze it from the kernel and read its registers. */
-+                if (request->machine == HORIZON_IMAGE_FILE_MACHINE_I386 &&
-+                    (slices >= 2 || object->thread_frozen_x86) && &wine_nx_thread_freeze_x86)
-+                {
-+                    struct wine_nx_x86_regs regs;
-+
-+                    if (object->thread_frozen_x86 ||
-+                        wine_nx_thread_freeze_x86( (void *)(ULONG_PTR)object->thread.teb,
-+                                                   object->thread.tid, &regs ))
-+                    {
-+                        if (!object->thread_frozen_x86)
-+                        {
-+                            object->thread_frozen_x86 = 1;
-+                            memcpy( object->frozen_regs, &regs, sizeof(regs) );
-+                            horizon_gcfix_trace( "[GCFIX] froze thread %u in translated code eip=%08x esp=%08x",
-+                                                 object->thread.tid, regs.eip, regs.esp );
-+                        }
-+                        horizon_server_fill_i386_context( &context, (const struct wine_nx_x86_regs *)object->frozen_regs );
-+                        context.flags &= request->flags | request->native_flags | SERVER_CTX_EXEC_SPACE;
-+                        found = 1;
-+                        break;
-+                    }
-+                    if (slices >= 240)  /* it never entered translated code: use its last gate */
-+                    {
-+                        struct wine_nx_x86_regs regs2;
-+
-+                        if (horizon_server_cpu_area_regs( object, &regs2 ))
-+                        {
-+                            horizon_gcfix_trace( "[GCFIX] thread %u not caught; using its last exported context esp=%08x",
-+                                                 object->thread.tid, regs2.esp );
-+                            horizon_server_fill_i386_context( &context, &regs2 );
-+                            context.flags &= request->flags | request->native_flags | SERVER_CTX_EXEC_SPACE;
-+                            found = 1;
-+                        }
-+                        break;
-+                    }
-+                    /* Try again in a moment: the thread may be in native code just now. */
-+                    slices++;
-+                    horizon_server_sleep_locked( 2000 );
-+                    continue;
-+                }
-+                slices++;
-                 horizon_server_sleep_locked( HORIZON_SERVER_WAIT_SLICE );
-                 horizon_server_quit_check_locked();
-             }
--            if (object->thread.terminated) status = HORIZON_STATUS_ACCESS_DENIED;
-+            if (request->machine == HORIZON_IMAGE_FILE_MACHINE_I386 && !found && !object->thread_context_valid)
-+                horizon_gcfix_trace( "[GCFIX] thread %u: no context after waiting (suspend=%d terminated=%d frozen_ok=%d)",
-+                                     object->thread.tid, object->thread.suspend, object->thread.terminated,
-+                                     object->thread_frozen_x86 );
-+            if (found) status = 0;
-+            else if (object->thread.terminated) status = HORIZON_STATUS_ACCESS_DENIED;
-             else if (!object->thread.suspend) status = HORIZON_STATUS_UNSUCCESSFUL;
-             else for (i = 0; i < object->thread_context_count; i++)
-             {
-@@ -11596,10 +11720,25 @@ static int horizon_server_handle_get_thread_context( struct horizon_server_conne
-                 found = 1;
-                 break;
-             }
-+            /* It handed over its native context only: the i386 one is in its cpu area. */
-+            if (!found && !status && request->machine == HORIZON_IMAGE_FILE_MACHINE_I386)
-+            {
-+                struct wine_nx_x86_regs regs;
-+
-+                if (horizon_server_cpu_area_regs( object, &regs ))
-+                {
-+                    horizon_server_fill_i386_context( &context, &regs );
-+                    context.flags &= request->flags | request->native_flags | SERVER_CTX_EXEC_SPACE;
-+                    found = 1;
-+                }
-+            }
-             if (!found && !status) status = HORIZON_STATUS_NOT_SUPPORTED;
-         }
-     }
-     pthread_mutex_unlock( &horizon_server_objects_mutex );
-+    if (request->machine == HORIZON_IMAGE_FILE_MACHINE_I386 && (status || !found) && !reply.self)
-+        horizon_gcfix_trace( "[GCFIX] get_thread_context handle=%08x machine=%04x failed status=%08x",
-+                             request->handle, (unsigned int)request->machine, status );
-     reply.header.error = status;
-     if (!status && found) reply.header.reply_size = sizeof(context);
-     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply),
-diff --git a/dlls/ntdll/unix/horizon_private.h b/dlls/ntdll/unix/horizon_private.h
-index 6d35ce3..ec27dbc 100644
---- a/dlls/ntdll/unix/horizon_private.h
-+++ b/dlls/ntdll/unix/horizon_private.h
-@@ -27,6 +27,12 @@ extern void wine_nx_thread_unregister( void ) __attribute__((weak));
- extern void wine_nx_thread_affinity_fixed( void ) __attribute__((weak));
- extern void wine_nx_thread_set_name( unsigned int tid, const char *name ) __attribute__((weak));
- extern void wine_nx_thread_set_affinity( unsigned int tid, unsigned int mask ) __attribute__((weak));
-+#ifndef WINE_NX_X86_REGS_DEFINED
-+#define WINE_NX_X86_REGS_DEFINED
-+struct wine_nx_x86_regs { unsigned int eax, ecx, edx, ebx, esp, ebp, esi, edi, eip, eflags; };
-+#endif
-+extern int wine_nx_thread_freeze_x86( void *teb, unsigned int tid, struct wine_nx_x86_regs *out ) __attribute__((weak));
-+extern void wine_nx_thread_thaw( void *teb, unsigned int tid ) __attribute__((weak));
- extern __thread int horizon_suspend_pending;
- extern void horizon_wait_suspend_arm64ec(void);
- extern void horizon_get_memory_info( unsigned long long *total, unsigned long long *used );
-diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
-index db9a7a2..fa6d06c 100644
---- a/dlls/ntdll/unix/signal_arm64.c
-+++ b/dlls/ntdll/unix/signal_arm64.c
-@@ -154,7 +154,18 @@ NTSTATUS get_thread_wow64_context( HANDLE handle, void *ctx, ULONG size )
-     NTSTATUS status;
- 
-     if (size != sizeof(I386_CONTEXT)) return STATUS_INFO_LENGTH_MISMATCH;
--    if ((status = check_current_thread_context_access( handle, THREAD_GET_CONTEXT ))) return status;
-+    status = check_current_thread_context_access( handle, THREAD_GET_CONTEXT );
-+    if (status == STATUS_NOT_IMPLEMENTED)
-+    {
-+        /* Another thread's 32-bit context, as the garbage collector of a 32-bit
-+         * program asks for after suspending it: from the server, which holds the
-+         * registers a suspended thread handed over (or has frozen it for). */
-+        BOOL self = FALSE;
-+
-+        status = get_thread_context( handle, ctx, &self, IMAGE_FILE_MACHINE_I386 );
-+        if (status || !self) return status;
-+    }
-+    else if (status) return status;
-     if (!cpu) return STATUS_INVALID_PARAMETER;
-     return horizon_transfer_i386_context( cpu,
-                                           get_cpu_area( get_thread_data(), IMAGE_FILE_MACHINE_I386 ), ctx, FALSE );
+     /* With the image mapped, so no thread-local page can be put where it has
+      * to go, and before the program runs or makes a thread of its own. */
++    boost_application_threads();
+     if (!low_window_available) hold_thread_local_pages();
+     else log_line( "[TLS] kernel TLS stays above 4 GiB; placeholder threads not needed" );
+     {
 diff --git a/horizon-wine/source/thread_profile.c b/horizon-wine/source/thread_profile.c
 index e037740..d358064 100644
 --- a/horizon-wine/source/thread_profile.c
@@ -4522,128 +5704,25 @@ index dc89f58..ae89244 100644
  /* Called by a thread as it starts and ends; kind is 'w' for Wine threads and
   * 's' for server connection threads (tid is then their client's). teb is a
   * Wine thread's own TEB, through which the sampler finds its x86 context. */
--- 
-2.43.0
-
-
-From b1cebd4d39e0bf90bcea9e83764bad3aeeb8e7e2 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Thu, 1 Oct 2026 16:41:21 -0600
-Subject: [PATCH 3/9] Release TLS placeholder threads when no low pages exist
-
----
- horizon-wine/source/runtime.c | 15 +++++++++++++++
- 1 file changed, 15 insertions(+)
-
-diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
-index 29fd3be..a3479d7 100644
---- a/horizon-wine/source/runtime.c
-+++ b/horizon-wine/source/runtime.c
-@@ -3399,6 +3399,21 @@ static void hold_thread_local_pages( void )
-         threadClose( &tls_threads[i] );
-     }
-     dropped = horizon_drop_thread_local_pages( &found );
-+    if (!found)
-+    {
-+        /* No thread-local page is below 4 GB, so the kept placeholders protect
-+         * nothing; give their thread slots back to the program (96 in all). */
-+        ueventSignal( &tls_released );
-+        for (i = 0; i < tls_count; i++)
-+        {
-+            if (!tls_keep[i]) continue;
-+            threadWaitForExit( &tls_threads[i] );
-+            threadClose( &tls_threads[i] );
-+        }
-+        log_line( "[TLS] no pages below 4 GB: %u kept placeholder threads released", kept );
-+        kept = 0;
-+        tls_count = 0;
-+    }
-     log_line( "[TLS] %u placeholder threads (the next refused: rc=%#x), %u kept to hold a thread-local page "
-               "each; of %u such pages below 4 GB, %u were inside the program's reserved memory and were taken "
-               "out of it", tls_count, rc, kept, found, dropped );
--- 
-2.43.0
-
-
-From f1ebc5375837ba52397c911c0d830daa0729f673 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Thu, 1 Oct 2026 17:18:26 -0600
-Subject: [PATCH 4/9] Trace failed and short file reads with the reported file
- size
-
----
- dlls/ntdll/unix/file.c | 28 ++++++++++++++++++++++++++++
- 1 file changed, 28 insertions(+)
-
-diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
-index fe07207..85b04c1 100644
---- a/dlls/ntdll/unix/file.c
-+++ b/dlls/ntdll/unix/file.c
-@@ -6690,6 +6690,34 @@ err:
-         TRACE("= 0x%08x\n", status);
-         if (status != STATUS_PENDING && event) NtResetEvent( event, NULL );
-     }
-+#ifdef __SWITCH__
-+    /* Always on: a failed or short read of a regular file, with the size the
-+     * file system reports for it. */
-+    if (type == FD_TYPE_FILE && length && (status != STATUS_SUCCESS || total < length))
-+    {
-+        extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
-+        static unsigned int anomaly_traces;
-+
-+        if (&wine_nx_runtime_trace && __atomic_fetch_add( &anomaly_traces, 1, __ATOMIC_RELAXED ) < 120)
-+        {
-+            char msg[256];
-+            struct stat st;
-+            long long size = -1;
-+
-+            /* unix_handle may be closed already; ask the server's fd again */
-+            if (!server_get_unix_fd( handle, FILE_READ_DATA, &unix_handle, &needs_close, &type, &options ))
-+            {
-+                if (!fstat( unix_handle, &st )) size = st.st_size;
-+                if (needs_close) close( unix_handle );
-+            }
-+            snprintf( msg, sizeof(msg),
-+                      "[READFAIL] handle=%p requested=%u returned=%u status=%08x offset=%lld filesize=%lld",
-+                      handle, length, total, status,
-+                      offset ? (long long)offset->QuadPart : -2LL, size );
-+            wine_nx_runtime_trace( msg );
-+        }
-+    }
-+#endif
- 
-     ret_status = async_read && type == FD_TYPE_FILE && (status == STATUS_SUCCESS || status == STATUS_END_OF_FILE)
-             ? STATUS_PENDING : status;
--- 
-2.43.0
-
-
-From 103e438c1da7f6d3a029d941a16595026ae0ac03 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Thu, 1 Oct 2026 17:41:44 -0600
-Subject: [PATCH 5/9] Cap Box64 code memory at 288 MB so the game keeps its
- share of the heap
-
----
- horizon-wine/source/wow64_box64_dynarec.c | 16 ++++++++++++++++
- 1 file changed, 16 insertions(+)
-
 diff --git a/horizon-wine/source/wow64_box64_dynarec.c b/horizon-wine/source/wow64_box64_dynarec.c
-index e095fb2..011e7c2 100644
+index e095fb2..a00cae5 100644
 --- a/horizon-wine/source/wow64_box64_dynarec.c
 +++ b/horizon-wine/source/wow64_box64_dynarec.c
-@@ -73,6 +73,10 @@
+@@ -73,6 +73,13 @@
  #define NX_ARENA_IMAGE_MAX (128 * 1024 * 1024)  /* the first arena, however large the image */
  #define NX_ARENA_LARGEST  (256 * 1024 * 1024)
  #define NX_ARENA_SMALLEST (1024 * 1024)
 +/* The most code memory the translator may take in all. The game's own memory
 + * is what a 3 GB process runs short of first, so the rest is left to it and
 + * cold blocks are purged and reused instead (the single-game build). */
-+#define NX_ARENA_TOTAL_MAX ((unsigned long long)288 << 20)
++#ifndef NX_ARENA_TOTAL_MAX_MB
++#define NX_ARENA_TOTAL_MAX_MB 288
++#endif
++#define NX_ARENA_TOTAL_MAX ((unsigned long long)NX_ARENA_TOTAL_MAX_MB << 20)
  #define NX_WINDOW_SPARE   (64 * 1024 * 1024)   /* left to stacks and section anchors */
  #define NX_ARENA_RETRY_NS (5ull * 1000 * 1000 * 1000)  /* between tries once one fails */
  #define NX_MAX_ARENAS 32
-@@ -362,6 +366,18 @@ static int create_arena( size_t minimum )
+@@ -362,6 +369,18 @@ static int create_arena( size_t minimum )
          retry_at = 0;
      }
      if (size > NX_ARENA_LARGEST) size = NX_ARENA_LARGEST;
@@ -4662,111 +5741,172 @@ index e095fb2..011e7c2 100644
      /* What is free where code may be mapped, less what has to be left to the
       * thread stacks and section anchors that share it when that place is the
       * window: an anchor with nowhere to go is a DLL that will not load. Where
+diff --git a/horizon-wine/tools/drop-foreign-objects.sh b/horizon-wine/tools/drop-foreign-objects.sh
+new file mode 100755
+index 0000000..3993979
+--- /dev/null
++++ b/horizon-wine/tools/drop-foreign-objects.sh
+@@ -0,0 +1,32 @@
++#!/bin/sh
++# Drop members that are not AArch64 objects from static libraries.
++#
++# switch-dev 2026.09.28.4's libvulkan.a (Mesa NVK, partly Rust) carries a
++# host-built compiler_builtins object (x86-64, ELF machine 62) next to the
++# AArch64 ones; ld then stops with "file in wrong format". The image is
++# read-only to us, so the build works on a copy: this script edits the
++# libraries in place inside the throwaway container.
++#
++#   sh drop-foreign-objects.sh AR LIB...
++set -eu
++ar="$1"; shift
++tmp="${TMPDIR:-/tmp}/drop-foreign.$$"
++mkdir -p "$tmp"
++trap 'rm -rf "$tmp"' EXIT
++for lib in "$@"; do
++    [ -f "$lib" ] || continue
++    "$ar" t "$lib" > "$tmp/members"
++    dropped=0
++    while IFS= read -r m; do
++        # e_machine is the 16-bit field at offset 18 of an ELF header; AArch64 is 183.
++        magic="$("$ar" p "$lib" "$m" | od -An -c -N4 | tr -d ' \n')"
++        [ "$magic" = '177ELF' ] || continue
++        em="$("$ar" p "$lib" "$m" | od -An -tu2 -j18 -N2 | tr -d ' \n')"
++        if [ "$em" != 183 ]; then
++            echo "drop-foreign-objects: $lib: removing $m (ELF machine $em)"
++            "$ar" d "$lib" "$m"
++            dropped=$((dropped + 1))
++        fi
++    done < "$tmp/members"
++    [ "$dropped" = 0 ] || "$ar" s "$lib"
++done
+diff --git a/horizon-wine/tools/package-single-game.py b/horizon-wine/tools/package-single-game.py
+new file mode 100755
+index 0000000..f7e462e
+--- /dev/null
++++ b/horizon-wine/tools/package-single-game.py
+@@ -0,0 +1,106 @@
++#!/usr/bin/env python3
++"""Turn an Autorun card archive into a single-game one, in its own folder.
++
++Takes the zip package-autorun.py writes and the DLL repository's switch/wine
++tree, and writes one zip whose contents all live in sdmc:/switch/<root-name>,
++with the Windows DLLs already in place: a single-game build has no launcher to
++download them.
++
++    python3 horizon-wine/tools/package-single-game.py \\
++        --autorun build/autorun-NNN.zip --root-name theforest \\
++        --out theforest-card.zip
++
++The runtime inside the archive must have been built with the same
++-DWINE_NX_ROOT_NAME, or it will look for its files in the old folder.
++"""
++import argparse
++import sys
++from pathlib import Path
++from zipfile import ZipFile, ZIP_DEFLATED
++
++root = Path(__file__).resolve().parents[2]
++
++parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++parser.add_argument('--autorun', type=Path, required=True, help="the archive package-autorun.py wrote")
++parser.add_argument('--dlls', type=Path, default=root / 'horizon-dlls/switch/wine',
++                    help="the DLL repository's switch/wine folder")
++parser.add_argument('--root-name', required=True, help='folder under sdmc:/switch, e.g. theforest')
++parser.add_argument('--extra', type=Path,
++                    help='a folder whose files go into switch/<root-name> as they are, '
++                         'e.g. the game\'s config under drive_c')
++parser.add_argument('--out', type=Path, required=True)
++args = parser.parse_args()
++
++name = args.root_name.strip('/')
++if not name or '/' in name or name == 'wine':
++    sys.exit('--root-name must be one folder name other than "wine"')
++if not (args.dlls / 'horizon-dlls/manifest.json').is_file():
++    sys.exit(f'{args.dlls} has no horizon-dlls/manifest.json: fetch the horizon-dlls submodule first')
++
++OLD, NEW = 'switch/wine/', f'switch/{name}/'
++# Launcher-only files: what it preselects or runs on its own.
++SKIP = {'target.txt', 'run-entry.txt', 'vulkan-probe.txt'}
++TEXT = ('.txt', '.json', '.ini', '.cfg', '.conf', '.md')
++
++
++def remap_text(data: bytes) -> bytes:
++    try:
++        text = data.decode('utf-8')
++    except UnicodeDecodeError:
++        return data
++    return text.replace('sdmc:/switch/wine', f'sdmc:/switch/{name}') \
++               .replace('switch\\wine', f'switch\\{name}').encode('utf-8')
++
++
++# A game's own files win over anything of the same name, so they are known first.
++extra = {}
++if args.extra:
++    if not args.extra.is_dir():
++        sys.exit(f'--extra {args.extra} is not a folder')
++    for path in sorted(args.extra.rglob('*')):
++        if path.is_file():
++            extra[NEW + path.relative_to(args.extra).as_posix()] = path
++extra_count = len(extra)
++
++written = set()
++with ZipFile(args.out, 'w', ZIP_DEFLATED) as out:
++    # The runtime and its files first, so they win over anything of the same name.
++    with ZipFile(args.autorun) as z:
++        for info in z.infolist():
++            if info.is_dir():
++                continue
++            if not info.filename.startswith(OLD):
++                print(f'kept as is (outside switch/wine): {info.filename}')
++                dest = info.filename
++            else:
++                rel = info.filename[len(OLD):]
++                if rel in SKIP:
++                    continue
++                dest = NEW + rel
++            if dest in extra:
++                print(f'replaced by --extra: {dest}')
++                continue
++            data = z.read(info)
++            if dest.lower().endswith(TEXT):
++                data = remap_text(data)
++            out.writestr(dest, data)
++            written.add(dest)
++    dll_count = 0
++    for path in sorted(args.dlls.rglob('*')):
++        if not path.is_file():
++            continue
++        dest = NEW + path.relative_to(args.dlls).as_posix()
++        if dest in written or dest in extra:
++            continue
++        out.write(path, dest)
++        written.add(dest)
++        dll_count += 1
++    for dest, path in extra.items():
++        out.write(path, dest)
++        written.add(dest)
++
++nro = NEW + 'wine-nx-runtime.nro'
++if nro not in written:
++    sys.exit(f'{nro} is missing: is {args.autorun} a card archive?')
++print(f'{args.out}: {len(written)} files ({dll_count} from the DLL repository, '
++      f'{extra_count} of the game\'s own) in sdmc:/{NEW}')
 -- 
 2.43.0
 
 
-From 3443e4e8452b9a014f4213b0bed485e8dbc52cfa Mon Sep 17 00:00:00 2001
+From f76fc69dbbd73a3512e9dcbbdf38a5d9a54c57d9 Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
-Date: Sat, 3 Oct 2026 15:41:13 -0600
-Subject: [PATCH 6/9] ntdll: always use UTF-8 for Unix file names on Horizon so
- non-ASCII names open
+Date: Sat, 10 Oct 2026 16:15:23 -0600
+Subject: [PATCH 2/2] Keep reporting where threads stand every 30 s while the
+ program is hung
 
 ---
- dlls/ntdll/unix/env.c | 4 ++--
- 1 file changed, 2 insertions(+), 2 deletions(-)
+ horizon-wine/source/runtime.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
 
-diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
-index 89cf7d8..ae3c25e 100644
---- a/dlls/ntdll/unix/env.c
-+++ b/dlls/ntdll/unix/env.c
-@@ -245,11 +245,11 @@ static void init_unix_codepage(void)
-     nfc_table = read_nls_file( "normnfc.nls" );
- }
- 
--#elif defined(__ANDROID__)  /* Android always uses UTF-8 */
-+#elif defined(__ANDROID__) || defined(__SWITCH__)  /* Android and Horizon always use UTF-8 (libnx's locale is "C", which would mean ASCII) */
- 
- static void init_unix_codepage(void) { }
- 
--#else  /* __APPLE__ || __ANDROID__ */
-+#else  /* __APPLE__ || __ANDROID__ || __SWITCH__ */
- 
- /* charset to codepage map, sorted by name */
- static const struct { const char *name; UINT cp; } charset_names[] =
--- 
-2.43.0
-
-
-From 27d4e6268511bcdb4562d7d5abe1169978d06612 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Sat, 3 Oct 2026 23:21:00 -0600
-Subject: [PATCH 7/9] TEST: turn off the Boehm collector (GC_DONT_GC) to check
- whether the first collection is what corrupts the heap
-
----
- dlls/ntdll/unix/env.c | 10 ++++++++--
- 1 file changed, 8 insertions(+), 2 deletions(-)
-
-diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
-index ae3c25e..ddfcdc8 100644
---- a/dlls/ntdll/unix/env.c
-+++ b/dlls/ntdll/unix/env.c
-@@ -1931,8 +1931,14 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
-     static const WCHAR pathW[] = {'P','A','T','H'};
-     RTL_USER_PROCESS_PARAMETERS *params = NULL;
-     SIZE_T size, env_pos, env_size;
--    WCHAR *dst, *cmdline, *path, *bootstrap;
--    WCHAR *env = get_initial_environment( &env_pos, &env_size );
-+    WCHAR *dst, *cmdline, *path, *bootstrap, *env;
-+#ifdef __SWITCH__
-+    /* Test build: Unity's Boehm collector corrupts the heap here (objects freed while
-+     * still referenced) after its first stop-the-world. Turn the collector off through
-+     * its own switch to tell whether that is the cause. */
-+    setenv( "GC_DONT_GC", "1", 0 );
-+#endif
-+    env = get_initial_environment( &env_pos, &env_size );
-     WCHAR *curdir = get_initial_directory();
-     UNICODE_STRING nt_name;
-     NTSTATUS status;
--- 
-2.43.0
-
-
-From 7c0c413b116028241be749190ec99abca8fb52e4 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Sun, 4 Oct 2026 01:28:39 -0600
-Subject: [PATCH 8/9] Drop the GC_DONT_GC test; keep reporting where threads
- stand every 30 s while the program is hung
-
----
- dlls/ntdll/unix/env.c         | 10 ++--------
- horizon-wine/source/runtime.c |  4 +++-
- 2 files changed, 5 insertions(+), 9 deletions(-)
-
-diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
-index ddfcdc8..ae3c25e 100644
---- a/dlls/ntdll/unix/env.c
-+++ b/dlls/ntdll/unix/env.c
-@@ -1931,14 +1931,8 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params(void)
-     static const WCHAR pathW[] = {'P','A','T','H'};
-     RTL_USER_PROCESS_PARAMETERS *params = NULL;
-     SIZE_T size, env_pos, env_size;
--    WCHAR *dst, *cmdline, *path, *bootstrap, *env;
--#ifdef __SWITCH__
--    /* Test build: Unity's Boehm collector corrupts the heap here (objects freed while
--     * still referenced) after its first stop-the-world. Turn the collector off through
--     * its own switch to tell whether that is the cause. */
--    setenv( "GC_DONT_GC", "1", 0 );
--#endif
--    env = get_initial_environment( &env_pos, &env_size );
-+    WCHAR *dst, *cmdline, *path, *bootstrap;
-+    WCHAR *env = get_initial_environment( &env_pos, &env_size );
-     WCHAR *curdir = get_initial_directory();
-     UNICODE_STRING nt_name;
-     NTSTATUS status;
 diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
-index a3479d7..9c371c5 100644
+index 0673ea0..46195ca 100644
 --- a/horizon-wine/source/runtime.c
 +++ b/horizon-wine/source/runtime.c
 @@ -476,7 +476,9 @@ static void stall_watch( void *arg )
@@ -4780,62 +5920,6 @@ index a3479d7..9c371c5 100644
          {
              log_line( "[STALL] no frame drawn for %u s; where the threads are standing", quiet * 5 );
              wine_nx_threads_report_stalled();
--- 
-2.43.0
-
-
-From cb584003b2a02689ebb087761537560c88dccb90 Mon Sep 17 00:00:00 2001
-From: Alonso <build@localhost>
-Date: Fri, 9 Oct 2026 11:22:43 -0600
-Subject: [PATCH 9/9] Ask pm for the 256-thread application limit before
- counting threads
-
----
- horizon-wine/source/runtime.c | 17 ++++++++++++++++-
- 1 file changed, 16 insertions(+), 1 deletion(-)
-
-diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
-index 9c371c5..04bc20f 100644
---- a/horizon-wine/source/runtime.c
-+++ b/horizon-wine/source/runtime.c
-@@ -3340,7 +3340,7 @@ void wine_nx_leave_process( const char *why )
-  * behind to keep its page, and those pages are taken out of the program's
-  * reservations. Threads made later take slots in pages already out of its way.
-  */
--#define TLS_PLACEHOLDERS_MAX 96   /* Horizon's thread limit for an application */
-+#define TLS_PLACEHOLDERS_MAX 256  /* 96 is Horizon's limit for an application; 256 once boosted */
- 
- static Thread tls_threads[TLS_PLACEHOLDERS_MAX];
- static unsigned long long tls_page[TLS_PLACEHOLDERS_MAX];
-@@ -3359,6 +3359,20 @@ static void tls_placeholder( void *arg )
-     waitSingle( waiterForUEvent( &tls_released ), UINT64_MAX );
- }
- 
-+/* Atmosphere's pm service can raise an application's thread limit from 96 to
-+ * 256 (HOS 11+). Wine spends two threads on each of the program's, so 96 runs
-+ * out quickly. It has to be asked for before the placeholders count the limit. */
-+static void boost_application_threads( void )
-+{
-+    Result rc = pmshellInitialize();
-+    if (R_SUCCEEDED( rc ))
-+    {
-+        rc = pmshellBoostApplicationThreadResourceLimit();
-+        pmshellExit();
-+    }
-+    log_line( "[THREADS] application thread limit boost: rc=%#x", rc );
-+}
-+
- static void hold_thread_local_pages( void )
- {
-     extern unsigned int horizon_drop_thread_local_pages( unsigned int *found );
-@@ -4452,6 +4466,7 @@ int main( int argc, char **argv )
- 
-     /* With the image mapped, so no thread-local page can be put where it has
-      * to go, and before the program runs or makes a thread of its own. */
-+    boost_application_threads();
-     if (!low_window_available) hold_thread_local_pages();
-     else log_line( "[TLS] kernel TLS stays above 4 GiB; placeholder threads not needed" );
-     {
 -- 
 2.43.0
 
