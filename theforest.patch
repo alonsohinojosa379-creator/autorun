@@ -1,7 +1,7 @@
-From 76455e55ffc1fb2970cedcf8d2a7ebb60b6277c4 Mon Sep 17 00:00:00 2001
+From a6f5bc9a0b3a95ec29ba686da791cffffa3dc2d9 Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
 Date: Sat, 10 Oct 2026 16:15:18 -0600
-Subject: [PATCH 1/3] The Forest para Nintendo Switch: build de un solo juego,
+Subject: [PATCH 1/4] The Forest para Nintendo Switch: build de un solo juego,
  con hasta 256 hilos (Port Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche, mas:
@@ -5895,10 +5895,10 @@ index 0000000..f7e462e
 2.43.0
 
 
-From c359c6f82293930a69bcaa6af3b6c21ef790114c Mon Sep 17 00:00:00 2001
+From cc8c57ebd68f65ad2220c37c16c778bb48ac65c2 Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
 Date: Sat, 10 Oct 2026 16:15:23 -0600
-Subject: [PATCH 2/3] Keep reporting where threads stand every 30 s while the
+Subject: [PATCH 2/4] Keep reporting where threads stand every 30 s while the
  program is hung
 
 ---
@@ -5924,10 +5924,10 @@ index 0673ea0..46195ca 100644
 2.43.0
 
 
-From b86f282bef96cfb45060709d163ec5d6415d47ae Mon Sep 17 00:00:00 2001
+From e1dd0cac77c444f61679f1ab669a523695485f95 Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
 Date: Sat, 10 Oct 2026 16:41:06 -0600
-Subject: [PATCH 3/3] Trace failed creates of non-ASCII file names (status,
+Subject: [PATCH 3/4] Trace failed creates of non-ASCII file names (status,
  unix name, UTF-16)
 
 ---
@@ -5966,6 +5966,77 @@ index 85b04c1..cf33b68 100644
      free( unix_name );
      free( nt_name.Buffer );
      return io->Status = status;
+-- 
+2.43.0
+
+
+From 58b203c24271404e79bcd9118e571a9670f8ddc0 Mon Sep 17 00:00:00 2001
+From: Alonso <build@localhost>
+Date: Sat, 10 Oct 2026 17:20:52 -0600
+Subject: [PATCH 4/4] Create files with non-ASCII names under an ASCII alias
+ when the SD refuses them
+
+---
+ dlls/ntdll/unix/file.c | 39 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index cf33b68..bbe76af 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -4965,6 +4965,33 @@ NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MASK acce
+ }
+ 
+ 
++#ifdef __SWITCH__
++/* The console's FAT driver refuses to create a file whose name has letters outside
++ * ASCII (it answers "path not found", though the folder is there). The game only
++ * writes such files to list them later, so the file is made under an ASCII name
++ * instead: every byte from 0x80 up becomes "_xx", in the last component only. */
++static char *switch_ascii_alias( const char *unix_name )
++{
++    const char *slash = strrchr( unix_name, '/' );
++    const char *p, *base = slash ? slash + 1 : unix_name;
++    size_t extra = 0, len = strlen( unix_name );
++    char *out, *q;
++
++    for (p = base; *p; p++) if ((unsigned char)*p >= 0x80) extra += 2;
++    if (!extra) return NULL;
++    if (!(out = malloc( len + extra + 1 ))) return NULL;
++    memcpy( out, unix_name, base - unix_name );
++    q = out + (base - unix_name);
++    for (p = base; *p; p++)
++    {
++        if ((unsigned char)*p >= 0x80) q += sprintf( q, "_%02x", (unsigned char)*p );
++        else *q++ = *p;
++    }
++    *q = 0;
++    return out;
++}
++#endif
++
+ /******************************************************************************
+  *              NtCreateFile   (NTDLL.@)
+  */
+@@ -5046,6 +5073,18 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+         name_hidden = is_hidden_file( unix_name );
+         status = open_unix_file( handle, unix_name, access, &new_attr, attributes,
+                                  sharing, disposition, options, ea_buffer, ea_length );
++#ifdef __SWITCH__
++        if (created && (status == STATUS_NO_SUCH_FILE || status == STATUS_OBJECT_NAME_NOT_FOUND))
++        {
++            char *alias = switch_ascii_alias( unix_name );
++            if (alias)
++            {
++                status = open_unix_file( handle, alias, access, &new_attr, attributes,
++                                         sharing, disposition, options, ea_buffer, ea_length );
++                free( alias );
++            }
++        }
++#endif
+     }
+     else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
+ 
 -- 
 2.43.0
 
