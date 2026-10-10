@@ -1,7 +1,7 @@
-From 856e3df0384c4ee2c2c053acecf44b9e4eb60b18 Mon Sep 17 00:00:00 2001
+From 76455e55ffc1fb2970cedcf8d2a7ebb60b6277c4 Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
 Date: Sat, 10 Oct 2026 16:15:18 -0600
-Subject: [PATCH 1/2] The Forest para Nintendo Switch: build de un solo juego,
+Subject: [PATCH 1/3] The Forest para Nintendo Switch: build de un solo juego,
  con hasta 256 hilos (Port Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche, mas:
@@ -5895,10 +5895,10 @@ index 0000000..f7e462e
 2.43.0
 
 
-From f76fc69dbbd73a3512e9dcbbdf38a5d9a54c57d9 Mon Sep 17 00:00:00 2001
+From c359c6f82293930a69bcaa6af3b6c21ef790114c Mon Sep 17 00:00:00 2001
 From: Alonso <build@localhost>
 Date: Sat, 10 Oct 2026 16:15:23 -0600
-Subject: [PATCH 2/2] Keep reporting where threads stand every 30 s while the
+Subject: [PATCH 2/3] Keep reporting where threads stand every 30 s while the
  program is hung
 
 ---
@@ -5920,6 +5920,52 @@ index 0673ea0..46195ca 100644
          {
              log_line( "[STALL] no frame drawn for %u s; where the threads are standing", quiet * 5 );
              wine_nx_threads_report_stalled();
+-- 
+2.43.0
+
+
+From b86f282bef96cfb45060709d163ec5d6415d47ae Mon Sep 17 00:00:00 2001
+From: Alonso <build@localhost>
+Date: Sat, 10 Oct 2026 16:41:06 -0600
+Subject: [PATCH 3/3] Trace failed creates of non-ASCII file names (status,
+ unix name, UTF-16)
+
+---
+ dlls/ntdll/unix/file.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 85b04c1..cf33b68 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -5092,6 +5092,27 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+     }
+ 
+  done:
++#ifdef __SWITCH__
++    if (status && attr && attr->ObjectName)
++    {
++        extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
++        static int traced;
++        const UNICODE_STRING *n = attr->ObjectName;
++        unsigned int i, len = n->Length / sizeof(WCHAR);
++        BOOL wide = FALSE;
++
++        for (i = 0; i < len; i++) if (n->Buffer[i] > 0x7f) { wide = TRUE; break; }
++        if (wide && &wine_nx_runtime_trace && traced++ < 20)
++        {
++            char msg[400];
++            int pos = snprintf( msg, sizeof(msg), "[NAMEFAIL] NtCreateFile status=%08x disp=%u unix='%s' wide=",
++                                status, (unsigned)disposition, unix_name ? unix_name : "(none)" );
++            for (i = 0; i < len && i < 24 && pos < (int)sizeof(msg) - 8; i++)
++                pos += snprintf( msg + pos, sizeof(msg) - pos, "%04x ", n->Buffer[i] );
++            wine_nx_runtime_trace( msg );
++        }
++    }
++#endif
+     free( unix_name );
+     free( nt_name.Buffer );
+     return io->Status = status;
 -- 
 2.43.0
 
