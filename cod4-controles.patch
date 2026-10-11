@@ -1,0 +1,88 @@
+From c7ee0edb15b15731480140eb869aab04231b6f69 Mon Sep 17 00:00:00 2001
+From: Asce22 <noreply@example.com>
+Date: Sat, 10 Oct 2026 11:30:27 -0600
+Subject: [PATCH] Controls: TOUCHCLICK=0 and RSTICKSPEED in keys.txt
+
+TOUCHCLICK=0 makes the touch screen only move the cursor; the click then
+comes from A. RSTICKSPEED=n scales how fast the sticks move the mouse.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ horizon-wine/source/pointer_cursor.h |  5 ++++-
+ horizon-wine/source/runtime.c        | 22 +++++++++++++++++++++-
+ 2 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/horizon-wine/source/pointer_cursor.h b/horizon-wine/source/pointer_cursor.h
+index 80205ff..7ebf94d 100644
+--- a/horizon-wine/source/pointer_cursor.h
++++ b/horizon-wine/source/pointer_cursor.h
+@@ -55,6 +55,9 @@ static inline void pointer_cursor_place( struct pointer_cursor *c, double x, dou
+     c->y = y < 0 ? 0 : y > c->height - 1 ? c->height - 1 : y;
+ }
+ 
++/* 1.0 is POINTER_CURSOR_SPEED; keys.txt RSTICKSPEED changes it. */
++static double pointer_cursor_speed_scale = 1.0;
++
+ /* Move by the stick deflection (libnx axes: y up) held for elapsed_ns.
+  * Returns nonzero when the whole-pixel position changed. */
+ static inline int pointer_cursor_step( struct pointer_cursor *c, int stick_x, int stick_y,
+@@ -68,7 +71,7 @@ static inline int pointer_cursor_step( struct pointer_cursor *c, int stick_x, in
+     if (elapsed_ns > POINTER_CURSOR_MAX_STEP_NS) elapsed_ns = POINTER_CURSOR_MAX_STEP_NS;
+     tilt = (deflection - POINTER_CURSOR_DEAD_ZONE) / (POINTER_CURSOR_STICK_MAX - POINTER_CURSOR_DEAD_ZONE);
+     if (tilt > 1) tilt = 1;
+-    distance = POINTER_CURSOR_SPEED * tilt * tilt * (double)elapsed_ns / 1e9;
++    distance = POINTER_CURSOR_SPEED * pointer_cursor_speed_scale * tilt * tilt * (double)elapsed_ns / 1e9;
+     dx = dx / deflection * distance;
+     dy = dy / deflection * distance;
+     c->motion_x += dx;
+diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
+index 837107c..96a666f 100644
+--- a/horizon-wine/source/runtime.c
++++ b/horizon-wine/source/runtime.c
+@@ -868,6 +868,9 @@ static const char *const wine_nx_device_names[WINE_NX_DEVICE_COUNT] =
+ /* The left stick and the d-pad have always sent keys; the others have pointed. */
+ static unsigned char wine_nx_device_mode[WINE_NX_DEVICE_COUNT] =
+     { WINE_NX_PRESSES, WINE_NX_POINTS, WINE_NX_PRESSES, WINE_NX_POINTS };
++/* keys.txt: TOUCHCLICK=0 makes a finger on the screen only move the cursor, so
++ * that a click comes from A (or whatever sends the left button) alone. */
++static int wine_nx_touch_click = 1;
+ 
+ static const char *const wine_nx_pad_key_names[WINE_NX_KEY_COUNT] =
+ {
+@@ -1022,7 +1025,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
+             pointer_cursor_place( &wine_nx_pointer, tx, ty );
+             moved = (int)wine_nx_pointer.x != old_x || (int)wine_nx_pointer.y != old_y;
+             wine_nx_pointer_placed |= moved;
+-            pressed |= WINE_NX_POINTER_LEFT;
++            if (wine_nx_touch_click) pressed |= WINE_NX_POINTER_LEFT;
+         }
+         else
+         {
+@@ -1709,6 +1712,23 @@ static void read_key_map( const char *path )
+         value = equals + 1;
+         while (*name == ' ') name++;
+         while (*value == ' ') value++;
++        /* TOUCHCLICK=0: the screen points but does not click. RSTICKSPEED=n:
++         * how fast the sticks move the mouse, in percent (default 100). */
++        if (!strcasecmp( name, "TOUCHCLICK" ))
++        {
++            wine_nx_touch_click = strtol( value, NULL, 0 ) != 0;
++            changed++;
++            continue;
++        }
++        if (!strcasecmp( name, "RSTICKSPEED" ))
++        {
++            long percent = strtol( value, NULL, 0 );
++
++            if (percent >= 10 && percent <= 300) pointer_cursor_speed_scale = percent / 100.0;
++            else log_line( "[NXINPUT] %s: RSTICKSPEED is 10 to 300, not '%s'", path, value );
++            changed++;
++            continue;
++        }
+         /* The three that point say what they do rather than which key they
+          * are: LSTICK=mouse, RSTICK=keys. */
+         for (i = 0; i < WINE_NX_DEVICE_COUNT; i++)
+-- 
+2.43.0
+
