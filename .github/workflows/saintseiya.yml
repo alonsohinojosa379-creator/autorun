@@ -27,6 +27,7 @@ jobs:
         run: |
           cp saintseiya.patch /tmp/saintseiya.patch
           cp saintseiya-rendimiento.patch /tmp/saintseiya-rendimiento.patch
+          cp saintseiya-estirar.patch /tmp/saintseiya-estirar.patch
           git config user.name "build"
           git config user.email "build@localhost"
           base=c889e4eb722ba6435e50500d9dde51f59781ce99
@@ -36,7 +37,9 @@ jobs:
           # Mejoras de rendimiento del Autorun original (memoria de Vulkan,
           # nucleos para compilar shaders, cache de asignaciones de shaders).
           git am /tmp/saintseiya-rendimiento.patch
-          git log -5 --oneline
+          # Opcion stretch=1: estira la imagen a toda la pantalla.
+          git am /tmp/saintseiya-estirar.patch
+          git log -6 --oneline
 
       - name: Usar la imagen de compilacion vigente
         run: |
