@@ -26,13 +26,17 @@ jobs:
       - name: Aplicar el parche de Saint Seiya
         run: |
           cp saintseiya.patch /tmp/saintseiya.patch
+          cp saintseiya-rendimiento.patch /tmp/saintseiya-rendimiento.patch
           git config user.name "build"
           git config user.email "build@localhost"
           base=c889e4eb722ba6435e50500d9dde51f59781ce99
           git fetch --depth 1 origin "$base"
           git checkout --force "$base"
           git am /tmp/saintseiya.patch
-          git log -3 --oneline
+          # Mejoras de rendimiento del Autorun original (memoria de Vulkan,
+          # nucleos para compilar shaders, cache de asignaciones de shaders).
+          git am /tmp/saintseiya-rendimiento.patch
+          git log -5 --oneline
 
       - name: Usar la imagen de compilacion vigente
         run: |

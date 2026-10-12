@@ -1,0 +1,2019 @@
+From 643517a958e2092055ad87815f48423433a61825 Mon Sep 17 00:00:00 2001
+From: naga <38852591+NaGaa95@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 21:12:37 +0200
+Subject: [PATCH 1/3] horizon: avoid heap scans for Vulkan memory budgets
+
+(cherry picked from commit 19466bf0374a6acc15ab1955e2f209ccfc0711ae)
+---
+ horizon-wine/CMakeLists.txt             |  6 +-
+ horizon-wine/source/native_heap.c       | 79 ++++++++++++++++++++++++-
+ horizon-wine/source/native_heap.h       |  2 +
+ horizon-wine/source/swap_native.c       | 10 ++--
+ horizon-wine/tests/check_native_heap.py | 65 ++++++++++++++------
+ horizon-wine/tests/check_swap_native.py |  6 +-
+ horizon-wine/tests/native_heap_newlib.c | 36 ++++++++++-
+ 7 files changed, 171 insertions(+), 33 deletions(-)
+
+diff --git a/horizon-wine/CMakeLists.txt b/horizon-wine/CMakeLists.txt
+index 0d166246..86139bee 100644
+--- a/horizon-wine/CMakeLists.txt
++++ b/horizon-wine/CMakeLists.txt
+@@ -871,7 +871,9 @@ target_compile_options(wine-nx-runtime PRIVATE
+ target_include_directories(wine-nx-runtime PRIVATE ${WINE_SWITCH_NTDLL_INCLUDES})
+ 
+ target_sources(wine-nx-runtime PRIVATE source/horizon_virtmem.c source/low_window.c source/native_heap.c)
+-foreach(symbol _sbrk_r _free_r _malloc_usable_size_r _mallinfo_r _memalign_r _realloc_r)
++set_property(SOURCE source/native_heap.c APPEND PROPERTY COMPILE_OPTIONS -O2)
++foreach(symbol _sbrk_r _free_r _malloc_usable_size_r _mallinfo_r _memalign_r _realloc_r
++        _malloc_r _calloc_r os_get_available_system_memory)
+     target_link_options(wine-nx-runtime PRIVATE "-Wl,--wrap=${symbol}")
+ endforeach()
+ 
+@@ -891,7 +893,7 @@ if(WINE_NX_SWAP_POC)
+             svcCreateTransferMemory nvioctlNvmap_Alloc nvMapCreate svcSetMemoryAttribute svcMapMemory
+             svcMapDeviceAddressSpace svcMapDeviceAddressSpaceByForce svcMapDeviceAddressSpaceAligned
+             svcWaitForAddress svcSignalToAddress svcArbitrateLock svcArbitrateUnlock
+-            svcWaitProcessWideKeyAtomic svcSignalProcessWideKey _malloc_r _calloc_r)
++            svcWaitProcessWideKeyAtomic svcSignalProcessWideKey)
+         target_link_options(wine-nx-runtime PRIVATE "-Wl,--wrap=${symbol}")
+     endforeach()
+ endif()
+diff --git a/horizon-wine/source/native_heap.c b/horizon-wine/source/native_heap.c
+index 78ab70e8..2e4620ff 100644
+--- a/horizon-wine/source/native_heap.c
++++ b/horizon-wine/source/native_heap.c
+@@ -1,6 +1,7 @@
+ #include <errno.h>
+ #include <limits.h>
+ #include <malloc.h>
++#include <stdbool.h>
+ #include <string.h>
+ #include <sys/reent.h>
+ #include "backing_heap.h"
+@@ -9,6 +10,8 @@
+ 
+ extern char *fake_heap_start, *fake_heap_end;
+ extern void *__real__sbrk_r( struct _reent *, ptrdiff_t );
++extern void *__real__malloc_r( struct _reent *, size_t );
++extern void *__real__calloc_r( struct _reent *, size_t, size_t );
+ extern void *__real__memalign_r( struct _reent *, size_t, size_t );
+ extern void *__real__realloc_r( struct _reent *, void *, size_t );
+ extern void __real__free_r( struct _reent *, void * );
+@@ -22,6 +25,34 @@ static uintptr_t backing_start = UINTPTR_MAX, backing_end;
+ enum { SMALL_FREE_CACHE_LIMIT = 16 * 1048576 };
+ static size_t cached_small_free;
+ static unsigned long long small_allocated, cached_allocated;
++static size_t small_used;
++static __thread unsigned int allocation_depth;
++
++static size_t small_allocation_size( struct _reent *reent, void *pointer )
++{
++    /* Newlib's usable size excludes one word of the allocated chunk. */
++    return pointer ? __real__malloc_usable_size_r( reent, pointer ) + sizeof(size_t) : 0;
++}
++
++void *wine_nx_native_malloc( struct _reent *reent, size_t size )
++{
++    void *result;
++    allocation_depth++;
++    result = __real__malloc_r( reent, size );
++    if (!--allocation_depth && result)
++        __atomic_fetch_add( &small_used, small_allocation_size( reent, result ), __ATOMIC_RELAXED );
++    return result;
++}
++
++void *wine_nx_native_calloc( struct _reent *reent, size_t count, size_t size )
++{
++    void *result;
++    allocation_depth++;
++    result = __real__calloc_r( reent, count, size );
++    if (!--allocation_depth && result)
++        __atomic_fetch_add( &small_used, small_allocation_size( reent, result ), __ATOMIC_RELAXED );
++    return result;
++}
+ 
+ static size_t free_lower_bound_locked(void)
+ {
+@@ -79,7 +110,13 @@ void *wine_nx_native_memalign( struct _reent *reent, size_t alignment, size_t si
+     void *result;
+     uintptr_t floor;
+     if (alignment < 4096 || (alignment & (alignment - 1)) || size < BACKING_UNIT)
+-        return __real__memalign_r( reent, alignment, size );
++    {
++        allocation_depth++;
++        result = __real__memalign_r( reent, alignment, size );
++        if (!--allocation_depth && result)
++            __atomic_fetch_add( &small_used, small_allocation_size( reent, result ), __ATOMIC_RELAXED );
++        return result;
++    }
+     __malloc_lock( reent );
+     init_heap();
+     floor = (uintptr_t)__real__sbrk_r( reent, 0 );
+@@ -93,7 +130,13 @@ void *wine_nx_native_memalign( struct _reent *reent, size_t alignment, size_t si
+ 
+ void __wrap__free_r( struct _reent *reent, void *pointer )
+ {
+-    if (!owns_pointer( pointer )) { __real__free_r( reent, pointer ); return; }
++    if (!owns_pointer( pointer ))
++    {
++        if (!allocation_depth && pointer)
++            __atomic_fetch_sub( &small_used, small_allocation_size( reent, pointer ), __ATOMIC_RELAXED );
++        __real__free_r( reent, pointer );
++        return;
++    }
+     __malloc_lock( reent );
+     backing_free( &heap, pointer );
+     __atomic_store_n( &backing_start, heap.base + (size_t)heap.bottom * BACKING_UNIT, __ATOMIC_RELEASE );
+@@ -114,7 +157,15 @@ void *wine_nx_native_realloc( struct _reent *reent, void *pointer, size_t size )
+ {
+     void *result;
+     size_t previous;
+-    if (!owns_pointer( pointer )) return __real__realloc_r( reent, pointer, size );
++    if (!owns_pointer( pointer ))
++    {
++        previous = allocation_depth ? 0 : small_allocation_size( reent, pointer );
++        allocation_depth++;
++        result = __real__realloc_r( reent, pointer, size );
++        if (!--allocation_depth && (result || !size))
++            __atomic_fetch_add( &small_used, small_allocation_size( reent, result ) - previous, __ATOMIC_RELAXED );
++        return result;
++    }
+     if (!size) { __wrap__free_r( reent, pointer ); return NULL; }
+     __malloc_lock( reent );
+     previous = backing_size( &heap, pointer );
+@@ -143,6 +194,18 @@ struct mallinfo __wrap__mallinfo_r( struct _reent *reent )
+     return info;
+ }
+ 
++bool __wrap_os_get_available_system_memory( uint64_t *available )
++{
++    size_t used;
++    uint64_t capacity = (uintptr_t)fake_heap_end > (uintptr_t)fake_heap_start ?
++                        (uintptr_t)fake_heap_end - (uintptr_t)fake_heap_start : 0;
++    __malloc_lock( _REENT );
++    used = heap.used + __atomic_load_n( &small_used, __ATOMIC_RELAXED );
++    __malloc_unlock( _REENT );
++    *available = used < capacity ? capacity - used : 0;
++    return capacity != 0;
++}
++
+ size_t wine_nx_native_heap_free_lower_bound(void)
+ {
+     size_t available;
+@@ -207,6 +270,16 @@ void wine_nx_native_heap_stats( struct wine_nx_native_heap_stats *stats )
+ }
+ 
+ #ifndef WINE_NX_SWAP_POC
++void *__wrap__malloc_r( struct _reent *reent, size_t size )
++{
++    return wine_nx_native_malloc( reent, size );
++}
++
++void *__wrap__calloc_r( struct _reent *reent, size_t count, size_t size )
++{
++    return wine_nx_native_calloc( reent, count, size );
++}
++
+ void *__wrap__memalign_r( struct _reent *reent, size_t alignment, size_t size )
+ {
+     return wine_nx_native_memalign( reent, alignment, size );
+diff --git a/horizon-wine/source/native_heap.h b/horizon-wine/source/native_heap.h
+index b56a6b42..d4460928 100644
+--- a/horizon-wine/source/native_heap.h
++++ b/horizon-wine/source/native_heap.h
+@@ -11,6 +11,8 @@ struct wine_nx_native_heap_stats
+     int complete;
+ };
+ 
++void *wine_nx_native_malloc( struct _reent *, size_t size );
++void *wine_nx_native_calloc( struct _reent *, size_t count, size_t size );
+ void *wine_nx_native_memalign( struct _reent *, size_t alignment, size_t size );
+ void *wine_nx_native_realloc( struct _reent *, void *pointer, size_t size );
+ size_t wine_nx_native_heap_free_lower_bound(void);
+diff --git a/horizon-wine/source/swap_native.c b/horizon-wine/source/swap_native.c
+index 6420e5b7..7466944f 100644
+--- a/horizon-wine/source/swap_native.c
++++ b/horizon-wine/source/swap_native.c
+@@ -244,8 +244,6 @@ void __wrap_svcSignalProcessWideKey( u32 *key, s32 count )
+     horizon_swap_pin_end( &pin );
+ }
+ 
+-extern void *__real__malloc_r( struct _reent *, size_t );
+-extern void *__real__calloc_r( struct _reent *, size_t, size_t );
+ extern size_t wine_nx_sd_cache_reclaim( size_t );
+ static __thread unsigned int allocator_depth;
+ static __thread unsigned int allocator_deferred;
+@@ -361,9 +359,9 @@ void *__wrap__malloc_r( struct _reent *reent, size_t size )
+     void *ptr;
+     struct horizon_swap_reclaim_budget budget = { .remaining = SIZE_MAX };
+     allocator_depth++;
+-    ptr = __real__malloc_r( reent, size );
++    ptr = wine_nx_native_malloc( reent, size );
+     while (!ptr && allocator_depth == 1 && horizon_swap_native_reclaim( size, &budget ))
+-        ptr = __real__malloc_r( reent, size );
++        ptr = wine_nx_native_malloc( reent, size );
+     if (ptr && horizon_swap_enabled()) wine_nx_native_heap_note_small_allocation( size );
+     allocator_depth--;
+     return ptr;
+@@ -374,10 +372,10 @@ void *__wrap__calloc_r( struct _reent *reent, size_t count, size_t size )
+     void *ptr;
+     struct horizon_swap_reclaim_budget budget = { .remaining = SIZE_MAX };
+     allocator_depth++;
+-    ptr = __real__calloc_r( reent, count, size );
++    ptr = wine_nx_native_calloc( reent, count, size );
+     while (!ptr && size && allocator_depth == 1 && count <= SIZE_MAX / size &&
+            horizon_swap_native_reclaim( count * size, &budget ))
+-        ptr = __real__calloc_r( reent, count, size );
++        ptr = wine_nx_native_calloc( reent, count, size );
+     if (ptr && size && count <= SIZE_MAX / size && horizon_swap_enabled())
+         wine_nx_native_heap_note_small_allocation( count * size );
+     allocator_depth--;
+diff --git a/horizon-wine/tests/check_native_heap.py b/horizon-wine/tests/check_native_heap.py
+index 96ba20ff..f2e508c2 100644
+--- a/horizon-wine/tests/check_native_heap.py
++++ b/horizon-wine/tests/check_native_heap.py
+@@ -7,31 +7,33 @@ root = Path(__file__).resolve().parents[1]
+ source = (root / 'source/native_heap.c').read_text()
+ source = source.replace('#include <malloc.h>', '').replace('#include <sys/reent.h>', '')
+ fixture = r'''
+-#define _POSIX_C_SOURCE 200112L
++#define _GNU_SOURCE
+ #include <assert.h>
+ #include <errno.h>
++#include <malloc.h>
+ #include <stdio.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+ #include <string.h>
+-#include <threads.h>
++#include <pthread.h>
+ #include "heap_snapshot.h"
+ struct _reent { int _errno; };
+ static _Thread_local struct _reent reent;
+ #define _REENT (&reent)
++#define mallinfo native_test_mallinfo
+ struct mallinfo { size_t arena, fordblks, keepcost, ordblks, uordblks; };
+ static unsigned char area[128 * 1048576] __attribute__((aligned(2097152)));
+ char *fake_heap_start = (char *)area, *fake_heap_end = (char *)area + sizeof(area);
+ static uintptr_t heap_break = (uintptr_t)area;
+ static size_t small_free;
+ static unsigned long mallinfo_calls;
+-static mtx_t mutex;
++static pthread_mutex_t mutex;
+ static _Thread_local unsigned int locks;
+ struct horizon_heap_chunk *__malloc_av_[258];
+ static void __malloc_lock(struct _reent *r)
+-{ (void)r; assert(mtx_lock(&mutex) == thrd_success); locks++; }
++{ (void)r; assert(!pthread_mutex_lock(&mutex)); locks++; }
+ static void __malloc_unlock(struct _reent *r)
+-{ (void)r; assert(locks); locks--; assert(mtx_unlock(&mutex) == thrd_success); }
++{ (void)r; assert(locks); locks--; assert(!pthread_mutex_unlock(&mutex)); }
+ void *__real__sbrk_r(struct _reent *r, ptrdiff_t increment)
+ {
+     uintptr_t previous = heap_break;
+@@ -44,11 +46,13 @@ void *__real__sbrk_r(struct _reent *r, ptrdiff_t increment)
+ }
+ void *__real__memalign_r(struct _reent *r, size_t alignment, size_t size)
+ { void *result = NULL; (void)r; if (posix_memalign(&result, alignment, size)) return NULL; return result; }
++void *__real__malloc_r(struct _reent *r, size_t size) { (void)r; return malloc(size); }
++void *__real__calloc_r(struct _reent *r, size_t count, size_t size) { (void)r; return calloc(count, size); }
+ void *__real__realloc_r(struct _reent *r, void *pointer, size_t size)
+ { (void)r; return realloc(pointer, size); }
+ void __real__free_r(struct _reent *r, void *pointer) { (void)r; free(pointer); }
+ size_t __real__malloc_usable_size_r(struct _reent *r, void *pointer)
+-{ (void)r; (void)pointer; assert(0); return 0; }
++{ (void)r; return malloc_usable_size(pointer); }
+ struct mallinfo __real__mallinfo_r(struct _reent *r)
+ {
+     (void)r;
+@@ -77,6 +81,8 @@ static void available_bounds(void)
+     assert(wine_nx_native_heap_free_lower_bound() == initial);
+     fake_heap_end = (char *)((uintptr_t)fake_heap_start + (UINT64_C(8) << 30));
+     assert(wine_nx_native_heap_free_lower_bound() == (UINT64_C(8) << 30));
++    uint64_t budget;
++    assert(__wrap_os_get_available_system_memory(&budget) && budget == (UINT64_C(8) << 30));
+     fake_heap_end = (char *)area + sizeof(area);
+     for (unsigned int i = 0; i < 3; i++)
+     {
+@@ -110,7 +116,7 @@ static void available_bounds(void)
+     assert(wine_nx_native_heap_free_lower_bound() == initial);
+ }
+ 
+-static int worker(void *argument)
++static void *worker(void *argument)
+ {
+     unsigned int seed = (uintptr_t)argument + 1;
+     unsigned char *live[32] = {0};
+@@ -155,7 +161,7 @@ static int worker(void *argument)
+     for (unsigned int i = 0; i < 32; i++) __wrap__free_r(_REENT, live[i]);
+     return 0;
+ }
+-static int small_heap_worker(void *argument)
++static void *small_heap_worker(void *argument)
+ {
+     (void)argument;
+     for (unsigned int iteration = 0; iteration < 40000; iteration++)
+@@ -171,32 +177,57 @@ static int small_heap_worker(void *argument)
+     }
+     return 0;
+ }
++static void *allocation_worker(void *argument)
++{
++    (void)argument;
++    for (unsigned int i = 0; i < 40000; i++)
++    {
++        uint64_t available;
++        void *p = __wrap__calloc_r(_REENT, 2, 1 + i % 1024);
++        assert(p);
++        p = __wrap__realloc_r(_REENT, p, 8192);
++        assert(p);
++        assert(__wrap_os_get_available_system_memory(&available) && available <= sizeof(area));
++        __wrap__free_r(_REENT, p);
++    }
++    return 0;
++}
+ int main(void)
+ {
+-    thrd_t workers[5];
+-    assert(mtx_init(&mutex, mtx_recursive) == thrd_success);
++    pthread_t workers[9];
++    pthread_mutexattr_t attributes;
++    assert(!pthread_mutexattr_init(&attributes));
++    assert(!pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE));
++    assert(!pthread_mutex_init(&mutex, &attributes));
++    assert(!pthread_mutexattr_destroy(&attributes));
+     for (unsigned int i = 0; i < 128; i++)
+         __malloc_av_[2 * i + 2] = __malloc_av_[2 * i + 3] =
+             (struct horizon_heap_chunk *)((char *)&__malloc_av_[2 * i + 2] - 2 * sizeof(size_t));
+     available_bounds();
+-    for (uintptr_t i = 0; i < 4; i++) assert(thrd_create(&workers[i], worker, (void *)i) == thrd_success);
+-    assert(thrd_create(&workers[4], small_heap_worker, NULL) == thrd_success);
+-    for (unsigned int i = 0; i < 5; i++) assert(thrd_join(workers[i], NULL) == thrd_success);
++    for (uintptr_t i = 0; i < 4; i++) assert(!pthread_create(&workers[i], NULL, worker, (void *)i));
++    assert(!pthread_create(&workers[4], NULL, small_heap_worker, NULL));
++    for (unsigned int i = 5; i < 9; i++) assert(!pthread_create(&workers[i], NULL, allocation_worker, NULL));
++    for (unsigned int i = 0; i < 9; i++) assert(!pthread_join(workers[i], NULL));
+     assert(!heap.used && !heap.holes && heap.bottom == heap.count);
+     assert(heap_break == (uintptr_t)fake_heap_start);
+     void *p = __wrap__memalign_r(_REENT, 4096, 4096);
+     assert(p && !owns_pointer(p));
+     __wrap__free_r(_REENT, p);
++    uint64_t available;
++    unsigned long calls = mallinfo_calls;
++    for (unsigned int i = 0; i < 10000; i++)
++        assert(__wrap_os_get_available_system_memory(&available) && available == sizeof(area));
++    assert(!small_used && calls == mallinfo_calls);
+     p = __wrap__realloc_r(_REENT, NULL, 1024);
+     assert(p && !owns_pointer(p));
+     __wrap__free_r(_REENT, p);
+-    mtx_destroy(&mutex);
+-    puts("native heap: 200000 concurrent allocation/resize/free/break operations passed");
++    pthread_mutex_destroy(&mutex);
++    puts("native heap: concurrent allocation, resize, free, break and scan-free budget tests passed");
+ }
+ '''
+ with tempfile.TemporaryDirectory(prefix='autorun-native-heap-') as tmp:
+     unit, binary = Path(tmp) / 'heap.c', Path(tmp) / 'heap'
+     unit.write_text(fixture.replace('/* IMPLEMENTATION */', source))
+-    subprocess.run([os.environ.get('CC', 'clang'), '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror',
+-                    '-fsanitize=address,undefined', '-I', str(root / 'source'), str(unit), '-o', str(binary)], check=True)
++    subprocess.run([os.environ.get('CC', 'clang'), '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror', '-pthread',
++                    '-fsanitize=' + os.environ.get('SANITIZE', 'address,undefined'), '-I', str(root / 'source'), str(unit), '-o', str(binary)], check=True)
+     subprocess.run([str(binary)], check=True)
+diff --git a/horizon-wine/tests/check_swap_native.py b/horizon-wine/tests/check_swap_native.py
+index b9397e2e..43b490f7 100644
+--- a/horizon-wine/tests/check_swap_native.py
++++ b/horizon-wine/tests/check_swap_native.py
+@@ -5,7 +5,7 @@ import tempfile
+ 
+ root = Path(__file__).resolve().parents[1]
+ source = (root / 'source/swap_native.c').read_text()
+-source = source[source.index('extern void *__real__malloc_r'):]
++source = source[source.index('extern size_t wine_nx_sd_cache_reclaim'):]
+ horizon = (root.parent / 'dlls/ntdll/unix/horizon.c').read_text()
+ reclaim = horizon[horizon.index('size_t horizon_swap_reclaim('):]
+ reclaim = reclaim[:reclaim.index('\n}') + 2]
+@@ -84,9 +84,9 @@ static void *allocate(void)
+     attempts++;
+     return attempts <= fail_attempts ? NULL : &result;
+ }
+-void *__real__malloc_r(struct _reent *r, size_t size)
++void *wine_nx_native_malloc(struct _reent *r, size_t size)
+ { (void)r; (void)size; return allocate(); }
+-void *__real__calloc_r(struct _reent *r, size_t count, size_t size)
++void *wine_nx_native_calloc(struct _reent *r, size_t count, size_t size)
+ { (void)r; if (size && count > SIZE_MAX / size) return NULL; return allocate(); }
+ void *wine_nx_native_realloc(struct _reent *r, void *old, size_t size)
+ { (void)r; assert(old == &result); return size ? allocate() : NULL; }
+diff --git a/horizon-wine/tests/native_heap_newlib.c b/horizon-wine/tests/native_heap_newlib.c
+index ab65548e..1ef4ecbb 100644
+--- a/horizon-wine/tests/native_heap_newlib.c
++++ b/horizon-wine/tests/native_heap_newlib.c
+@@ -1,4 +1,5 @@
+ #include <errno.h>
++#include <stdbool.h>
+ #include <malloc.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+@@ -12,6 +13,9 @@ char *fake_heap_start = (char *)area, *fake_heap_end = (char *)area + sizeof(are
+ static char *heap_break = (char *)area;
+ static struct _reent reent;
+ static unsigned int locks;
++static unsigned char tls_area[4096] __attribute__((aligned(16)));
++void *__aarch64_read_tp(void) { return tls_area; }
++extern bool __wrap_os_get_available_system_memory(uint64_t *);
+ 
+ static long linux_call(long number, long a, long b, long c)
+ {
+@@ -28,6 +32,14 @@ static long linux_call(long number, long a, long b, long c)
+     linux_call(64, 2, (long)message, sizeof(message) - 1); \
+     linux_call(93, 1, 0, 0); __builtin_unreachable(); } } while (0)
+ 
++static void check_budget(void)
++{
++    struct mallinfo info = mallinfo();
++    uint64_t available;
++    check(__wrap_os_get_available_system_memory(&available));
++    check(available == sizeof(area) - info.uordblks);
++}
++
+ struct _reent *__getreent(void) { return &reent; }
+ void __malloc_lock(struct _reent *r) { (void)r; locks++; }
+ void __malloc_unlock(struct _reent *r) { (void)r; check(locks); locks--; }
+@@ -67,9 +79,11 @@ static void run(void)
+     struct mallinfo before, after;
+     void *aligned, *grown, *small, *large, *items[512] = {0};
+     unsigned int random_state = 834976, iteration;
++    volatile size_t impossible_size = SIZE_MAX;
+     wine_nx_native_heap_stats(&stats);
+     check(!stats.used && stats.gap == sizeof(area) && stats.complete);
+     before = mallinfo();
++    check_budget();
+     aligned = memalign(2 * MiB, 2 * MiB);
+     check(aligned && !((uintptr_t)aligned % (2 * MiB)));
+     check(malloc_usable_size(aligned) == 2 * MiB);
+@@ -87,6 +101,7 @@ static void run(void)
+     check(realloc(grown, 2 * MiB) == grown && malloc_usable_size(grown) == 2 * MiB);
+     free(small);
+     free(grown);
++    check_budget();
+     wine_nx_native_heap_stats(&stats);
+     check(!stats.reserved && !stats.used && !stats.holes && stats.complete);
+ 
+@@ -117,11 +132,17 @@ static void run(void)
+         unsigned int slot;
+         random_state = random_state * 1664525 + 1013904223;
+         slot = (random_state >> 16) % 512;
+-        if (items[slot]) { free(items[slot]); items[slot] = NULL; }
++        if (items[slot] && (random_state & 7) == 0)
++        {
++            void *changed = realloc(items[slot], 1 + (random_state >> 10) % (3 * MiB));
++            if (changed) items[slot] = changed;
++        }
++        else if (items[slot]) { free(items[slot]); items[slot] = NULL; }
+         else if (random_state & 1)
+             items[slot] = memalign((size_t)4096 << ((random_state >> 8) % 10),
+                                   65536 + (random_state >> 10) % (2 * MiB));
+-        else items[slot] = malloc(1 + (random_state >> 10) % 8192);
++        else items[slot] = calloc(1 + (random_state >> 10) % 8192, 1);
++        check_budget();
+         if (!(iteration % 500))
+         {
+             wine_nx_native_heap_stats(&stats);
+@@ -135,7 +156,18 @@ static void run(void)
+     check(!stats.reserved && !stats.used && !stats.holes && stats.complete && !locks);
+     check(mallinfo().uordblks == before.uordblks);
+     mixed_lifetimes(0);
++    check_budget();
+     mixed_lifetimes(1);
++    check_budget();
++    small = malloc(1024);
++    check(small);
++    check(!realloc(small, impossible_size));
++    check_budget();
++    small = realloc(small, 0);
++    check_budget();
++    free(small);
++    check(!calloc(impossible_size, 2));
++    check_budget();
+     static const char message[] = "newlib heap: mixed allocation, boundary, realloc, accounting and unmapped backing tests passed\n";
+     linux_call(64, 1, (long)message, sizeof(message) - 1);
+ }
+-- 
+2.43.0
+
+
+From ea2cbe1ebd1a8d13ea7b3e6d1b36beedea34c16f Mon Sep 17 00:00:00 2001
+From: naga <38852591+NaGaa95@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 21:15:19 +0200
+Subject: [PATCH 2/3] horizon: allow Vulkan compilation to migrate across
+ application cores
+
+(cherry picked from commit e823a778f5ccf40ae8392209b9ff769b42780c14)
+---
+ dlls/winevulkan/make_vulkan                 |   8 +
+ dlls/winevulkan/vulkan_private.h            |   5 +
+ dlls/winevulkan/vulkan_thunks.c             |  36 ++++
+ horizon-wine/source/thread_profile.c        |  51 ++++-
+ horizon-wine/source/thread_profile.h        |   2 +
+ horizon-wine/tests/check_shader_affinity.py | 224 ++++++++++++++++++++
+ 6 files changed, 324 insertions(+), 2 deletions(-)
+ create mode 100644 horizon-wine/tests/check_shader_affinity.py
+
+diff --git a/dlls/winevulkan/make_vulkan b/dlls/winevulkan/make_vulkan
+index 211ead8f..cc5e6855 100755
+--- a/dlls/winevulkan/make_vulkan
++++ b/dlls/winevulkan/make_vulkan
+@@ -753,6 +753,9 @@ class Function(Type):
+         body = ""
+         needs_alloc = False
+         deferred_op = None
++        pipeline_affinity = self.name in ("vkCreateGraphicsPipelines", "vkCreateComputePipelines")
++        if pipeline_affinity:
++            body += "#ifdef __SWITCH__\n    unsigned int nx_pipeline_affinity;\n#endif\n"
+ 
+         # Declare any tmp parameters for conversion.
+         for p in self.params:
+@@ -818,11 +821,16 @@ class Function(Type):
+             func_prefix = "{0}->p_".format(self.params[0].dispatch_table(params_prefix, conv))
+ 
+         # Call the host Vulkan function.
++        if pipeline_affinity:
++            body += "#ifdef __SWITCH__\n    nx_pipeline_affinity = wine_nx_thread_pipeline_begin();\n#endif\n"
+         if self.type == "void":
+             body += "    {0}{1}({2});\n".format(func_prefix, self.name, params)
+         else:
+             body += "    {0}result = {1}{2}({3});\n".format(params_prefix, func_prefix, self.name, params)
+ 
++        if pipeline_affinity:
++            body += "#ifdef __SWITCH__\n    wine_nx_thread_pipeline_end(nx_pipeline_affinity);\n#endif\n"
++
+         # Call any host_to_win conversion calls.
+         for p in self.params:
+             if p.needs_conversion(conv, self.unwrap, Direction.OUTPUT):
+diff --git a/dlls/winevulkan/vulkan_private.h b/dlls/winevulkan/vulkan_private.h
+index bc8fe305..5b9438dc 100644
+--- a/dlls/winevulkan/vulkan_private.h
++++ b/dlls/winevulkan/vulkan_private.h
+@@ -27,6 +27,11 @@
+ 
+ #include "wine/rbtree.h"
+ 
++#ifdef __SWITCH__
++extern unsigned int wine_nx_thread_pipeline_begin(void);
++extern void wine_nx_thread_pipeline_end(unsigned int token);
++#endif
++
+ extern const struct vulkan_funcs *vk_funcs;
+ 
+ struct wine_instance
+diff --git a/dlls/winevulkan/vulkan_thunks.c b/dlls/winevulkan/vulkan_thunks.c
+index bb2963a7..1ec82bf7 100644
+--- a/dlls/winevulkan/vulkan_thunks.c
++++ b/dlls/winevulkan/vulkan_thunks.c
+@@ -59555,10 +59555,19 @@ static NTSTATUS thunk32_vkCreateCommandPool(void *args)
+ static NTSTATUS thunk64_vkCreateComputePipelines(void *args)
+ {
+     struct vkCreateComputePipelines_params *params = args;
++#ifdef __SWITCH__
++    unsigned int nx_pipeline_affinity;
++#endif
+ 
+     TRACE("%p, 0x%s, %u, %p, %p, %p\n", params->device, wine_dbgstr_longlong(params->pipelineCache), params->createInfoCount, params->pCreateInfos, params->pAllocator, params->pPipelines);
+ 
++#ifdef __SWITCH__
++    nx_pipeline_affinity = wine_nx_thread_pipeline_begin();
++#endif
+     params->result = vulkan_device_from_handle(params->device)->p_vkCreateComputePipelines(vulkan_device_from_handle(params->device)->host.device, params->pipelineCache, params->createInfoCount, params->pCreateInfos, NULL, params->pPipelines);
++#ifdef __SWITCH__
++    wine_nx_thread_pipeline_end(nx_pipeline_affinity);
++#endif
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -59575,6 +59584,9 @@ static NTSTATUS thunk32_vkCreateComputePipelines(void *args)
+         PTR32 pPipelines;
+         VkResult result;
+     } *params = args;
++#ifdef __SWITCH__
++    unsigned int nx_pipeline_affinity;
++#endif
+     const VkComputePipelineCreateInfo *pCreateInfos_host;
+     struct conversion_context local_ctx;
+     struct conversion_context *ctx = &local_ctx;
+@@ -59583,7 +59595,13 @@ static NTSTATUS thunk32_vkCreateComputePipelines(void *args)
+ 
+     init_conversion_context(ctx);
+     pCreateInfos_host = convert_VkComputePipelineCreateInfo_array_win32_to_host(ctx, (const VkComputePipelineCreateInfo32 *)UlongToPtr(params->pCreateInfos), params->createInfoCount);
++#ifdef __SWITCH__
++    nx_pipeline_affinity = wine_nx_thread_pipeline_begin();
++#endif
+     params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkCreateComputePipelines(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->pipelineCache, params->createInfoCount, pCreateInfos_host, NULL, (VkPipeline *)UlongToPtr(params->pPipelines));
++#ifdef __SWITCH__
++    wine_nx_thread_pipeline_end(nx_pipeline_affinity);
++#endif
+     convert_VkComputePipelineCreateInfo_array_host_to_win32(pCreateInfos_host, (VkComputePipelineCreateInfo32 *)UlongToPtr(params->pCreateInfos), params->createInfoCount);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+@@ -60149,10 +60167,19 @@ static NTSTATUS thunk32_vkCreateGpaSessionAMD(void *args)
+ static NTSTATUS thunk64_vkCreateGraphicsPipelines(void *args)
+ {
+     struct vkCreateGraphicsPipelines_params *params = args;
++#ifdef __SWITCH__
++    unsigned int nx_pipeline_affinity;
++#endif
+ 
+     TRACE("%p, 0x%s, %u, %p, %p, %p\n", params->device, wine_dbgstr_longlong(params->pipelineCache), params->createInfoCount, params->pCreateInfos, params->pAllocator, params->pPipelines);
+ 
++#ifdef __SWITCH__
++    nx_pipeline_affinity = wine_nx_thread_pipeline_begin();
++#endif
+     params->result = vulkan_device_from_handle(params->device)->p_vkCreateGraphicsPipelines(vulkan_device_from_handle(params->device)->host.device, params->pipelineCache, params->createInfoCount, params->pCreateInfos, NULL, params->pPipelines);
++#ifdef __SWITCH__
++    wine_nx_thread_pipeline_end(nx_pipeline_affinity);
++#endif
+     return STATUS_SUCCESS;
+ }
+ #endif /* _WIN64 */
+@@ -60169,6 +60196,9 @@ static NTSTATUS thunk32_vkCreateGraphicsPipelines(void *args)
+         PTR32 pPipelines;
+         VkResult result;
+     } *params = args;
++#ifdef __SWITCH__
++    unsigned int nx_pipeline_affinity;
++#endif
+     const VkGraphicsPipelineCreateInfo *pCreateInfos_host;
+     struct conversion_context local_ctx;
+     struct conversion_context *ctx = &local_ctx;
+@@ -60177,7 +60207,13 @@ static NTSTATUS thunk32_vkCreateGraphicsPipelines(void *args)
+ 
+     init_conversion_context(ctx);
+     pCreateInfos_host = convert_VkGraphicsPipelineCreateInfo_array_win32_to_host(ctx, (const VkGraphicsPipelineCreateInfo32 *)UlongToPtr(params->pCreateInfos), params->createInfoCount);
++#ifdef __SWITCH__
++    nx_pipeline_affinity = wine_nx_thread_pipeline_begin();
++#endif
+     params->result = vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->p_vkCreateGraphicsPipelines(vulkan_device_from_handle((VkDevice)UlongToPtr(params->device))->host.device, params->pipelineCache, params->createInfoCount, pCreateInfos_host, NULL, (VkPipeline *)UlongToPtr(params->pPipelines));
++#ifdef __SWITCH__
++    wine_nx_thread_pipeline_end(nx_pipeline_affinity);
++#endif
+     convert_VkGraphicsPipelineCreateInfo_array_host_to_win32(pCreateInfos_host, (VkGraphicsPipelineCreateInfo32 *)UlongToPtr(params->pCreateInfos), params->createInfoCount);
+     free_conversion_context(ctx);
+     return STATUS_SUCCESS;
+diff --git a/horizon-wine/source/thread_profile.c b/horizon-wine/source/thread_profile.c
+index d3580644..fab2ad91 100644
+--- a/horizon-wine/source/thread_profile.c
++++ b/horizon-wine/source/thread_profile.c
+@@ -46,6 +46,13 @@ extern unsigned int wine_nx_server_calls[] __attribute__((weak));
+ extern unsigned long long wine_nx_server_ticks[] __attribute__((weak));
+ extern const char *wine_nx_server_names[] __attribute__((weak));
+ 
++enum nx_shader_affinity
++{
++    NX_SHADER_AFFINITY_NONE,
++    NX_SHADER_AFFINITY_WORKER,
++    NX_SHADER_AFFINITY_PIPELINE,
++};
++
+ struct nx_prof_thread
+ {
+     Handle handle;  /* 0: free */
+@@ -152,7 +159,7 @@ static int restore_thread_locked( struct nx_prof_thread *thread, s32 core, u32 m
+         return 0;
+     }
+     thread->helper = 0;
+-    thread->migratable = 0;
++    thread->migratable = NX_SHADER_AFFINITY_NONE;
+     if (thread->teb && &horizon_follow_thread_cores)
+         horizon_follow_thread_cores( (void *)(uintptr_t)thread->teb, mask );
+     return 1;
+@@ -169,12 +176,50 @@ static int migrate_shader_locked( struct nx_prof_thread *thread )
+         R_FAILED( svcSetThreadCoreMask( thread->handle, -1, mask ) )) return -1;
+     thread->app_core = previous_core;
+     thread->app_mask = previous_mask;
+-    thread->migratable = 1;
++    thread->migratable = NX_SHADER_AFFINITY_WORKER;
+     if (thread->teb && &horizon_follow_thread_cores)
+         horizon_follow_thread_cores( (void *)(uintptr_t)thread->teb, mask );
+     return (int)mask;
+ }
+ 
++unsigned int wine_nx_thread_pipeline_begin( void )
++{
++    Handle handle = threadGetCurHandle();
++    unsigned int i, token = 0;
++
++    pthread_mutex_lock( &registry_mutex );
++    for (i = 0; i < NX_PROF_MAX_THREADS; i++)
++    {
++        struct nx_prof_thread *thread = &registry[i];
++        int moved;
++
++        if (thread->handle != handle || thread->kind != 'w') continue;
++        if (thread->helper) break;
++        if ((moved = migrate_shader_locked( thread )) > 0)
++        {
++            thread->migratable = NX_SHADER_AFFINITY_PIPELINE;
++            token = i + 1;
++        }
++        break;
++    }
++    pthread_mutex_unlock( &registry_mutex );
++    return token;
++}
++
++void wine_nx_thread_pipeline_end( unsigned int token )
++{
++    struct nx_prof_thread *thread;
++    int restored = 1;
++
++    if (!token || token > NX_PROF_MAX_THREADS) return;
++    pthread_mutex_lock( &registry_mutex );
++    thread = &registry[token - 1];
++    if (thread->handle == threadGetCurHandle() && thread->migratable == NX_SHADER_AFFINITY_PIPELINE)
++        restored = restore_thread_locked( thread, thread->app_core, thread->app_mask );
++    pthread_mutex_unlock( &registry_mutex );
++    if (!restored) wine_nx_runtime_trace( "[CORES] Vulkan compilation: could not restore affinity" );
++}
++
+ void wine_nx_thread_set_name( unsigned int tid, const char *name )
+ {
+     char line[128] = "";
+@@ -193,6 +238,8 @@ void wine_nx_thread_set_name( unsigned int tid, const char *name )
+         snprintf( thread->name, sizeof(thread->name), "%s", name );
+         if (nx_thread_shader_worker( name ))
+         {
++            if (thread->migratable == NX_SHADER_AFFINITY_PIPELINE)
++                thread->migratable = NX_SHADER_AFFINITY_WORKER;
+             if ((moved = migrate_shader_locked( thread )) > 0)
+                 snprintf( line, sizeof(line), "[CORES] %u %s: affinity %#x, priority unchanged", tid, name, moved );
+             else if (moved < 0)
+diff --git a/horizon-wine/source/thread_profile.h b/horizon-wine/source/thread_profile.h
+index ae892448..dddfada3 100644
+--- a/horizon-wine/source/thread_profile.h
++++ b/horizon-wine/source/thread_profile.h
+@@ -13,6 +13,8 @@ int wine_nx_four_cores_available( void );
+ void wine_nx_thread_configure_cores( int enabled );
+ void wine_nx_thread_set_name( unsigned int tid, const char *name );
+ void wine_nx_thread_set_affinity( unsigned int tid, unsigned int mask );
++unsigned int wine_nx_thread_pipeline_begin( void );
++void wine_nx_thread_pipeline_end( unsigned int token );
+ 
+ static inline int nx_thread_graphics_worker( const char *name )
+ {
+diff --git a/horizon-wine/tests/check_shader_affinity.py b/horizon-wine/tests/check_shader_affinity.py
+new file mode 100644
+index 00000000..744697e6
+--- /dev/null
++++ b/horizon-wine/tests/check_shader_affinity.py
+@@ -0,0 +1,224 @@
++#!/usr/bin/env python3
++import os
++from pathlib import Path
++import shlex
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[2]
++source = (root / 'horizon-wine/source/thread_profile.c').read_text()
++
++
++def section(start, end):
++    begin = source.index(start)
++    return source[begin:source.index(end, begin)]
++
++
++fixture = r'''
++#include <assert.h>
++#include <pthread.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include "thread_profile.h"
++typedef uint32_t Handle, Result, u32;
++typedef uint64_t u64;
++typedef int32_t s32;
++#define NX_PROF_MAX_THREADS 256
++#define CUR_PROCESS_HANDLE 99
++#define InfoType_CoreMask 1
++#define R_FAILED(rc) ((rc) != 0)
++'''
++fixture += section('enum nx_shader_affinity', '/* horizon.c:')
++fixture += r'''
++static pthread_mutex_t registry_mutex = PTHREAD_MUTEX_INITIALIZER;
++static struct nx_prof_thread registry[NX_PROF_MAX_THREADS];
++static int four_cores_enabled = 1;
++static Handle current_handle = 123;
++static s32 current_core, current_priority;
++static u64 current_mask, process_mask;
++static unsigned int sets, follows, logs, failure;
++static Handle threadGetCurHandle(void) { return current_handle; }
++static Result svcGetInfo(u64 *mask, u32 type, Handle handle, u64 sub)
++{
++    assert(type == InfoType_CoreMask && handle == CUR_PROCESS_HANDLE && !sub);
++    *mask = process_mask;
++    return failure == 1;
++}
++static Result svcGetThreadCoreMask(s32 *core, u64 *mask, Handle handle)
++{
++    assert(handle == current_handle);
++    *core = current_core;
++    *mask = current_mask;
++    return failure == 2;
++}
++static Result svcSetThreadCoreMask(Handle handle, s32 core, u32 mask)
++{
++    assert(handle == current_handle);
++    if (failure == 3) return 1;
++    current_core = core;
++    current_mask = mask;
++    sets++;
++    return 0;
++}
++static Result __real_svcSetThreadCoreMask(Handle handle, s32 core, u32 mask)
++{ return svcSetThreadCoreMask(handle, core, mask); }
++static Result svcGetThreadPriority(s32 *priority, Handle handle)
++{
++    assert(handle == current_handle);
++    *priority = current_priority;
++    return 0;
++}
++static Result svcSetThreadPriority(Handle handle, s32 priority)
++{
++    assert(handle == current_handle);
++    current_priority = priority;
++    return 0;
++}
++void horizon_follow_thread_cores(void *teb, unsigned int mask) __attribute__((weak));
++void horizon_follow_thread_cores(void *teb, unsigned int mask)
++{
++    assert(teb == (void *)1 && mask == current_mask);
++    follows++;
++}
++static void wine_nx_runtime_trace(const char *line)
++{
++    assert(!pthread_mutex_trylock(&registry_mutex));
++    pthread_mutex_unlock(&registry_mutex);
++    assert(!strncmp(line, "[CORES]", 7));
++    logs++;
++}
++'''
++fixture += section('static int offload_thread_locked', 'static uint64_t thread_ticks')
++fixture += r'''
++static void reset(void)
++{
++    memset(registry, 0, sizeof(registry));
++    registry[5] = (struct nx_prof_thread){.handle = 123, .tid = 180, .kind = 'w', .teb = 1};
++    current_handle = 123;
++    current_core = 0;
++    current_mask = 1;
++    current_priority = 59;
++    process_mask = 15;
++    sets = follows = logs = failure = 0;
++}
++int main(void)
++{
++    struct nx_prof_thread *thread = &registry[5];
++    unsigned int token;
++    reset();
++    token = wine_nx_thread_pipeline_begin();
++    assert(token == 6 && current_core == -1 && current_mask == 7);
++    assert(thread->migratable == NX_SHADER_AFFINITY_PIPELINE && current_priority == 59);
++    assert(sets == 1 && follows == 1);
++    assert(!wine_nx_thread_pipeline_begin());
++    wine_nx_thread_pipeline_end(0);
++    assert(sets == 1 && current_mask == 7);
++    struct nx_balance_thread balance[] = {{990, 0, 0, 0}, {5, -1, thread->fixed || thread->migratable, 0}};
++    unsigned int before;
++    nx_balance_assign(balance, 2, 3, &before);
++    assert(balance[1].new_core == -1);
++    wine_nx_thread_pipeline_end(token);
++    assert(current_core == 0 && current_mask == 1 && current_priority == 59);
++    assert(!thread->migratable && sets == 2 && follows == 2);
++    wine_nx_thread_pipeline_end(token);
++    assert(sets == 2);
++
++    for (unsigned int n = 0; n < 50; n++)
++        wine_nx_thread_pipeline_end(wine_nx_thread_pipeline_begin());
++    assert(logs <= 1);
++
++    reset();
++    token = wine_nx_thread_pipeline_begin();
++    wine_nx_thread_set_affinity(180, 2);
++    wine_nx_thread_pipeline_end(token);
++    assert(current_mask == 2 && current_core == 1 && thread->fixed);
++    assert(!wine_nx_thread_pipeline_begin() && sets == 2);
++
++    reset();
++    token = wine_nx_thread_pipeline_begin();
++    wine_nx_thread_set_name(180, "dxvk-shader");
++    wine_nx_thread_pipeline_end(token);
++    assert(current_mask == 7 && thread->migratable == NX_SHADER_AFFINITY_WORKER);
++    assert(!wine_nx_thread_pipeline_begin() && sets == 1);
++    wine_nx_thread_set_name(180, "worker");
++    assert(current_mask == 1 && current_core == 0 && !thread->migratable);
++
++    reset();
++    wine_nx_thread_set_name(180, "dxvk-cs");
++    assert(current_mask == 8 && current_priority == 63 && thread->helper);
++    assert(!wine_nx_thread_pipeline_begin() && sets == 1);
++
++    reset();
++    token = wine_nx_thread_pipeline_begin();
++    wine_nx_thread_set_name(180, "dxvk-cs");
++    wine_nx_thread_pipeline_end(token);
++    assert(current_mask == 8 && current_priority == 63 && thread->helper);
++
++    for (unsigned int n = 1; n <= 3; n++) {
++        reset();
++        failure = n;
++        assert(!wine_nx_thread_pipeline_begin());
++        assert(current_mask == 1 && current_priority == 59 && !thread->migratable && !sets && !follows);
++    }
++    reset();
++    token = wine_nx_thread_pipeline_begin();
++    failure = 3;
++    wine_nx_thread_pipeline_end(token);
++    assert(current_mask == 7 && thread->migratable == NX_SHADER_AFFINITY_PIPELINE);
++    failure = 0;
++    wine_nx_thread_pipeline_end(token);
++    assert(current_mask == 1 && !thread->migratable);
++
++    reset();
++    process_mask = 6;
++    current_core = 1;
++    current_mask = 2;
++    token = wine_nx_thread_pipeline_begin();
++    assert(current_mask == 6);
++    wine_nx_thread_pipeline_end(token);
++    assert(current_core == 1 && current_mask == 2);
++
++    reset();
++    current_core = -1;
++    current_mask = 3;
++    wine_nx_thread_pipeline_end(wine_nx_thread_pipeline_begin());
++    assert(current_core == -1 && current_mask == 3);
++
++    reset();
++    thread->fixed = 1;
++    assert(!wine_nx_thread_pipeline_begin() && !sets);
++    reset();
++    thread->kind = 's';
++    assert(!wine_nx_thread_pipeline_begin() && !sets);
++    reset();
++    current_handle = 456;
++    assert(!wine_nx_thread_pipeline_begin() && !sets);
++    wine_nx_thread_pipeline_end(NX_PROF_MAX_THREADS + 1);
++    puts("shader affinity: scope, nesting, balancing, explicit affinity, worker roles and SVC errors passed");
++    return 0;
++}
++'''
++
++thunks = (root / 'dlls/winevulkan/vulkan_thunks.c').read_text()
++for bits in (32, 64):
++    for kind in ('Compute', 'Graphics'):
++        function = f'thunk{bits}_vkCreate{kind}Pipelines'
++        body = thunks.split(f'static NTSTATUS {function}(void *args)', 1)[1].split('\n}', 1)[0]
++        assert body.count('wine_nx_thread_pipeline_begin();') == 1
++        assert body.count('wine_nx_thread_pipeline_end(nx_pipeline_affinity);') == 1
++        assert body.index('wine_nx_thread_pipeline_begin();') < body.index('->p_vkCreate')
++        assert body.index('->p_vkCreate') < body.index('wine_nx_thread_pipeline_end(')
++
++with tempfile.TemporaryDirectory(prefix='autorun-shader-affinity-') as tmp:
++    path = Path(tmp)
++    test = path / 'affinity.c'
++    test.write_text(fixture)
++    for profile in (False, True):
++        command = [os.environ.get('CC', 'cc'), '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-address', '-pthread',
++                   '-I', str(root / 'horizon-wine/source'), str(test), '-o', str(path / 'affinity')]
++        command += shlex.split(os.environ.get('CFLAGS', ''))
++        if profile:
++            command += ['-DWINE_NX_SHADER_PROFILE']
++        subprocess.run(command, check=True)
++        subprocess.run([str(path / 'affinity')], check=True, timeout=30)
+-- 
+2.43.0
+
+
+From 53a46add1e18a4b7e1cd087033d5ef9fe33521bd Mon Sep 17 00:00:00 2001
+From: naga <38852591+NaGaa95@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 23:32:00 +0200
+Subject: [PATCH 3/3] horizon: cache temporary shader allocations
+
+(cherry picked from commit e7168c3f438ace433c4e77da2cb4533762a77399)
+---
+ horizon-wine/CMakeLists.txt              |   9 +
+ horizon-wine/source/native_heap.c        |  79 +++++-
+ horizon-wine/source/native_heap.h        |   1 +
+ horizon-wine/source/shader_alloc_cache.c | 169 ++++++++++++
+ horizon-wine/source/shader_alloc_cache.h |  14 +
+ horizon-wine/source/shader_compile.c     |  19 ++
+ horizon-wine/tests/check_native_heap.py  |  25 +-
+ horizon-wine/tests/native_heap_newlib.c  | 177 ++++++++++++-
+ horizon-wine/tests/shader_alloc_cache.c  | 323 +++++++++++++++++++++++
+ 9 files changed, 804 insertions(+), 12 deletions(-)
+ create mode 100644 horizon-wine/source/shader_alloc_cache.c
+ create mode 100644 horizon-wine/source/shader_alloc_cache.h
+ create mode 100644 horizon-wine/source/shader_compile.c
+ create mode 100644 horizon-wine/tests/shader_alloc_cache.c
+
+diff --git a/horizon-wine/CMakeLists.txt b/horizon-wine/CMakeLists.txt
+index 86139bee..f3e26ff9 100644
+--- a/horizon-wine/CMakeLists.txt
++++ b/horizon-wine/CMakeLists.txt
+@@ -986,6 +986,15 @@ if(WINE_NX_MESA_SWITCH_DIR)
+         "${CMAKE_CURRENT_SOURCE_DIR}/../dlls/winevulkan"
+     )
+     target_sources(wine-nx-runtime PRIVATE $<TARGET_OBJECTS:wine-winevulkan-unix-real>)
++    option(WINE_NX_SHADER_ALLOC_CACHE "Reuse temporary native shader compiler allocations" ON)
++    if(WINE_NX_SHADER_ALLOC_CACHE)
++        target_sources(wine-nx-runtime PRIVATE source/shader_compile.c source/shader_alloc_cache.c)
++        target_link_options(wine-nx-runtime PRIVATE -Wl,--wrap=nak_compile_shader)
++        set_property(SOURCE source/shader_compile.c source/shader_alloc_cache.c
++            APPEND PROPERTY COMPILE_OPTIONS -O2)
++        set_property(SOURCE source/native_heap.c
++            APPEND PROPERTY COMPILE_DEFINITIONS WINE_NX_SHADER_ALLOC_CACHE)
++    endif()
+     option(WINE_NX_LSFG "Enable the GPL LSFG-VK frame-generation backend" ON)
+     if(WINE_NX_LSFG)
+         include(cmake/LsfgVk.cmake)
+diff --git a/horizon-wine/source/native_heap.c b/horizon-wine/source/native_heap.c
+index 2e4620ff..11bdcbaf 100644
+--- a/horizon-wine/source/native_heap.c
++++ b/horizon-wine/source/native_heap.c
+@@ -7,6 +7,9 @@
+ #include "backing_heap.h"
+ #include "heap_snapshot.h"
+ #include "native_heap.h"
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++#include "shader_alloc_cache.h"
++#endif
+ 
+ extern char *fake_heap_start, *fake_heap_end;
+ extern void *__real__sbrk_r( struct _reent *, ptrdiff_t );
+@@ -37,9 +40,18 @@ static size_t small_allocation_size( struct _reent *reent, void *pointer )
+ void *wine_nx_native_malloc( struct _reent *reent, size_t size )
+ {
+     void *result;
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++    if (!allocation_depth && wine_nx_shader_alloc_active &&
++        (result = wine_nx_shader_alloc_take( size, 16 ))) return result;
++retry:
++#endif
+     allocation_depth++;
+     result = __real__malloc_r( reent, size );
+-    if (!--allocation_depth && result)
++    allocation_depth--;
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++    if (!result && !allocation_depth && wine_nx_shader_alloc_trim()) goto retry;
++#endif
++    if (!allocation_depth && result)
+         __atomic_fetch_add( &small_used, small_allocation_size( reent, result ), __ATOMIC_RELAXED );
+     return result;
+ }
+@@ -47,9 +59,22 @@ void *wine_nx_native_malloc( struct _reent *reent, size_t size )
+ void *wine_nx_native_calloc( struct _reent *reent, size_t count, size_t size )
+ {
+     void *result;
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++    if (!allocation_depth && wine_nx_shader_alloc_active && size && count <= SIZE_MAX / size &&
++        (result = wine_nx_shader_alloc_take( count * size, 16 )))
++    {
++        memset( result, 0, count * size );
++        return result;
++    }
++retry:
++#endif
+     allocation_depth++;
+     result = __real__calloc_r( reent, count, size );
+-    if (!--allocation_depth && result)
++    allocation_depth--;
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++    if (!result && size && count <= SIZE_MAX / size && !allocation_depth && wine_nx_shader_alloc_trim()) goto retry;
++#endif
++    if (!allocation_depth && result)
+         __atomic_fetch_add( &small_used, small_allocation_size( reent, result ), __ATOMIC_RELAXED );
+     return result;
+ }
+@@ -111,9 +136,18 @@ void *wine_nx_native_memalign( struct _reent *reent, size_t alignment, size_t si
+     uintptr_t floor;
+     if (alignment < 4096 || (alignment & (alignment - 1)) || size < BACKING_UNIT)
+     {
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++        if (!allocation_depth && wine_nx_shader_alloc_active &&
++            (result = wine_nx_shader_alloc_take( size, alignment ))) return result;
++retry:
++#endif
+         allocation_depth++;
+         result = __real__memalign_r( reent, alignment, size );
+-        if (!--allocation_depth && result)
++        allocation_depth--;
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++        if (!result && !allocation_depth && wine_nx_shader_alloc_trim()) goto retry;
++#endif
++        if (!allocation_depth && result)
+             __atomic_fetch_add( &small_used, small_allocation_size( reent, result ), __ATOMIC_RELAXED );
+         return result;
+     }
+@@ -128,12 +162,29 @@ void *wine_nx_native_memalign( struct _reent *reent, size_t alignment, size_t si
+     return result;
+ }
+ 
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++void wine_nx_native_free_cached( void *const *pointers, unsigned int count, size_t bytes )
++{
++    struct _reent *current_reent = _REENT;
++    __malloc_lock( current_reent );
++    for (unsigned int i = 0; i < count; i++) __real__free_r( current_reent, pointers[i] );
++    __atomic_fetch_sub( &small_used, bytes, __ATOMIC_RELAXED );
++    __malloc_unlock( current_reent );
++}
++#endif
++
+ void __wrap__free_r( struct _reent *reent, void *pointer )
+ {
+     if (!owns_pointer( pointer ))
+     {
+         if (!allocation_depth && pointer)
+-            __atomic_fetch_sub( &small_used, small_allocation_size( reent, pointer ), __ATOMIC_RELAXED );
++        {
++            size_t size = small_allocation_size( reent, pointer );
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++            if (wine_nx_shader_alloc_active && wine_nx_shader_alloc_put( pointer, size - sizeof(size_t) )) return;
++#endif
++            __atomic_fetch_sub( &small_used, size, __ATOMIC_RELAXED );
++        }
+         __real__free_r( reent, pointer );
+         return;
+     }
+@@ -160,9 +211,27 @@ void *wine_nx_native_realloc( struct _reent *reent, void *pointer, size_t size )
+     if (!owns_pointer( pointer ))
+     {
+         previous = allocation_depth ? 0 : small_allocation_size( reent, pointer );
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++        if (!allocation_depth && wine_nx_shader_alloc_active && size)
++        {
++            size_t usable = pointer ? previous - sizeof(size_t) : 0;
++            if (size <= usable && usable <= 65536 && size > usable / 2) return pointer;
++            if ((result = wine_nx_shader_alloc_take( size, 16 )))
++            {
++                if (pointer) memcpy( result, pointer, size < usable ? size : usable );
++                __wrap__free_r( reent, pointer );
++                return result;
++            }
++        }
++retry:
++#endif
+         allocation_depth++;
+         result = __real__realloc_r( reent, pointer, size );
+-        if (!--allocation_depth && (result || !size))
++        allocation_depth--;
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++        if (!result && size && !allocation_depth && wine_nx_shader_alloc_trim()) goto retry;
++#endif
++        if (!allocation_depth && (result || !size))
+             __atomic_fetch_add( &small_used, small_allocation_size( reent, result ) - previous, __ATOMIC_RELAXED );
+         return result;
+     }
+diff --git a/horizon-wine/source/native_heap.h b/horizon-wine/source/native_heap.h
+index d4460928..1d6f45cd 100644
+--- a/horizon-wine/source/native_heap.h
++++ b/horizon-wine/source/native_heap.h
+@@ -15,6 +15,7 @@ void *wine_nx_native_malloc( struct _reent *, size_t size );
+ void *wine_nx_native_calloc( struct _reent *, size_t count, size_t size );
+ void *wine_nx_native_memalign( struct _reent *, size_t alignment, size_t size );
+ void *wine_nx_native_realloc( struct _reent *, void *pointer, size_t size );
++void wine_nx_native_free_cached( void *const *pointers, unsigned int count, size_t bytes );
+ size_t wine_nx_native_heap_free_lower_bound(void);
+ size_t wine_nx_native_heap_free_estimate( size_t *lower_bound );
+ size_t wine_nx_native_heap_free_exact(void);
+diff --git a/horizon-wine/source/shader_alloc_cache.c b/horizon-wine/source/shader_alloc_cache.c
+new file mode 100644
+index 00000000..dc3de23a
+--- /dev/null
++++ b/horizon-wine/source/shader_alloc_cache.c
+@@ -0,0 +1,169 @@
++#include <errno.h>
++#include <string.h>
++#include <stdint.h>
++#include "native_heap.h"
++#include "shader_alloc_cache.h"
++
++enum { CACHE_LIMIT = 1048576, BLOCK_LIMIT = 65536, BIN_COUNT = 13,
++       SMALL_BIN_COUNT = 6, SMALL_BIN_LIMIT = 1024, BIN_LIMIT = 64,
++       LARGE_LIMIT = CACHE_LIMIT / 4, CLASS_COUNT = 61, SEARCH_LIMIT = 8,
++       CLASS_SEARCH_LIMIT = 4, DRAIN_BATCH = 32, WORKER_LIMIT = 8 };
++_Static_assert(CLASS_COUNT < 64, "cache class bitmap");
++
++struct cached_block
++{
++    struct cached_block *next;
++    size_t usable;
++};
++
++static __thread struct
++{
++    struct cached_block *bins[CLASS_COUNT];
++    uint64_t nonempty;
++    unsigned int counts[BIN_COUNT], depth;
++    size_t bytes, large_bytes;
++} cache;
++__thread unsigned int wine_nx_shader_alloc_active;
++static unsigned int workers;
++
++static unsigned int size_bin(size_t size)
++{
++    return size < 32 ? 0 : (unsigned int)(8 * sizeof(unsigned long long) - 1 -
++                                        __builtin_clzll(size)) - 4;
++}
++
++static unsigned int bin_limit(unsigned int bin)
++{
++    return bin < SMALL_BIN_COUNT ? SMALL_BIN_LIMIT : BIN_LIMIT;
++}
++
++static unsigned int size_class(size_t size)
++{
++    if (size < 512) return size >> 4;
++    unsigned int shift = size_bin(size) + 4;
++    return 32 + (shift - 9) * 4 + ((size >> (shift - 2)) & 3);
++}
++
++static size_t reuse_limit(size_t size)
++{
++    size_t limit = size < 64 ? size + 64 : size * 2;
++    return limit < BLOCK_LIMIT ? limit : BLOCK_LIMIT;
++}
++
++void wine_nx_shader_alloc_begin(void)
++{
++    if (cache.depth++) return;
++    unsigned int count = __atomic_load_n(&workers, __ATOMIC_RELAXED);
++    while (count < WORKER_LIMIT)
++    {
++        if (!__atomic_compare_exchange_n(&workers, &count, count + 1, 0,
++                                         __ATOMIC_RELAXED, __ATOMIC_RELAXED)) continue;
++        wine_nx_shader_alloc_active = 1;
++        return;
++    }
++}
++
++void *wine_nx_shader_alloc_take(size_t size, size_t alignment)
++{
++    if (!size || size > BLOCK_LIMIT || !alignment || (alignment & (alignment - 1)) || alignment > 256)
++        return NULL;
++    unsigned int first = size_class(size), examined = 0;
++    size_t limit = reuse_limit(size);
++    uint64_t candidates = cache.nonempty & (UINT64_MAX << first) &
++                          ((UINT64_C(1) << (size_class(limit) + 1)) - 1);
++    while (candidates && examined < SEARCH_LIMIT)
++    {
++        unsigned int bin = __builtin_ctzll(candidates);
++        candidates &= candidates - 1;
++        struct cached_block **link = &cache.bins[bin];
++        for (unsigned int i = 0; *link && i < CLASS_SEARCH_LIMIT && examined < SEARCH_LIMIT;
++             i++, link = &(*link)->next)
++        {
++            struct cached_block *block = *link;
++            examined++;
++            if (block->usable < size || block->usable > limit || ((uintptr_t)block & (alignment - 1))) continue;
++            *link = block->next;
++            if (!cache.bins[bin]) cache.nonempty &= ~(UINT64_C(1) << bin);
++            unsigned int group = size_bin(block->usable);
++            cache.counts[group]--;
++            cache.bytes -= block->usable + sizeof(size_t);
++            if (group >= SMALL_BIN_COUNT) cache.large_bytes -= block->usable + sizeof(size_t);
++            return block;
++        }
++    }
++    return NULL;
++}
++
++int wine_nx_shader_alloc_put(void *pointer, size_t usable)
++{
++    if (usable < sizeof(struct cached_block))
++        return 0;
++    if (usable > BLOCK_LIMIT)
++        return 0;
++    unsigned int bin = size_bin(usable);
++    if (bin >= SMALL_BIN_COUNT && cache.large_bytes > LARGE_LIMIT - usable - sizeof(size_t))
++        return 0;
++    if (cache.bytes > CACHE_LIMIT - usable - sizeof(size_t))
++        return 0;
++    if (cache.counts[bin] == bin_limit(bin))
++        return 0;
++    struct cached_block *block = pointer;
++    unsigned int index = size_class(usable);
++    block->usable = usable;
++    block->next = cache.bins[index];
++    cache.bins[index] = block;
++    cache.nonempty |= UINT64_C(1) << index;
++    cache.counts[bin]++;
++    cache.bytes += usable + sizeof(size_t);
++    if (bin >= SMALL_BIN_COUNT) cache.large_bytes += usable + sizeof(size_t);
++    return 1;
++}
++
++static void drain(void)
++{
++    if (!cache.nonempty) return;
++    int saved_errno = errno;
++    void *batch[DRAIN_BATCH];
++    unsigned int count = 0;
++    size_t bytes = 0;
++    for (uint64_t mask = cache.nonempty; mask; mask &= mask - 1)
++    {
++        unsigned int bin = __builtin_ctzll(mask);
++        struct cached_block *block = cache.bins[bin];
++        cache.bins[bin] = NULL;
++        while (block)
++        {
++            struct cached_block *next = block->next;
++            bytes += block->usable + sizeof(size_t);
++            batch[count++] = block;
++            if (count == DRAIN_BATCH)
++            {
++                wine_nx_native_free_cached(batch, count, bytes);
++                count = 0;
++                bytes = 0;
++            }
++            block = next;
++        }
++    }
++    if (count) wine_nx_native_free_cached(batch, count, bytes);
++    memset(cache.counts, 0, sizeof(cache.counts));
++    cache.nonempty = 0;
++    cache.bytes = 0;
++    cache.large_bytes = 0;
++    errno = saved_errno;
++}
++
++int wine_nx_shader_alloc_trim(void)
++{
++    if (!wine_nx_shader_alloc_active || !cache.bytes) return 0;
++    drain();
++    return 1;
++}
++
++void wine_nx_shader_alloc_end(void)
++{
++    if (--cache.depth || !wine_nx_shader_alloc_active) return;
++    drain();
++    wine_nx_shader_alloc_active = 0;
++    __atomic_sub_fetch(&workers, 1, __ATOMIC_RELAXED);
++}
+diff --git a/horizon-wine/source/shader_alloc_cache.h b/horizon-wine/source/shader_alloc_cache.h
+new file mode 100644
+index 00000000..5ba9b43e
+--- /dev/null
++++ b/horizon-wine/source/shader_alloc_cache.h
+@@ -0,0 +1,14 @@
++#ifndef WINE_NX_SHADER_ALLOC_CACHE_H
++#define WINE_NX_SHADER_ALLOC_CACHE_H
++
++#include <stddef.h>
++
++extern __thread unsigned int wine_nx_shader_alloc_active;
++
++void wine_nx_shader_alloc_begin(void);
++void wine_nx_shader_alloc_end(void);
++void *wine_nx_shader_alloc_take(size_t size, size_t alignment);
++int wine_nx_shader_alloc_put(void *pointer, size_t usable);
++int wine_nx_shader_alloc_trim(void);
++
++#endif
+diff --git a/horizon-wine/source/shader_compile.c b/horizon-wine/source/shader_compile.c
+new file mode 100644
+index 00000000..77f1ff2c
+--- /dev/null
++++ b/horizon-wine/source/shader_compile.c
+@@ -0,0 +1,19 @@
++#include <stdbool.h>
++#include <stdint.h>
++#include "shader_alloc_cache.h"
++
++struct nir_shader;
++struct nak_compiler;
++struct nak_fs_key;
++struct nak_shader_bin;
++
++struct nak_shader_bin *__real_nak_compile_shader(struct nir_shader *, bool, const struct nak_compiler *,
++                                               uint32_t, const struct nak_fs_key *, bool);
++struct nak_shader_bin *__wrap_nak_compile_shader(struct nir_shader *nir, bool dump,
++        const struct nak_compiler *nak, uint32_t robust, const struct nak_fs_key *fs, bool task)
++{
++    wine_nx_shader_alloc_begin();
++    struct nak_shader_bin *result = __real_nak_compile_shader(nir, dump, nak, robust, fs, task);
++    wine_nx_shader_alloc_end();
++    return result;
++}
+diff --git a/horizon-wine/tests/check_native_heap.py b/horizon-wine/tests/check_native_heap.py
+index f2e508c2..f751a5b5 100644
+--- a/horizon-wine/tests/check_native_heap.py
++++ b/horizon-wine/tests/check_native_heap.py
+@@ -29,6 +29,7 @@ static size_t small_free;
+ static unsigned long mallinfo_calls;
+ static pthread_mutex_t mutex;
+ static _Thread_local unsigned int locks;
++static _Thread_local unsigned int fail_allocations;
+ struct horizon_heap_chunk *__malloc_av_[258];
+ static void __malloc_lock(struct _reent *r)
+ { (void)r; assert(!pthread_mutex_lock(&mutex)); locks++; }
+@@ -45,11 +46,14 @@ void *__real__sbrk_r(struct _reent *r, ptrdiff_t increment)
+     return (void *)previous;
+ }
+ void *__real__memalign_r(struct _reent *r, size_t alignment, size_t size)
+-{ void *result = NULL; (void)r; if (posix_memalign(&result, alignment, size)) return NULL; return result; }
+-void *__real__malloc_r(struct _reent *r, size_t size) { (void)r; return malloc(size); }
+-void *__real__calloc_r(struct _reent *r, size_t count, size_t size) { (void)r; return calloc(count, size); }
++{ void *result = NULL; (void)r; if (fail_allocations) { fail_allocations--; return NULL; }
++  if (posix_memalign(&result, alignment, size)) return NULL; return result; }
++void *__real__malloc_r(struct _reent *r, size_t size)
++{ (void)r; if (fail_allocations) { fail_allocations--; return NULL; } return malloc(size); }
++void *__real__calloc_r(struct _reent *r, size_t count, size_t size)
++{ (void)r; if (fail_allocations) { fail_allocations--; return NULL; } return calloc(count, size); }
+ void *__real__realloc_r(struct _reent *r, void *pointer, size_t size)
+-{ (void)r; return realloc(pointer, size); }
++{ (void)r; if (fail_allocations) { fail_allocations--; return NULL; } return realloc(pointer, size); }
+ void __real__free_r(struct _reent *r, void *pointer) { (void)r; free(pointer); }
+ size_t __real__malloc_usable_size_r(struct _reent *r, void *pointer)
+ { (void)r; return malloc_usable_size(pointer); }
+@@ -221,13 +225,24 @@ int main(void)
+     p = __wrap__realloc_r(_REENT, NULL, 1024);
+     assert(p && !owns_pointer(p));
+     __wrap__free_r(_REENT, p);
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++    shader_alloc_cache_tests();
++#endif
+     pthread_mutex_destroy(&mutex);
+     puts("native heap: concurrent allocation, resize, free, break and scan-free budget tests passed");
+ }
+ '''
++cache_flags = []
++if os.environ.get('SHADER_ALLOC_CACHE') == '1':
++    cache_flags = ['-DWINE_NX_SHADER_ALLOC_CACHE']
++    source += r'''
++#include "shader_alloc_cache.c"
++'''
++    source += (root / 'tests/shader_alloc_cache.c').read_text()
+ with tempfile.TemporaryDirectory(prefix='autorun-native-heap-') as tmp:
+     unit, binary = Path(tmp) / 'heap.c', Path(tmp) / 'heap'
+     unit.write_text(fixture.replace('/* IMPLEMENTATION */', source))
+     subprocess.run([os.environ.get('CC', 'clang'), '-std=gnu11', '-O1', '-Wall', '-Wextra', '-Werror', '-pthread',
+-                    '-fsanitize=' + os.environ.get('SANITIZE', 'address,undefined'), '-I', str(root / 'source'), str(unit), '-o', str(binary)], check=True)
++                    '-fsanitize=' + os.environ.get('SANITIZE', 'address,undefined'), *cache_flags,
++                    '-I', str(root / 'source'), str(unit), '-o', str(binary)], check=True)
+     subprocess.run([str(binary)], check=True)
+diff --git a/horizon-wine/tests/native_heap_newlib.c b/horizon-wine/tests/native_heap_newlib.c
+index 1ef4ecbb..3d2a919b 100644
+--- a/horizon-wine/tests/native_heap_newlib.c
++++ b/horizon-wine/tests/native_heap_newlib.c
+@@ -6,6 +6,19 @@
+ #include <string.h>
+ #include <sys/reent.h>
+ #include "../source/native_heap.h"
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++#include "../source/shader_alloc_cache.h"
++#endif
++
++/* Keep allocator calls observable without disabling optimization in the runtime. */
++extern void *test_malloc(size_t) __asm__("malloc");
++extern void *test_calloc(size_t, size_t) __asm__("calloc");
++extern void *test_realloc(void *, size_t) __asm__("realloc");
++extern void test_free(void *) __asm__("free");
++#define malloc test_malloc
++#define calloc test_calloc
++#define realloc test_realloc
++#define free test_free
+ 
+ #define MiB ((size_t)1048576)
+ static unsigned char area[256 * 1048576] __attribute__((aligned(2097152)));
+@@ -13,6 +26,7 @@ char *fake_heap_start = (char *)area, *fake_heap_end = (char *)area + sizeof(are
+ static char *heap_break = (char *)area;
+ static struct _reent reent;
+ static unsigned int locks;
++static unsigned long lock_calls, outer_lock_calls;
+ static unsigned char tls_area[4096] __attribute__((aligned(16)));
+ void *__aarch64_read_tp(void) { return tls_area; }
+ extern bool __wrap_os_get_available_system_memory(uint64_t *);
+@@ -41,7 +55,7 @@ static void check_budget(void)
+ }
+ 
+ struct _reent *__getreent(void) { return &reent; }
+-void __malloc_lock(struct _reent *r) { (void)r; locks++; }
++void __malloc_lock(struct _reent *r) { (void)r; if (!locks) outer_lock_calls++; locks++; lock_calls++; }
+ void __malloc_unlock(struct _reent *r) { (void)r; check(locks); locks--; }
+ void *_sbrk_r(struct _reent *r, ptrdiff_t increment)
+ {
+@@ -73,6 +87,161 @@ static void mixed_lifetimes(int isolated)
+     for (unsigned int i = 0; i < 192; i++) free(small[i]);
+ }
+ 
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++static void shader_cache_drain(void)
++{
++    static const unsigned int sizes[] = {1, 31, 32, 33, 127, 128};
++    void *items[128];
++    struct mallinfo before = mallinfo();
++    for (unsigned int scope = 0; scope < 32; scope++)
++    {
++        unsigned int count = sizes[scope % (sizeof(sizes) / sizeof(sizes[0]))];
++        wine_nx_shader_alloc_begin();
++        for (unsigned int pass = 0; pass < 2; pass++)
++        {
++            for (unsigned int i = 0; i < count; i++)
++            {
++                items[i] = malloc(32 + i * 16);
++                check(items[i]);
++                memset(items[i], i, 32 + i * 16);
++            }
++            for (unsigned int i = 0; i < count; i++) free(items[i]);
++            check(mallinfo().uordblks > before.uordblks);
++            check(!locks);
++            unsigned long outer_before = outer_lock_calls;
++            errno = EIO;
++            if (!pass)
++            {
++                check(wine_nx_shader_alloc_trim());
++                check(wine_nx_shader_alloc_active && !wine_nx_shader_alloc_trim());
++            }
++            else
++            {
++                wine_nx_shader_alloc_end();
++                check(!wine_nx_shader_alloc_active);
++            }
++            check(errno == EIO);
++            check(!locks);
++            check(outer_lock_calls - outer_before == (count + 31) / 32);
++            check(mallinfo().uordblks == before.uordblks);
++            check_budget();
++        }
++    }
++}
++
++static void shader_cache(void)
++{
++    void *items[128] = {0};
++    unsigned int seed = 94783;
++    struct mallinfo before = mallinfo();
++    unsigned long calls = lock_calls;
++    for (unsigned int i = 0; i < 10000; i++)
++    {
++        void *p = memalign(64, 512);
++        check(p && !((uintptr_t)p & 63));
++        memset(p, 0x19, 512);
++        free(p);
++    }
++    unsigned long uncached = lock_calls - calls;
++    calls = lock_calls;
++    wine_nx_shader_alloc_begin();
++    for (unsigned int i = 0; i < 10000; i++)
++    {
++        void *p = memalign(64, 512);
++        check(p && !((uintptr_t)p & 63));
++        memset(p, 0x19, 512);
++        free(p);
++    }
++    wine_nx_shader_alloc_end();
++    check(lock_calls - calls < uncached / 100);
++    check(mallinfo().uordblks == before.uordblks);
++    check_budget();
++
++    for (unsigned int iteration = 0; iteration < 30000; iteration++)
++    {
++        if (!(iteration % 500)) wine_nx_shader_alloc_begin();
++        seed = seed * 1664525 + 1013904223;
++        unsigned int slot = (seed >> 16) % 128;
++        size_t size = 1 + (seed >> 4) % 100000;
++        if (items[slot])
++        {
++            check(((unsigned char *)items[slot])[0] == (unsigned char)slot);
++            if (seed & 2)
++            {
++                void *p = realloc(items[slot], size);
++                check(p && ((unsigned char *)p)[0] == (unsigned char)slot);
++                items[slot] = p;
++            }
++            else { free(items[slot]); items[slot] = NULL; }
++        }
++        else if (seed & 1)
++        {
++            size_t align = (size_t)16 << ((seed >> 9) % 7);
++            items[slot] = memalign(align, size);
++            check(items[slot] && !((uintptr_t)items[slot] & (align - 1)));
++            ((unsigned char *)items[slot])[0] = slot;
++        }
++        else
++        {
++            items[slot] = calloc(size, 1);
++            check(items[slot]);
++            for (size_t i = 0; i < size; i++) check(!((unsigned char *)items[slot])[i]);
++            ((unsigned char *)items[slot])[0] = slot;
++        }
++        if (iteration % 500 == 499) wine_nx_shader_alloc_end();
++        if (!(iteration % 100)) check_budget();
++    }
++    for (unsigned int i = 0; i < 128; i++) free(items[i]);
++    check(mallinfo().uordblks == before.uordblks);
++    check_budget();
++    wine_nx_shader_alloc_begin();
++    void *p = malloc(1024);
++    check(p);
++    free(p);
++    check(wine_nx_shader_alloc_trim());
++    check(!wine_nx_shader_alloc_trim());
++    check_budget();
++    wine_nx_shader_alloc_end();
++    check(mallinfo().uordblks == before.uordblks);
++    void *burst[256];
++    wine_nx_shader_alloc_begin();
++    for (unsigned int i = 0; i < 256; i++)
++    {
++        burst[i] = malloc(32768);
++        check(burst[i]);
++    }
++    for (unsigned int i = 0; i < 256; i++) free(burst[i]);
++    for (unsigned int i = 0; i < 256; i++)
++    {
++        burst[i] = malloc(128);
++        check(burst[i]);
++    }
++    for (unsigned int i = 0; i < 256; i++) free(burst[i]);
++    calls = lock_calls;
++    for (unsigned int iteration = 0; iteration < 20; iteration++)
++    {
++        for (unsigned int i = 0; i < 256; i++)
++        {
++            burst[i] = malloc(128);
++            check(burst[i]);
++            memset(burst[i], i, 128);
++        }
++        for (unsigned int i = 0; i < 256; i++)
++        {
++            for (unsigned int j = 0; j < 128; j++) check(((unsigned char *)burst[i])[j] == (unsigned char)i);
++            free(burst[i]);
++        }
++    }
++    check(lock_calls == calls);
++    check_budget();
++    wine_nx_shader_alloc_end();
++    check(mallinfo().uordblks == before.uordblks);
++    check_budget();
++    static const char message[] = "newlib shader cache: reuse, alignment, lifetime, realloc and exact accounting passed\n";
++    linux_call(64, 1, (long)message, sizeof(message) - 1);
++}
++#endif
++
+ static void run(void)
+ {
+     struct wine_nx_native_heap_stats stats;
+@@ -161,13 +330,17 @@ static void run(void)
+     check_budget();
+     small = malloc(1024);
+     check(small);
+-    check(!realloc(small, impossible_size));
++    check(!realloc(small, 2 * sizeof(area)) && !locks);
+     check_budget();
+     small = realloc(small, 0);
+     check_budget();
+     free(small);
+     check(!calloc(impossible_size, 2));
+     check_budget();
++#ifdef WINE_NX_SHADER_ALLOC_CACHE
++    shader_cache();
++    shader_cache_drain();
++#endif
+     static const char message[] = "newlib heap: mixed allocation, boundary, realloc, accounting and unmapped backing tests passed\n";
+     linux_call(64, 1, (long)message, sizeof(message) - 1);
+ }
+diff --git a/horizon-wine/tests/shader_alloc_cache.c b/horizon-wine/tests/shader_alloc_cache.c
+new file mode 100644
+index 00000000..b5393966
+--- /dev/null
++++ b/horizon-wine/tests/shader_alloc_cache.c
+@@ -0,0 +1,323 @@
++static void cache_basic(void)
++{
++    assert(!small_used);
++    wine_nx_shader_alloc_begin();
++    assert(wine_nx_shader_alloc_active);
++    void *a = __wrap__malloc_r(_REENT, 128);
++    assert(a);
++    memset(a, 0xa5, 128);
++    __wrap__free_r(_REENT, a);
++    size_t held = small_used;
++    assert(held && cache.bytes);
++    void *b = __wrap__calloc_r(_REENT, 4, 32);
++    assert(a == b && small_used == held);
++    for (unsigned int i = 0; i < 128; i++) assert(!((unsigned char *)b)[i]);
++    __wrap__free_r(_REENT, b);
++    wine_nx_shader_alloc_begin();
++    wine_nx_shader_alloc_end();
++    assert(wine_nx_shader_alloc_active && cache.bytes);
++    b = __wrap__malloc_r(_REENT, 128);
++    assert(a == b);
++    memset(b, 0x19, 128);
++    wine_nx_shader_alloc_end();
++    assert(!wine_nx_shader_alloc_active && !cache.bytes && small_used);
++    for (unsigned int i = 0; i < 128; i++) assert(((unsigned char *)b)[i] == 0x19);
++    __wrap__free_r(_REENT, b);
++    assert(!small_used);
++
++    wine_nx_shader_alloc_begin();
++    for (size_t align = 16; align <= 256; align *= 2)
++    {
++        a = __wrap__memalign_r(_REENT, align, 2048);
++        assert(a && !((uintptr_t)a & (align - 1)));
++        __wrap__free_r(_REENT, a);
++        b = __wrap__memalign_r(_REENT, align, 2048);
++        assert(b == a && !((uintptr_t)b & (align - 1)));
++        __wrap__free_r(_REENT, b);
++    }
++    a = __wrap__memalign_r(_REENT, 65536, 1048576);
++    assert(a && owns_pointer(a));
++    held = cache.bytes;
++    __wrap__free_r(_REENT, a);
++    assert(cache.bytes == held && !heap.used);
++    wine_nx_shader_alloc_end();
++    assert(!small_used);
++}
++
++static void cache_resize_and_pressure(void)
++{
++    wine_nx_shader_alloc_begin();
++    unsigned char *a = __wrap__malloc_r(_REENT, 128);
++    unsigned char *b = __wrap__malloc_r(_REENT, 4096);
++    assert(a && b);
++    memset(a, 0x67, 128);
++    __wrap__free_r(_REENT, b);
++    unsigned char *c = __wrap__realloc_r(_REENT, a, 4096);
++    assert(c == b);
++    for (unsigned int i = 0; i < 128; i++) assert(c[i] == 0x67);
++    assert(__wrap__realloc_r(_REENT, c, 4000) == c);
++    fail_allocations = 2;
++    assert(!__wrap__realloc_r(_REENT, c, 1048576));
++    assert(!fail_allocations && !cache.bytes);
++    for (unsigned int i = 0; i < 128; i++) assert(c[i] == 0x67);
++    __wrap__free_r(_REENT, c);
++    fail_allocations = 1;
++    a = __wrap__calloc_r(_REENT, 1, 20000);
++    assert(a && !fail_allocations && !cache.bytes);
++    for (unsigned int i = 0; i < 20000; i++) assert(!a[i]);
++    __wrap__free_r(_REENT, a);
++    fail_allocations = 1;
++    a = __wrap__memalign_r(_REENT, 128, 65536);
++    assert(a && !fail_allocations && !cache.bytes && !((uintptr_t)a & 127));
++    __wrap__free_r(_REENT, a);
++    fail_allocations = 1;
++    a = __wrap__malloc_r(_REENT, 1048576);
++    assert(a && !fail_allocations && !cache.bytes);
++    __wrap__free_r(_REENT, a);
++    a = __wrap__realloc_r(_REENT, NULL, 128);
++    assert(a);
++    a = __wrap__realloc_r(_REENT, a, 0);
++    __wrap__free_r(_REENT, a);
++    errno = EIO;
++    wine_nx_shader_alloc_end();
++    assert(errno == EIO && !small_used);
++}
++
++static void cache_check_bounds(void)
++{
++    size_t bytes = 0, large_bytes = 0;
++    unsigned int counts[BIN_COUNT] = {0};
++    uint64_t nonempty = 0;
++    for (unsigned int bin = 0; bin < CLASS_COUNT; bin++)
++    {
++        if (cache.bins[bin]) nonempty |= UINT64_C(1) << bin;
++        for (struct cached_block *block = cache.bins[bin]; block; block = block->next)
++        {
++            unsigned int group = size_bin(block->usable);
++            assert(size_class(block->usable) == bin);
++            bytes += block->usable + sizeof(size_t);
++            if (group >= SMALL_BIN_COUNT) large_bytes += block->usable + sizeof(size_t);
++            assert(++counts[group] <= bin_limit(group));
++        }
++    }
++    for (unsigned int bin = 0; bin < BIN_COUNT; bin++) assert(counts[bin] == cache.counts[bin]);
++    assert(nonempty == cache.nonempty);
++    assert(bytes == cache.bytes && bytes <= CACHE_LIMIT);
++    assert(large_bytes == cache.large_bytes && large_bytes <= LARGE_LIMIT);
++}
++
++static void cache_lookup(void)
++{
++    assert(!wine_nx_shader_alloc_take(0, 16));
++    assert(!wine_nx_shader_alloc_take(65537, 16));
++    assert(!wine_nx_shader_alloc_take(128, 512));
++    assert(!wine_nx_shader_alloc_take(128, 3));
++    assert(!wine_nx_shader_alloc_take(128, 0));
++    assert(!wine_nx_shader_alloc_put(NULL, 0));
++    assert(!wine_nx_shader_alloc_put(NULL, 65537));
++    for (size_t size = 1; size <= BLOCK_LIMIT; size++)
++    {
++        assert(size_class(size) < CLASS_COUNT);
++        assert(size_class(size) >= size_class(size - 1));
++        assert(reuse_limit(size) >= size && reuse_limit(size) <= BLOCK_LIMIT);
++    }
++    wine_nx_shader_alloc_begin();
++    void *small[8], *large = __wrap__malloc_r(_REENT, 240);
++    assert(large);
++    for (unsigned int i = 0; i < 8; i++)
++    {
++        small[i] = __wrap__malloc_r(_REENT, 128);
++        assert(small[i]);
++    }
++    __wrap__free_r(_REENT, large);
++    for (unsigned int i = 0; i < 8; i++) __wrap__free_r(_REENT, small[i]);
++    assert(wine_nx_shader_alloc_take(240, 16) == large);
++    __wrap__free_r(_REENT, large);
++    assert(wine_nx_shader_alloc_take(224, 16) == large);
++    __wrap__free_r(_REENT, large);
++    assert(!wine_nx_shader_alloc_take(1, 16));
++    cache_check_bounds();
++    wine_nx_shader_alloc_end();
++    cache_check_bounds();
++    assert(!small_used);
++
++    wine_nx_shader_alloc_begin();
++    for (unsigned int i = 0; i < 8; i++)
++    {
++        size_t size = i < 4 ? 512 + i * 128 : 1024 + (i - 4) * 256;
++        small[i] = __wrap__memalign_r(_REENT, 256, size);
++        assert(small[i]);
++    }
++    for (unsigned int i = 0; i < 8; i++) __wrap__free_r(_REENT, small[i]);
++    for (unsigned int i = 0; i < 8; i++)
++    {
++        size_t size = i < 4 ? 512 + i * 128 : 1024 + (i - 4) * 256;
++        assert(wine_nx_shader_alloc_take(size, 256) == small[i]);
++        cache_check_bounds();
++    }
++    assert(!cache.nonempty);
++    for (unsigned int i = 0; i < 8; i++) __wrap__free_r(_REENT, small[i]);
++    wine_nx_shader_alloc_end();
++    assert(!small_used);
++}
++
++static void cache_limits(void)
++{
++    void *items[256];
++    wine_nx_shader_alloc_begin();
++    for (unsigned int i = 0; i < 256; i++)
++    {
++        items[i] = __wrap__malloc_r(_REENT, 32768);
++        assert(items[i]);
++    }
++    for (unsigned int i = 0; i < 256; i++)
++    {
++        __wrap__free_r(_REENT, items[i]);
++        cache_check_bounds();
++    }
++    assert(cache.bytes > LARGE_LIMIT / 2 && cache.bytes <= LARGE_LIMIT);
++    for (unsigned int i = 0; i < 256; i++)
++    {
++        items[i] = __wrap__malloc_r(_REENT, 128);
++        assert(items[i]);
++    }
++    for (unsigned int i = 0; i < 256; i++) __wrap__free_r(_REENT, items[i]);
++    assert(cache.counts[size_bin(128)] == 256);
++    for (unsigned int i = 0; i < 256; i++)
++    {
++        items[i] = __wrap__malloc_r(_REENT, 128);
++        assert(items[i]);
++    }
++    assert(!cache.counts[size_bin(128)]);
++    for (unsigned int i = 0; i < 256; i++) __wrap__free_r(_REENT, items[i]);
++    cache_check_bounds();
++    wine_nx_shader_alloc_end();
++    assert(!cache.bytes && !cache.large_bytes && !small_used);
++    cache_check_bounds();
++}
++
++static void cache_total_limit(void)
++{
++    void *items[2 * SMALL_BIN_LIMIT];
++    wine_nx_shader_alloc_begin();
++    for (unsigned int i = 0; i < 2 * SMALL_BIN_LIMIT; i++)
++    {
++        items[i] = __wrap__malloc_r(_REENT, i < SMALL_BIN_LIMIT ? 768 : 256);
++        assert(items[i]);
++    }
++    for (unsigned int i = 0; i < 2 * SMALL_BIN_LIMIT; i++)
++    {
++        __wrap__free_r(_REENT, items[i]);
++        cache_check_bounds();
++    }
++    assert(cache.bytes > CACHE_LIMIT - 1024 && !cache.large_bytes);
++    wine_nx_shader_alloc_end();
++    assert(!cache.bytes && !cache.large_bytes && !small_used);
++
++    wine_nx_shader_alloc_begin();
++    void *p = __wrap__malloc_r(_REENT, 1024);
++    assert(p);
++    __wrap__free_r(_REENT, p);
++    assert(cache.large_bytes == cache.bytes && cache.bytes);
++    assert(__wrap__malloc_r(_REENT, 1000) == p);
++    assert(!cache.bytes && !cache.large_bytes);
++    __wrap__free_r(_REENT, p);
++    cache_check_bounds();
++    wine_nx_shader_alloc_end();
++    assert(!cache.bytes && !cache.large_bytes && !small_used);
++}
++
++static void *cache_worker(void *argument)
++{
++    unsigned int seed = (uintptr_t)argument + 17;
++    unsigned char *items[48] = {0};
++    size_t sizes[48] = {0};
++    for (unsigned int iteration = 0; iteration < 60000; iteration++)
++    {
++        if (!(iteration % 1000)) wine_nx_shader_alloc_begin();
++        seed = seed * 1664525 + 1013904223;
++        unsigned int slot = (seed >> 16) % 48;
++        if (items[slot])
++        {
++            for (size_t i = 0; i < sizes[slot]; i++) assert(items[slot][i] == (unsigned char)slot);
++            if (!(seed % 3))
++            {
++                size_t size = 1 + (seed >> 4) % 100000;
++                unsigned char *p = __wrap__realloc_r(_REENT, items[slot], size);
++                assert(p);
++                for (size_t i = 0; i < size && i < sizes[slot]; i++) assert(p[i] == (unsigned char)slot);
++                items[slot] = p;
++                sizes[slot] = size;
++                memset(p, slot, size);
++            }
++            else { __wrap__free_r(_REENT, items[slot]); items[slot] = NULL; }
++        }
++        else
++        {
++            size_t size = 1 + (seed >> 7) % 80000;
++            size_t align = (size_t)16 << ((seed >> 11) % 6);
++            items[slot] = __wrap__memalign_r(_REENT, align, size);
++            assert(items[slot] && !((uintptr_t)items[slot] & (align - 1)));
++            sizes[slot] = size;
++            memset(items[slot], slot, size);
++        }
++        if (iteration % 1000 == 999)
++        {
++            cache_check_bounds();
++            wine_nx_shader_alloc_end();
++        }
++    }
++    for (unsigned int i = 0; i < 48; i++) __wrap__free_r(_REENT, items[i]);
++    return NULL;
++}
++
++static void *cache_foreign_free(void *pointer)
++{
++    wine_nx_shader_alloc_begin();
++    __wrap__free_r(_REENT, pointer);
++    assert(cache.bytes);
++    wine_nx_shader_alloc_end();
++    return NULL;
++}
++
++static pthread_barrier_t cache_barrier;
++static unsigned int enabled_workers;
++static void *cache_limit_worker(void *unused)
++{
++    (void)unused;
++    wine_nx_shader_alloc_begin();
++    if (wine_nx_shader_alloc_active) __atomic_add_fetch(&enabled_workers, 1, __ATOMIC_RELAXED);
++    pthread_barrier_wait(&cache_barrier);
++    pthread_barrier_wait(&cache_barrier);
++    wine_nx_shader_alloc_end();
++    return NULL;
++}
++
++static void shader_alloc_cache_tests(void)
++{
++    pthread_t threads[16];
++    cache_basic();
++    cache_resize_and_pressure();
++    cache_limits();
++    cache_total_limit();
++    cache_lookup();
++    wine_nx_shader_alloc_begin();
++    void *pointer = __wrap__malloc_r(_REENT, 1024);
++    assert(pointer);
++    wine_nx_shader_alloc_end();
++    assert(!pthread_create(&threads[0], NULL, cache_foreign_free, pointer));
++    assert(!pthread_join(threads[0], NULL));
++    assert(!small_used);
++    for (uintptr_t i = 0; i < 4; i++) assert(!pthread_create(&threads[i], NULL, cache_worker, (void *)i));
++    for (unsigned int i = 0; i < 4; i++) assert(!pthread_join(threads[i], NULL));
++    assert(!small_used && !workers);
++    assert(!pthread_barrier_init(&cache_barrier, NULL, 17));
++    for (unsigned int i = 0; i < 16; i++) assert(!pthread_create(&threads[i], NULL, cache_limit_worker, NULL));
++    pthread_barrier_wait(&cache_barrier);
++    assert(enabled_workers == WORKER_LIMIT && workers == WORKER_LIMIT);
++    pthread_barrier_wait(&cache_barrier);
++    for (unsigned int i = 0; i < 16; i++) assert(!pthread_join(threads[i], NULL));
++    assert(!pthread_barrier_destroy(&cache_barrier));
++    assert(!workers && !small_used);
++    puts("shader allocation cache: reuse, bounds, alignment, lifetimes and concurrent scopes passed");
++}
+-- 
+2.43.0
+
