@@ -1,4 +1,4 @@
-From 8f3eaa39529a862fbe2e391b4620ea4afb746ed7 Mon Sep 17 00:00:00 2001
+From 8b59363b8b0c1ea052411f88af2d2cb14b674d1d Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 13 Oct 2026 19:46:04 -0600
 Subject: [PATCH] Alice Madness Returns para Nintendo Switch: build de un solo
@@ -25,7 +25,7 @@ un solo juego que Saint Seiya y Deadpool.
  horizon-wine/build-game.sh                    |  46 ++++
  horizon-wine/build-theforest.sh               |   3 +
  horizon-wine/games/alice.conf                 |  18 ++
- .../Alice/AliceMadnessReturns.wine-nx.txt     |   5 +
+ .../Win32/AliceMadnessReturns.wine-nx.txt     |   5 +
  horizon-wine/games/left4dead.conf             |  18 ++
  .../bin/steam_settings/disable_networking.txt |   0
  .../drive_c/Left 4 Dead/left4dead.wine-nx.txt |   3 +
@@ -51,7 +51,7 @@ un solo juego que Saint Seiya y Deadpool.
  create mode 100644 horizon-wine/build-game.sh
  create mode 100755 horizon-wine/build-theforest.sh
  create mode 100644 horizon-wine/games/alice.conf
- create mode 100644 horizon-wine/games/alice/drive_c/Alice/AliceMadnessReturns.wine-nx.txt
+ create mode 100644 horizon-wine/games/alice/drive_c/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt
  create mode 100644 horizon-wine/games/left4dead.conf
  create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/bin/steam_settings/disable_networking.txt
  create mode 100644 horizon-wine/games/left4dead/drive_c/Left 4 Dead/left4dead.wine-nx.txt
@@ -5451,7 +5451,7 @@ index 00000000..eb893be2
 +exec sh "$(dirname -- "$0")/build-game.sh" theforest "$@"
 diff --git a/horizon-wine/games/alice.conf b/horizon-wine/games/alice.conf
 new file mode 100644
-index 00000000..96a58e03
+index 00000000..b504bd11
 --- /dev/null
 +++ b/horizon-wine/games/alice.conf
 @@ -0,0 +1,18 @@
@@ -5463,21 +5463,21 @@ index 00000000..96a58e03
 +APP_ICON=horizon-wine/assets/alice.jpg
 +# Shown before the game starts; '|' starts a new line.
 +SPLASH="Alice Madness Returns para Nintendo Switch||Hecho por Ascencion H.O"
-+# Copy the whole game folder (AliceMadnessReturns.exe, AliceGame, Engine, ...) to
++# Copy the contents of the game folder Alice2 (Binaries, AliceGame, Engine, ...) to
 +# switch/alice/drive_c/Alice. steam_api.dll (if any) must start without Steam
 +# (check on a PC with Steam closed).
-+EXE="Alice/AliceMadnessReturns.exe"
++EXE="Alice/Binaries/Win32/AliceMadnessReturns.exe"
 +# Windowed at 960x540, no intro videos. To change them without rebuilding,
-+# put the line in drive_c/Alice/AliceMadnessReturns.args.txt.
++# put the line in drive_c/Alice/Binaries/Win32/AliceMadnessReturns.args.txt.
 +ARGS="-windowed -ResX=960 -ResY=540 -nostartupmovies"
 +# Files copied onto the card as they are, under switch/alice: FEX with TSO
 +# and DXVK with the FPS counter (AliceMadnessReturns.wine-nx.txt).
 +FILES=horizon-wine/games/alice
-diff --git a/horizon-wine/games/alice/drive_c/Alice/AliceMadnessReturns.wine-nx.txt b/horizon-wine/games/alice/drive_c/Alice/AliceMadnessReturns.wine-nx.txt
+diff --git a/horizon-wine/games/alice/drive_c/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt b/horizon-wine/games/alice/drive_c/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt
 new file mode 100644
 index 00000000..72c3a83b
 --- /dev/null
-+++ b/horizon-wine/games/alice/drive_c/Alice/AliceMadnessReturns.wine-nx.txt
++++ b/horizon-wine/games/alice/drive_c/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt
 @@ -0,0 +1,5 @@
 +cpu=fex
 +d3d=dxvk
