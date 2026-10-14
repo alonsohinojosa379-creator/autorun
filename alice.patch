@@ -1,30 +1,31 @@
-From 8b59363b8b0c1ea052411f88af2d2cb14b674d1d Mon Sep 17 00:00:00 2001
+From 72fa1c5d1b7d8e82d0e11d1ed52ae375ba0b7e59 Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
-Date: Tue, 13 Oct 2026 19:46:04 -0600
+Date: Tue, 13 Oct 2026 21:40:04 -0600
 Subject: [PATCH] Alice Madness Returns para Nintendo Switch: build de un solo
  juego (Hecho por Ascencion H.O)
 
 Perfil de Alice: Madness Returns (Unreal Engine 3, 32-bit, Direct3D 9) con FEX +
-DXVK, icono con la portada del juego y leyenda del fork. Sobre la misma base de
-un solo juego que Saint Seiya y Deadpool.
+DXVK, icono con la portada del juego y leyenda del fork. AliceMadnessReturns.exe
+no es reubicable, asi que usa LOW_WINDOW=1 (parche de direcciones bajas y el ID
+de titulo de Autorun), igual que COD4.
 ---
  dlls/ntdll/unix/env.c                         |  14 +-
  dlls/ntdll/unix/file.c                        |  28 +++
- dlls/ntdll/unix/horizon.c                     | 147 ++++++++++++-
+ dlls/ntdll/unix/horizon.c                     | 147 +++++++++++-
  dlls/ntdll/unix/horizon_private.h             |   6 +
  dlls/ntdll/unix/horizon_runtime_paths.h       |   8 +-
  dlls/ntdll/unix/loader.c                      |  11 +-
  dlls/ntdll/unix/signal_arm64.c                |  13 +-
  dlls/win32u/vulkan.c                          |  28 +++
- horizon-wine/CMakeLists.txt                   |  33 ++-
+ horizon-wine/CMakeLists.txt                   |  38 +++-
  horizon-wine/assets/alice.jpg                 | Bin 0 -> 33315 bytes
  horizon-wine/assets/left4dead.jpg             | Bin 0 -> 30146 bytes
  horizon-wine/assets/theforest-splash.jpg      | Bin 0 -> 149994 bytes
  horizon-wine/assets/theforest.jpg             | Bin 0 -> 34097 bytes
- horizon-wine/build-amd64-components.sh        |  14 +-
- horizon-wine/build-game.sh                    |  46 ++++
+ horizon-wine/build-amd64-components.sh        |  15 +-
+ horizon-wine/build-game.sh                    |  49 ++++
  horizon-wine/build-theforest.sh               |   3 +
- horizon-wine/games/alice.conf                 |  18 ++
+ horizon-wine/games/alice.conf                 |  23 ++
  .../Win32/AliceMadnessReturns.wine-nx.txt     |   5 +
  horizon-wine/games/left4dead.conf             |  18 ++
  .../bin/steam_settings/disable_networking.txt |   0
@@ -34,16 +35,17 @@ un solo juego que Saint Seiya y Deadpool.
  .../steam_settings/disable_networking.txt     |   0
  horizon-wine/games/theforest.conf             |   8 +
  horizon-wine/source/audio_unix.c              |  96 +++++++-
+ horizon-wine/source/forwarder.c               |  20 ++
  horizon-wine/source/forwarder_launch.h        |   3 +-
  horizon-wine/source/launcher_list.h           |   3 +-
  horizon-wine/source/lsfg.cpp                  |   5 +-
- horizon-wine/source/runtime.c                 | 208 +++++++++++++++++-
- horizon-wine/source/thread_profile.c          |  87 +++++++-
+ horizon-wine/source/runtime.c                 | 215 +++++++++++++++++-
+ horizon-wine/source/thread_profile.c          |  87 ++++++-
  horizon-wine/source/thread_profile.h          |  10 +
  horizon-wine/source/wow64_box64_dynarec.c     |  19 ++
  horizon-wine/tools/drop-foreign-objects.sh    |  32 +++
  horizon-wine/tools/package-single-game.py     | 106 +++++++++
- 35 files changed, 937 insertions(+), 39 deletions(-)
+ 36 files changed, 978 insertions(+), 39 deletions(-)
  create mode 100644 horizon-wine/assets/alice.jpg
  create mode 100644 horizon-wine/assets/left4dead.jpg
  create mode 100644 horizon-wine/assets/theforest-splash.jpg
@@ -503,10 +505,10 @@ index a6a0dc20..6d9d9c28 100644
  #else
      if (swapchain->fsr)
 diff --git a/horizon-wine/CMakeLists.txt b/horizon-wine/CMakeLists.txt
-index d4afd307..0d166246 100644
+index d4afd307..3f28b9e9 100644
 --- a/horizon-wine/CMakeLists.txt
 +++ b/horizon-wine/CMakeLists.txt
-@@ -3,6 +3,29 @@ cmake_minimum_required(VERSION 3.18)
+@@ -3,6 +3,34 @@ cmake_minimum_required(VERSION 3.18)
  project(wine_nx_probe LANGUAGES C CXX ASM)
  
  set(WINE_NX_BOOT_BUNDLE "" CACHE PATH "Verified Atmosphere/HOC boot payload bundle")
@@ -520,6 +522,7 @@ index d4afd307..0d166246 100644
 +set(WINE_NX_FIXED_TARGET "" CACHE STRING "sdmc: path of the one program to start, instead of the launcher")
 +set(WINE_NX_SPLASH "" CACHE STRING "Credits shown before the game starts; '|' starts a new line")
 +set(WINE_NX_FIXED_ARGS "" CACHE STRING "Command line after the program's name, unless NAME.args.txt is beside it")
++set(WINE_NX_LOW_WINDOW OFF CACHE BOOL "Single-game build: HOME icon with Autorun's title ID, for the low-address patch")
 +set(WINE_NX_BOX64_CODE_MAX_MB "288" CACHE STRING "Most memory Box64 may take for translated code, in MB")
 +add_compile_definitions("NX_ARENA_TOTAL_MAX_MB=${WINE_NX_BOX64_CODE_MAX_MB}")
 +add_compile_definitions("WINE_NX_ROOT_NAME=\"${WINE_NX_ROOT_NAME}\""
@@ -532,11 +535,15 @@ index d4afd307..0d166246 100644
 +        add_compile_definitions("WINE_NX_SPLASH=\"${WINE_NX_SPLASH}\"")
 +    endif()
 +    message(STATUS "Single-game build: ${WINE_NX_APP_NAME} -> ${WINE_NX_FIXED_TARGET}")
++    if(WINE_NX_LOW_WINDOW)
++        add_compile_definitions("WINE_NX_LOW_WINDOW=1")
++        message(STATUS "Single-game build uses Autorun's title ID for the low-address window")
++    endif()
 +endif()
  if(WINE_NX_BOOT_BUNDLE)
      set(WINE_NX_BOOT_ROMFS_FILES "")
      foreach(file setup_boot_manifest.h romfs/setup/loader-stock.kip romfs/setup/loader-hoc.kip
-@@ -725,10 +748,10 @@ if(ELF2NSO AND NPDMTOOL)
+@@ -725,10 +753,10 @@ if(ELF2NSO AND NPDMTOOL)
                  wine_nx_hbl_main "${HBL_NSO}"
                  wine_nx_game_forwarder_main "${GAME_FORWARDER_NSO}"
                  wine_nx_hbl_npdm "${HBL_NPDM}"
@@ -549,7 +556,7 @@ index d4afd307..0d166246 100644
                  "${CMAKE_CURRENT_SOURCE_DIR}/assets/logo.png"
                  "${CMAKE_CURRENT_SOURCE_DIR}/tools/make-embed.py"
          VERBATIM
-@@ -1110,7 +1133,7 @@ if(NACPTOOL AND ELF2NRO)
+@@ -1110,7 +1138,7 @@ if(NACPTOOL AND ELF2NRO)
  
      add_custom_command(
          OUTPUT "${RUNTIME_NACP_FILE}"
@@ -558,7 +565,7 @@ index d4afd307..0d166246 100644
          VERBATIM
      )
  
-@@ -1121,8 +1144,8 @@ if(NACPTOOL AND ELF2NRO)
+@@ -1121,8 +1149,8 @@ if(NACPTOOL AND ELF2NRO)
      add_custom_command(
          OUTPUT "${RUNTIME_NRO_FILE}"
          COMMAND "${ELF2NRO}" "$<TARGET_FILE:wine-nx-runtime>" "${RUNTIME_NRO_FILE}" "--nacp=${RUNTIME_NACP_FILE}"
@@ -5358,17 +5365,17 @@ literal 0
 HcmV?d00001
 
 diff --git a/horizon-wine/build-amd64-components.sh b/horizon-wine/build-amd64-components.sh
-index 40cfd4f8..2d850841 100644
+index 40cfd4f8..2e355b4a 100644
 --- a/horizon-wine/build-amd64-components.sh
 +++ b/horizon-wine/build-amd64-components.sh
-@@ -52,13 +52,25 @@ docker run --rm --network none -v "$root:/work" -w /work \
+@@ -52,13 +52,26 @@ docker run --rm --network none -v "$root:/work" -w /work \
      -e NX_JOBS="$jobs" -e NX_DYNAREC="${WINE_NX_BOX64_DYNAREC:-ON}" \
      -e WINE_NX_JOBS="$jobs" \
      -e NX_MESA="${WINE_NX_MESA_SWITCH_DIR:-}" -e NX_FEX="$fex" -e NX_BOOT_BUNDLE="$boot_bundle" \
 +    -e NX_ROOT_NAME="${WINE_NX_ROOT_NAME:-}" -e NX_APP_NAME="${WINE_NX_APP_NAME:-}" \
 +    -e NX_APP_AUTHOR="${WINE_NX_APP_AUTHOR:-}" -e NX_APP_ICON="${WINE_NX_APP_ICON:+/work/$WINE_NX_APP_ICON}" \
 +    -e NX_FIXED_TARGET="${WINE_NX_FIXED_TARGET:-}" -e NX_FIXED_ARGS="${WINE_NX_FIXED_ARGS:-}" -e NX_SPLASH="${WINE_NX_SPLASH:-}" \
-+    -e NX_BOX64_CODE_MAX_MB="${WINE_NX_BOX64_CODE_MAX_MB:-}" \
++    -e NX_BOX64_CODE_MAX_MB="${WINE_NX_BOX64_CODE_MAX_MB:-}" -e NX_LOW_WINDOW="${WINE_NX_LOW_WINDOW:-0}" \
      "${WINE_NX_DEVKIT_IMAGE:-$(cat "$root/horizon-wine/switch-dev.txt")}" sh -ec '
 +    # The image libvulkan.a can carry a host (x86-64) object; ld rejects it.
 +    sh /work/horizon-wine/tools/drop-foreign-objects.sh \
@@ -5384,16 +5391,17 @@ index 40cfd4f8..2d850841 100644
 +        ${NX_ROOT_NAME:+-DWINE_NX_ROOT_NAME="$NX_ROOT_NAME"} ${NX_APP_NAME:+-DWINE_NX_APP_NAME="$NX_APP_NAME"} \
 +        ${NX_APP_AUTHOR:+-DWINE_NX_APP_AUTHOR="$NX_APP_AUTHOR"} ${NX_APP_ICON:+-DWINE_NX_APP_ICON="$NX_APP_ICON"} \
 +        -DWINE_NX_FIXED_TARGET="$NX_FIXED_TARGET" -DWINE_NX_FIXED_ARGS="$NX_FIXED_ARGS" -DWINE_NX_SPLASH="$NX_SPLASH" \
-+        ${NX_BOX64_CODE_MAX_MB:+-DWINE_NX_BOX64_CODE_MAX_MB="$NX_BOX64_CODE_MAX_MB"}
++        ${NX_BOX64_CODE_MAX_MB:+-DWINE_NX_BOX64_CODE_MAX_MB="$NX_BOX64_CODE_MAX_MB"} \
++        -DWINE_NX_LOW_WINDOW="$NX_LOW_WINDOW"
      cmake --build "$NX_BUILD" --target wine-nx-runtime-nro -j "$NX_JOBS"
      '
  # The Windows modules this runtime runs -- system32, syswow64, FEX's CPU modules,
 diff --git a/horizon-wine/build-game.sh b/horizon-wine/build-game.sh
 new file mode 100644
-index 00000000..abbca87a
+index 00000000..c503b62f
 --- /dev/null
 +++ b/horizon-wine/build-game.sh
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,49 @@
 +#!/bin/sh
 +# A single-game edition of Autorun: one game, in its own sdmc:/switch/<folder>,
 +# with its own name, icon and HOME icon, and no launcher. Each game is a
@@ -5417,7 +5425,7 @@ index 00000000..abbca87a
 +fi
 +shift
 +
-+ROOT_NAME= APP_NAME= APP_AUTHOR= APP_ICON= EXE= ARGS= FILES= BOX64_CODE_MAX_MB= SPLASH=
++ROOT_NAME= APP_NAME= APP_AUTHOR= APP_ICON= EXE= ARGS= FILES= BOX64_CODE_MAX_MB= SPLASH= LOW_WINDOW=
 +. "horizon-wine/games/$game.conf"
 +for v in ROOT_NAME APP_NAME APP_ICON EXE; do
 +    eval "[ -n \"\${$v}\" ]" || { echo "games/$game.conf has no $v." >&2; exit 1; }
@@ -5432,6 +5440,9 @@ index 00000000..abbca87a
 +export WINE_NX_FIXED_ARGS="$ARGS"
 +export WINE_NX_SPLASH="$SPLASH"
 +[ -n "$BOX64_CODE_MAX_MB" ] && export WINE_NX_BOX64_CODE_MAX_MB="$BOX64_CODE_MAX_MB"
++# LOW_WINDOW=1: the HOME icon takes Autorun's own title ID, the only one the
++# Atmosphere low-address patch serves, for an .exe that only loads low.
++export WINE_NX_LOW_WINDOW="${LOW_WINDOW:-0}"
 +printf '==> %s: %s %s\n' "$APP_NAME" "$WINE_NX_FIXED_TARGET" "$ARGS"
 +
 +sh "$root/build.sh" "$@"
@@ -5451,10 +5462,10 @@ index 00000000..eb893be2
 +exec sh "$(dirname -- "$0")/build-game.sh" theforest "$@"
 diff --git a/horizon-wine/games/alice.conf b/horizon-wine/games/alice.conf
 new file mode 100644
-index 00000000..b504bd11
+index 00000000..d03a83af
 --- /dev/null
 +++ b/horizon-wine/games/alice.conf
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,23 @@
 +# Alice: Madness Returns (2011, Spicy Horse / EA): Unreal Engine 3, 32-bit x86,
 +# Direct3D 9, PhysX CPU, through WoW64 + FEX and DXVK. Read by build-game.sh.
 +ROOT_NAME=alice
@@ -5473,6 +5484,11 @@ index 00000000..b504bd11
 +# Files copied onto the card as they are, under switch/alice: FEX with TSO
 +# and DXVK with the FPS counter (AliceMadnessReturns.wine-nx.txt).
 +FILES=horizon-wine/games/alice
++# AliceMadnessReturns.exe has no relocations and only loads at 0x00400000: it
++# needs the Atmosphere low-address patch (Hekate entry "Autorun - direcciones
++# bajas") and its HOME icon takes Autorun's title ID, the only one that patch
++# serves. Only one LOW_WINDOW game can be installed at a time.
++LOW_WINDOW=1
 diff --git a/horizon-wine/games/alice/drive_c/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt b/horizon-wine/games/alice/drive_c/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt
 new file mode 100644
 index 00000000..72c3a83b
@@ -5741,6 +5757,48 @@ index 315bdcdb..a895c2de 100644
  NX_QUERY(get_next_packet_size, frames, 0)
  NX_QUERY(get_frequency, freq, NX_RATE * 4)
  static NTSTATUS nx_get_position(void *args)
+diff --git a/horizon-wine/source/forwarder.c b/horizon-wine/source/forwarder.c
+index 91830484..16e0c35a 100644
+--- a/horizon-wine/source/forwarder.c
++++ b/horizon-wine/source/forwarder.c
+@@ -930,10 +930,24 @@ static void forwarder_hash( const char *nro_path, const char *args, int generati
+     sha256CalculateHash( hash, both, strlen( both ) );
+ }
+ 
++/* A single-game build for an .exe that only loads at a low address: its own
++ * HOME icon takes Autorun's title ID, the only one the Atmosphere low-address
++ * patch serves. The name and icon stay the game's. */
++static int forwarder_is_low_window_own( const char *nro_path, const char *args )
++{
++#ifdef WINE_NX_LOW_WINDOW
++    return nro_path && (!args || !args[0]) && !strcmp( nro_path, WINE_NX_RUNTIME_NRO );
++#else
++    (void)nro_path; (void)args;
++    return 0;
++#endif
++}
++
+ unsigned long long wine_nx_forwarder_title_id( const char *nro_path, const char *args )
+ {
+     u64 hash[SHA256_HASH_SIZE / sizeof(u64)];
+ 
++    if (forwarder_is_low_window_own( nro_path, args )) return AUTORUN_TITLE_ID;
+     forwarder_hash( nro_path, args, FORWARDER_GENERATION, hash );
+     return 0x0500000000000000ull | (hash[0] & 0x00FFFFFFFFFFF000ull);
+ }
+@@ -1219,6 +1233,12 @@ unsigned int wine_nx_forwarder_install( const struct wine_nx_forwarder *request,
+      * made for the same NRO, so they are taken away rather than left behind. */
+     forwarder_hash( request->nro_path, request->args, 0, hash );
+     plain_tid = 0x0500000000000000ull | (hash[0] & 0x00FFFFFFFFFFF000ull);
++    /* The game's icon under its own hashed ID goes away; it takes Autorun's. */
++    if (!request->game_id && forwarder_is_low_window_own( request->nro_path, request->args ))
++    {
++        old_tid = tid;
++        tid = AUTORUN_TITLE_ID;
++    }
+     if (request->game_id)
+     {
+         tid = old_tid = plain_tid = wine_nx_forwarder_game_title_id( request->game_id );
 diff --git a/horizon-wine/source/forwarder_launch.h b/horizon-wine/source/forwarder_launch.h
 index ef8cef2e..dd646019 100644
 --- a/horizon-wine/source/forwarder_launch.h
@@ -5786,7 +5844,7 @@ index c52fc596..7ec891d1 100644
  float flow_scale = 0.25f;
  
 diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
-index 8def52be..7060da30 100644
+index 8def52be..b5f959bc 100644
 --- a/horizon-wine/source/runtime.c
 +++ b/horizon-wine/source/runtime.c
 @@ -75,7 +75,13 @@ uint64_t __nx_exception_stack_size = sizeof(__nx_exception_stack);
@@ -6019,7 +6077,7 @@ index 8def52be..7060da30 100644
      runtime_dxvk_on_add = wine_nx_config_bool( &runtime_config, "dxvk-for-new-games", 1 );
      wine_nx_swkbd_auto_enabled = config_bool( "keyboard-on-text-focus", 1, "no-swkbd-auto.txt", 1 );
      log_line( "[INIT] on-screen keyboard opens on text focus: %s", wine_nx_swkbd_auto_enabled ? "yes" : "no" );
-@@ -3939,6 +4105,33 @@ int main( int argc, char **argv )
+@@ -3939,6 +4105,40 @@ int main( int argc, char **argv )
          autorun = resumed_program = 1;
          log_line( "[SETUP] resuming %s", target );
      }
@@ -6044,8 +6102,15 @@ index 8def52be..7060da30 100644
 +        /* What the launcher checks before it starts a game: an .exe with no
 +         * relocations only loads at its own address, in the low window. */
 +        if (launcher_program_address_space( target ) == LAUNCHER_ADDRESS_LOW && !low_window_available)
++#ifdef WINE_NX_LOW_WINDOW
++            return fixed_target_stop( "Este juego necesita el parche de direcciones bajas de Atmosphere.\n"
++                                      "  1. Instalalo con Quick setup en Autorun (switch/wine).\n"
++                                      "  2. Arranca con la entrada Autorun de Hekate.\n"
++                                      "  3. Abre este juego desde su icono del menu HOME." );
++#else
 +            return fixed_target_stop( "Este juego necesita el parche de direcciones bajas de Atmosphere.\n"
 +                                      "  Instalalo con Quick setup en Autorun y reinicia la consola." );
++#endif
 +        forwarded_game = 1;
 +        log_line( "[FIXED] %s", target );
 +    }
@@ -6053,7 +6118,7 @@ index 8def52be..7060da30 100644
      /* A program started without the launcher -- from its forwarder, resumed
       * after the components setup, or named on the command line -- needs the
       * card's Windows DLLs as much as one chosen there. Without them, or with
-@@ -3970,6 +4163,13 @@ int main( int argc, char **argv )
+@@ -3970,6 +4170,13 @@ int main( int argc, char **argv )
      }
      else
      {
