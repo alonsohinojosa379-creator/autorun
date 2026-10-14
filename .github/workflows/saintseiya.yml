@@ -28,6 +28,7 @@ jobs:
           cp saintseiya.patch /tmp/saintseiya.patch
           cp saintseiya-rendimiento.patch /tmp/saintseiya-rendimiento.patch
           cp saintseiya-estirar.patch /tmp/saintseiya-estirar.patch
+          cp saintseiya-2jugadores.patch /tmp/saintseiya-2jugadores.patch
           git config user.name "build"
           git config user.email "build@localhost"
           base=c889e4eb722ba6435e50500d9dde51f59781ce99
@@ -39,7 +40,9 @@ jobs:
           git am /tmp/saintseiya-rendimiento.patch
           # Opcion stretch=1: estira la imagen a toda la pantalla.
           git am /tmp/saintseiya-estirar.patch
-          git log -6 --oneline
+          # Segundo jugador: el segundo control de la Switch como XInput 1.
+          git am /tmp/saintseiya-2jugadores.patch
+          git log -7 --oneline
 
       - name: Usar la imagen de compilacion vigente
         run: |

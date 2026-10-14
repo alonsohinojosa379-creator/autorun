@@ -1,0 +1,144 @@
+From a944291b34a4fe2d675b12f1f84ee8c9176369a6 Mon Sep 17 00:00:00 2001
+From: Asce22 <alonsohinojosa379@gmail.com>
+Date: Tue, 13 Oct 2026 20:32:49 -0600
+Subject: [PATCH] Saint Seiya: segundo jugador (XInput 1) con el segundo
+ control de la Switch
+
+El backend XInput solo daba el jugador 1. Ahora da los jugadores 1 y 2
+(Npad No1 y No2) y la consola acepta 2 controles en todo el runtime.
+---
+ horizon-wine/source/runtime.c     | 10 +++----
+ horizon-wine/source/xinput_unix.c | 45 +++++++++++++++++--------------
+ 2 files changed, 30 insertions(+), 25 deletions(-)
+
+diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
+index 2e2fec6f..39178766 100644
+--- a/horizon-wine/source/runtime.c
++++ b/horizon-wine/source/runtime.c
+@@ -933,7 +933,7 @@ int wine_nx_pointer_poll( int *x, int *y, unsigned int *buttons )
+     if (!wine_nx_pointer_ready)
+     {
+         hidInitializeTouchScreen();
+-        padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
++        padConfigureInput( 2, HidNpadStyleSet_NpadStandard );
+         padInitializeDefault( &wine_nx_pad );
+         wine_nx_pointer_tick = armGetSystemTick();
+         wine_nx_pointer_ready = 1;
+@@ -3796,7 +3796,7 @@ static int fixed_target_stop( const char *why )
+     log_line( "[FIXED] %s", why );
+     wine_nx_console_quiet = 0;
+     printf( "\n  %s\n\n  %s\n\n  Pulsa + para salir.\n", WINE_NX_APP_NAME, why );
+-    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
++    padConfigureInput( 2, HidNpadStyleSet_NpadStandard );
+     padInitializeDefault( &pad );
+     while (appletMainLoop())
+     {
+@@ -3837,7 +3837,7 @@ static void fixed_target_credits( void )
+     }
+     consoleUpdate( NULL );
+     log_line( "[FIXED] credits: %s", text );
+-    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
++    padConfigureInput( 2, HidNpadStyleSet_NpadStandard );
+     padInitializeDefault( &pad );
+     start = armGetSystemTick();
+     while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
+@@ -3867,7 +3867,7 @@ static int fixed_target_offer_forwarder( void )
+     wine_nx_console_quiet = 0;
+     printf( "\n  %s\n\n  A: crear el icono en el menu HOME (recomendado)\n"
+             "  B: jugar ahora desde el Homebrew Menu\n  +: salir\n", WINE_NX_APP_NAME );
+-    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
++    padConfigureInput( 2, HidNpadStyleSet_NpadStandard );
+     padInitializeDefault( &pad );
+     while (appletMainLoop())
+     {
+@@ -3994,7 +3994,7 @@ int main( int argc, char **argv )
+             wine_nx_console_quiet = 0;
+             PadState pad;
+             log_line( "[UPDATE] Recovery failed. Restore switch/wine/updates/previous.nro before starting a game. Press + to close." );
+-            padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
++            padConfigureInput( 2, HidNpadStyleSet_NpadStandard );
+             padInitializeDefault( &pad );
+             while (appletMainLoop())
+             {
+diff --git a/horizon-wine/source/xinput_unix.c b/horizon-wine/source/xinput_unix.c
+index bda7c8c9..fd58df6e 100644
+--- a/horizon-wine/source/xinput_unix.c
++++ b/horizon-wine/source/xinput_unix.c
+@@ -1,6 +1,6 @@
+ /* Copyright 2026 Wine-NX contributors. LGPL-2.1-or-later.
+- * The Switch controller behind Wine's XInput DLLs: player 1's pad, handheld
+- * or docked. */
++ * The Switch controllers behind Wine's XInput DLLs: player 1's pad (handheld
++ * or docked) and player 2's pad. */
+ #include <pthread.h>
+ #include <string.h>
+ #include <switch.h>
+@@ -30,42 +30,47 @@ static pthread_mutex_t pad_mutex = PTHREAD_MUTEX_INITIALIZER;
+ /* The floating keyboard (osk.c). */
+ int wine_nx_osk_visible( void );
+ 
+-static PadState pad;
+-static int pad_ready;
+-static XINPUT_GAMEPAD last_gamepad;
+-static DWORD packet;
++#define NX_MAX_PADS 2
++static PadState pads[NX_MAX_PADS];
++static int pad_ready[NX_MAX_PADS];
++static XINPUT_GAMEPAD last_gamepad[NX_MAX_PADS];
++static DWORD packet[NX_MAX_PADS];
+ 
+ static NTSTATUS nx_xinput_get_state_unix( void *args )
+ {
+     struct nx_xinput_state_params *params = args;
+     XINPUT_GAMEPAD gamepad;
++    DWORD i = params->index;
++    PadState *pad;
+ 
+     params->connected = 0;
+-    if (params->index) return STATUS_SUCCESS;  /* player 1 only */
++    if (i >= NX_MAX_PADS) return STATUS_SUCCESS;  /* players 1 and 2 */
++    pad = &pads[i];
+     pthread_mutex_lock( &pad_mutex );
+-    if (!pad_ready)
++    if (!pad_ready[i])
+     {
+-        padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
+-        padInitializeDefault( &pad );
+-        pad_ready = 1;
++        padConfigureInput( NX_MAX_PADS, HidNpadStyleSet_NpadStandard );
++        if (!i) padInitializeDefault( pad );  /* player 1: handheld or docked */
++        else padInitializeWithMask( pad, 1ull << (HidNpadIdType_No1 + i) );
++        pad_ready[i] = 1;
+     }
+-    padUpdate( &pad );
+-    if (padIsConnected( &pad ))
++    padUpdate( pad );
++    if (padIsConnected( pad ))
+     {
+-        HidAnalogStickState left = padGetStickPos( &pad, 0 ), right = padGetStickPos( &pad, 1 );
++        HidAnalogStickState left = padGetStickPos( pad, 0 ), right = padGetStickPos( pad, 1 );
+ 
+-        nx_xinput_map( padGetButtons( &pad ), left.x, left.y, right.x, right.y, &gamepad );
++        nx_xinput_map( padGetButtons( pad ), left.x, left.y, right.x, right.y, &gamepad );
+         /* The floating keyboard has the controller while it is up (osk.c). */
+         if (wine_nx_osk_visible()) memset( &gamepad, 0, sizeof(gamepad) );
+-        if (memcmp( &gamepad, &last_gamepad, sizeof(gamepad) ))
++        if (memcmp( &gamepad, &last_gamepad[i], sizeof(gamepad) ))
+         {
+-            last_gamepad = gamepad;
+-            packet++;
++            last_gamepad[i] = gamepad;
++            packet[i]++;
+         }
+         params->connected = 1;
+-        params->state.dwPacketNumber = packet;
++        params->state.dwPacketNumber = packet[i];
+         params->state.Gamepad = gamepad;
+-        wine_nx_xinput_last_poll = armGetSystemTick();
++        if (!i) wine_nx_xinput_last_poll = armGetSystemTick();
+     }
+     pthread_mutex_unlock( &pad_mutex );
+     return STATUS_SUCCESS;
+-- 
+2.43.0
+
