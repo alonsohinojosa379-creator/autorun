@@ -1,4 +1,4 @@
-From 38504c5b7fc3426fba66c6327040c83fc0f82ded Mon Sep 17 00:00:00 2001
+From 0243019587c8c6cb80a961200e4178d326a2421b Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 13 Oct 2026 21:40:04 -0600
 Subject: [PATCH] Alice 1 (American McGee's Alice) para Nintendo Switch: build
@@ -21,7 +21,7 @@ Subject: [PATCH] Alice 1 (American McGee's Alice) para Nintendo Switch: build
  horizon-wine/build-amd64-components.sh        |  15 +-
  horizon-wine/build-game.sh                    |  49 ++++
  horizon-wine/build-theforest.sh               |   3 +
- horizon-wine/games/alice1.conf                |  16 ++
+ horizon-wine/games/alice1.conf                |  19 ++
  .../drive_c/Alice1/bin/alice.wine-nx.txt      |   4 +
  horizon-wine/games/left4dead.conf             |  18 ++
  .../bin/steam_settings/disable_networking.txt |   0
@@ -41,7 +41,7 @@ Subject: [PATCH] Alice 1 (American McGee's Alice) para Nintendo Switch: build
  horizon-wine/source/wow64_box64_dynarec.c     |  19 ++
  horizon-wine/tools/drop-foreign-objects.sh    |  32 +++
  horizon-wine/tools/package-single-game.py     | 106 +++++++++
- 36 files changed, 970 insertions(+), 39 deletions(-)
+ 36 files changed, 973 insertions(+), 39 deletions(-)
  create mode 100644 horizon-wine/assets/alice1.jpg
  create mode 100644 horizon-wine/assets/left4dead.jpg
  create mode 100644 horizon-wine/assets/theforest-splash.jpg
@@ -5458,10 +5458,10 @@ index 00000000..eb893be2
 +exec sh "$(dirname -- "$0")/build-game.sh" theforest "$@"
 diff --git a/horizon-wine/games/alice1.conf b/horizon-wine/games/alice1.conf
 new file mode 100644
-index 00000000..658187e3
+index 00000000..a96a2324
 --- /dev/null
 +++ b/horizon-wine/games/alice1.conf
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,19 @@
 +# American McGee's Alice (2000, Rogue / EA): Quake III engine, 32-bit x86,
 +# OpenGL. Read by build-game.sh.
 +ROOT_NAME=alice1
@@ -5472,6 +5472,9 @@ index 00000000..658187e3
 +# Copy the contents of the game folder Alice1 (bin, lib, ...) to
 +# switch/alice1/drive_c/Alice1.
 +EXE="Alice1/bin/alice.exe"
++# The EA edition of alice.exe exits unless its command line has the switch the
++# Alice: Madness Returns launcher passes it.
++ARGS="-RunningFromAlice2"
 +FILES=horizon-wine/games/alice1
 +# alice.exe is a 2000-era image that loads at 0x00400000 (no relocations): it
 +# needs the Atmosphere low-address patch (Hekate entry "Autorun - direcciones
