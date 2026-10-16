@@ -5468,7 +5468,7 @@ index 00000000..a96a2324
 +APP_NAME="Alice 1"
 +APP_AUTHOR="Hecho por Ascencion H.O"
 +APP_ICON=horizon-wine/assets/alice1.jpg
-+SPLASH="American McGee's Alice para Nintendo Switch||Hecho por Ascencion H.O"
++SPLASH="American McGee's Alice para Nintendo Switch||Hecho por Ascencion H.O|Fork creado por El Boss Shifu, Lord Erick y Ascencion H.O.|Basado en AutorunNX de Dantico"
 +# Copy the contents of the game folder Alice1 (bin, lib, ...) to
 +# switch/alice1/drive_c/Alice1.
 +EXE="Alice1/bin/alice.exe"
@@ -5991,7 +5991,7 @@ index 8def52be..b5f959bc 100644
 +    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
 +    padInitializeDefault( &pad );
 +    start = armGetSystemTick();
-+    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 +    {
 +        padUpdate( &pad );
 +        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;

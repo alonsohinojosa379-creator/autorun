@@ -5342,7 +5342,7 @@ index 0000000..6974224
 +APP_AUTHOR="Port de Asce22"
 +APP_ICON=horizon-wine/assets/cod4.jpg
 +# Shown before the game starts; '|' starts a new line.
-+SPLASH="Call of Duty 4: Modern Warfare para Nintendo Switch||Port Hecho por Asce22"
++SPLASH="Call of Duty 4: Modern Warfare para Nintendo Switch||Port Hecho por Asce22|Fork creado por El Boss Shifu, Lord Erick y Ascencion H.O.|Basado en AutorunNX de Dantico"
 +# Copy the whole installed game folder (iw3sp.exe, main, zone, miles, ...) to
 +# switch/cod4/drive_c/COD4. No d3d9.dll of the game's own may stay in that
 +# folder, or it is used instead of Autorun's DXVK.
@@ -5872,7 +5872,7 @@ index 8def52b..b5f959b 100644
 +    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
 +    padInitializeDefault( &pad );
 +    start = armGetSystemTick();
-+    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 +    {
 +        padUpdate( &pad );
 +        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;

@@ -5473,7 +5473,7 @@ index 00000000..d03a83af
 +APP_AUTHOR="Hecho por Ascencion H.O"
 +APP_ICON=horizon-wine/assets/alice.jpg
 +# Shown before the game starts; '|' starts a new line.
-+SPLASH="Alice Madness Returns para Nintendo Switch||Hecho por Ascencion H.O"
++SPLASH="Alice Madness Returns para Nintendo Switch||Hecho por Ascencion H.O|Fork creado por El Boss Shifu, Lord Erick y Ascencion H.O.|Basado en AutorunNX de Dantico"
 +# Copy the contents of the game folder Alice2 (Binaries, AliceGame, Engine, ...) to
 +# switch/alice/drive_c/Alice. steam_api.dll (if any) must start without Steam
 +# (check on a PC with Steam closed).
@@ -6000,7 +6000,7 @@ index 8def52be..b5f959bc 100644
 +    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
 +    padInitializeDefault( &pad );
 +    start = armGetSystemTick();
-+    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 +    {
 +        padUpdate( &pad );
 +        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;

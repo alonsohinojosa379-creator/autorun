@@ -4892,7 +4892,7 @@ index 0000000..62b2491
 +APP_NAME="The Forest"
 +APP_AUTHOR="Port Hecho por Ascencion H.O"
 +APP_ICON=horizon-wine/assets/theforest.jpg
-+SPLASH="The Forest para Nintendo Switch||Port Hecho por Ascencion H.O"
++SPLASH="The Forest para Nintendo Switch||Port Hecho por Ascencion H.O|Fork creado por El Boss Shifu, Lord Erick y Ascencion H.O.|Basado en AutorunNX de Dantico"
 +# The game's .exe inside drive_c, which is the game's C: drive.
 +EXE="The Forest/TheForest.exe"
 +# Resolution and the single-threaded renderer (one fewer thread pair) are in
@@ -5424,7 +5424,7 @@ index 8def52b..0673ea0 100644
 +    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
 +    padInitializeDefault( &pad );
 +    start = armGetSystemTick();
-+    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 +    {
 +        padUpdate( &pad );
 +        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;

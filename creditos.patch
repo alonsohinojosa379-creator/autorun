@@ -1,0 +1,40 @@
+diff --git a/README.md b/README.md
+index 0774e827..6c17e797 100644
+--- a/README.md
++++ b/README.md
+@@ -9,6 +9,9 @@
+   <sub>Previously called Wine-NX.</sub>
+ </p>
+ 
++> **Fork created by El Boss Shifu, Lord Erick and Ascencion H.O.**
++> Based on AutorunNX by Dantico.
++
+ Autorun is a homebrew app that runs Windows games and programs on the Switch.
+ It brings [Wine](https://www.winehq.org) - the layer that lets Windows software
+ run outside Windows - to the Switch's own operating system, and translates PC
+diff --git a/horizon-wine/source/launcher.c b/horizon-wine/source/launcher.c
+index 406b64d6..554c331b 100644
+--- a/horizon-wine/source/launcher.c
++++ b/horizon-wine/source/launcher.c
+@@ -3004,6 +3004,9 @@ static void save_look( struct launcher *l )
+ 
+ static const struct { const char *name, *by; } credits[] =
+ {
++    { "THIS FORK", NULL },
++    { "Created by", "El Boss Shifu, Lord Erick and Ascencion H.O." },
++    { "Based on", "AutorunNX by Dantico" },
+     { "RUNTIME & TRANSLATION", NULL },
+     { "Wine", "WineHQ  /  LGPL-2.1+" },
+     { "Box64", "ptitSeb  /  MIT" },
+diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
+index 8def52be..793d191e 100644
+--- a/horizon-wine/source/runtime.c
++++ b/horizon-wine/source/runtime.c
+@@ -4164,6 +4164,7 @@ int main( int argc, char **argv )
+     open_game_log( target );
+     log_line( "wine-nx-runtime: generic Wine ntdll PE loader path" );
+     log_line( "[BUILD] %s", WINE_NX_RUNTIME_BUILD );
++    log_line( "[FORK] created by El Boss Shifu, Lord Erick and Ascencion H.O.; based on AutorunNX by Dantico" );
+     log_line( "[SYNC] %s", horizon_fast_sync_enabled ? "Horizon queued waits" : "Standard" );
+     wine_nx_thread_configure_cores( runtime_four_cores );
+     log_line( "[SDCACHE] %s", sd_cache ? "sdmc reads cached: 128 KB chunks, 8 per file, 32 to 192 MB in all"

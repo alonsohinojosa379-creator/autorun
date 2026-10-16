@@ -5693,7 +5693,7 @@ index 0000000..0ec488b
 +APP_AUTHOR="Hecho por Ascencion H.O"
 +APP_ICON=horizon-wine/assets/saintseiya.jpg
 +# Shown before the game starts; '|' starts a new line.
-+SPLASH="Saint Seiya Alma de Soldado para Nintendo Switch||Hecho por Ascencion H.O"
++SPLASH="Saint Seiya Alma de Soldado para Nintendo Switch||Hecho por Ascencion H.O|Fork creado por El Boss Shifu, Lord Erick y Ascencion H.O.|Basado en AutorunNX de Dantico"
 +# Copy the whole game folder (SSSS.exe, steam_api.dll, resource.cpk, localize.cpk,
 +# DLC, etc.) to switch/saintseiya/drive_c/SaintSeiya. steam_api.dll must start
 +# without Steam (check on a PC with Steam closed). Un d3d9.dll propio del juego
@@ -6120,7 +6120,7 @@ index 8def52b..7060da3 100644
 +    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
 +    padInitializeDefault( &pad );
 +    start = armGetSystemTick();
-+    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 +    {
 +        padUpdate( &pad );
 +        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;

@@ -41,7 +41,7 @@ index 2e2fec6f..39178766 100644
 +    padConfigureInput( 2, HidNpadStyleSet_NpadStandard );
      padInitializeDefault( &pad );
      start = armGetSystemTick();
-     while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
+     while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 @@ -3867,7 +3867,7 @@ static int fixed_target_offer_forwarder( void )
      wine_nx_console_quiet = 0;
      printf( "\n  %s\n\n  A: crear el icono en el menu HOME (recomendado)\n"

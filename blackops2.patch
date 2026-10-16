@@ -5383,7 +5383,7 @@ index 0000000..29b6cc0
 +APP_AUTHOR="Hecho por Ascencion H.O - Base Dantico"
 +APP_ICON=horizon-wine/assets/blackops2.jpg
 +# Shown before the game starts; '|' starts a new line.
-+SPLASH="Call of Duty: Black Ops II para Nintendo Switch||Hecho por Ascencion H.O|Base Dantico"
++SPLASH="Call of Duty: Black Ops II para Nintendo Switch||Hecho por Ascencion H.O|Fork creado por El Boss Shifu, Lord Erick y Ascencion H.O.|Basado en AutorunNX de Dantico"
 +# Copy the whole game folder from Steam to
 +# switch/blackops2/drive_c/Black Ops II (t6sp.exe, zone, video, sound...).
 +# Steam is handled the same way as Left 4 Dead; a d3d11.dll or dxgi.dll of
@@ -5933,7 +5933,7 @@ index 8def52b..b5f959b 100644
 +    padConfigureInput( 1, HidNpadStyleSet_NpadStandard );
 +    padInitializeDefault( &pad );
 +    start = armGetSystemTick();
-+    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 3000000000ull)
++    while (appletMainLoop() && armTicksToNs( armGetSystemTick() - start ) < 6000000000ull)
 +    {
 +        padUpdate( &pad );
 +        if (padGetButtonsDown( &pad ) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_Plus)) break;
