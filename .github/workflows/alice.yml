@@ -56,6 +56,76 @@ jobs:
           sed -i "s/llvm-mingw-20260505-ucrt-macos-universal/$tc/g" horizon-wine/tools/package-autorun.py horizon-wine/tools/verify-package.py
           grep -n "llvm-mingw" horizon-wine/tools/package-autorun.py horizon-wine/tools/verify-package.py
 
+      - name: Meter DXVK GPLAsync en el zip de la SD
+        run: |
+          # El runtime ya sabe usar dxvk-gplasync si esta instalado en
+          # drive_c/dxvk-gplasync[64]/versions/<version>; el launcher lo baja,
+          # aqui se deja puesto de fabrica y se activa con dxvk-source=gplasync.
+          python3 - <<'PY'
+          import hashlib, io, json, os, sys, tarfile, urllib.request
+
+          API = "https://gitlab.com/api/v4/projects/43488626/releases?per_page=20"
+          DLLS = {"d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d10_1.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"}
+          base = "horizon-wine/games/alice/drive_c"
+
+          def get(url):
+              with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "alice-build"}), timeout=120) as r:
+                  return r.read()
+
+          def key(v):
+              main, _, rev = v.partition("-")
+              return ([int(x) for x in main.split(".")], int(rev or 0))
+
+          best = None
+          for rel in json.loads(get(API)):
+              tag = rel["tag_name"].lstrip("vV")
+              try:
+                  k = key(tag)
+              except ValueError:
+                  continue
+              if k[0] < [2, 1]:
+                  continue
+              for link in rel.get("assets", {}).get("links", []):
+                  if link["name"] == f"dxvk-gplasync-v{tag}.tar.gz":
+                      if best is None or k > best[0]:
+                          best = (k, tag, link["url"])
+          if not best:
+              sys.exit("No se encontro un release de dxvk-gplasync con el asset esperado")
+          _, ver, url = best
+          print("GPLAsync", ver, url)
+          data = get(url)
+          digest = hashlib.sha256(data).hexdigest()
+          out = {"x32": f"{base}/dxvk-gplasync/versions/{ver}", "x64": f"{base}/dxvk-gplasync64/versions/{ver}"}
+          for d in out.values():
+              os.makedirs(d, exist_ok=True)
+          count = {"x32": 0, "x64": 0}
+          with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+              for m in t.getmembers():
+                  if not m.isreg():
+                      continue
+                  parts = m.name.split("/")
+                  if len(parts) < 2 or parts[-1].lower() not in DLLS or parts[-2] not in out:
+                      continue
+                  blob = t.extractfile(m).read()
+                  if blob[:2] != b"MZ":
+                      sys.exit("DLL invalida: " + m.name)
+                  with open(os.path.join(out[parts[-2]], parts[-1]), "wb") as f:
+                      f.write(blob)
+                  count[parts[-2]] += 1
+          print(count)
+          if not count["x32"] or not count["x64"]:
+              sys.exit("Faltan DLL x32 o x64 en el archivo")
+          for d in out.values():
+              with open(os.path.join(d, "release.ini"), "w") as f:
+                  f.write(f"version={ver}\nsource={url}\nsha256={digest}\n")
+          cfg = f"{base}/Alice/Binaries/Win32/AliceMadnessReturns.wine-nx.txt"
+          with open(cfg, "w") as f:
+              f.write("cpu=fex\nd3d=dxvk\nFEX_TSOENABLED=0\nvsync=0\ndxvk-hud=fps\ndxvk-source=gplasync\n")
+              f.write(f"dxvk-version={ver}\n")
+          print(open(cfg).read())
+          PY
+          find horizon-wine/games/alice -type f | sort
+
       - name: Instalar herramientas
         run: |
           sudo apt-get update
