@@ -6422,3 +6422,48 @@ index 783dde9..de821d5 100644
 -- 
 2.43.0
 
+From 7f91eed74e0c2f39c6c7bb92fb2b87c407734f20 Mon Sep 17 00:00:00 2001
+From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
+Date: Mon, 19 Oct 2026 11:26:11 -0600
+Subject: [PATCH] falloutnv: fija el nombre de la GPU y trae FalloutPrefs.ini
+
+El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
+no coincide, abre el launcher y se cierra. Se fija el nombre con
+d3d9.customDeviceDesc y se incluye un FalloutPrefs.ini con el mismo valor.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016JMTyeKV9nEeZ3awCLYzEV
+---
+ .../games/falloutnv/drive_c/Fallout New Vegas/dxvk.conf    | 4 ++++
+ .../Documents/My Games/FalloutNV/FalloutPrefs.ini          | 7 +++++++
+ 2 files changed, 11 insertions(+)
+ create mode 100644 horizon-wine/games/falloutnv/drive_c/users/steamuser/Documents/My Games/FalloutNV/FalloutPrefs.ini
+
+diff --git a/horizon-wine/games/falloutnv/drive_c/Fallout New Vegas/dxvk.conf b/horizon-wine/games/falloutnv/drive_c/Fallout New Vegas/dxvk.conf
+index d8659d5..cfaab0e 100644
+--- a/horizon-wine/games/falloutnv/drive_c/Fallout New Vegas/dxvk.conf	
++++ b/horizon-wine/games/falloutnv/drive_c/Fallout New Vegas/dxvk.conf	
+@@ -1,3 +1,7 @@
+ # Fallout: New Vegas en Switch: 32 bits, poca memoria
+ dxgi.maxDeviceMemory = 512
+ dxgi.maxSharedMemory = 512
++
++# El juego compara el nombre de la GPU con sD3DDevice de FalloutPrefs.ini;
++# si no coincide, abre el launcher y se cierra. Fijamos el nombre.
++d3d9.customDeviceDesc = "NVIDIA Tegra X1 (GM20B) (NVK GM20B)"
+diff --git a/horizon-wine/games/falloutnv/drive_c/users/steamuser/Documents/My Games/FalloutNV/FalloutPrefs.ini b/horizon-wine/games/falloutnv/drive_c/users/steamuser/Documents/My Games/FalloutNV/FalloutPrefs.ini
+new file mode 100644
+index 0000000..d09d776
+--- /dev/null
++++ b/horizon-wine/games/falloutnv/drive_c/users/steamuser/Documents/My Games/FalloutNV/FalloutPrefs.ini	
+@@ -0,0 +1,7 @@
++[Display]
++sD3DDevice="NVIDIA Tegra X1 (GM20B) (NVK GM20B)"
++iAdapter=0
++iSize W=1280
++iSize H=720
++bFull Screen=1
++iMultiSample=0
+-- 
+2.43.0
+
