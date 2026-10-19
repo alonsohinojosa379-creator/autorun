@@ -1,4 +1,4 @@
-From 2f386b4dabbc702bfa6ba96100716270575dd60d Mon Sep 17 00:00:00 2001
+From 2764a40bbb41a1eee521c3cda9961d78c8862162 Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
 Subject: [PATCH] Fallout: New Vegas para Nintendo Switch: build de un solo
@@ -26,7 +26,7 @@ Claude-Session: https://claude.ai/code/session_016JMTyeKV9nEeZ3awCLYzEV
  dlls/ntdll/unix/loader.c                      |  11 +-
  dlls/ntdll/unix/signal_arm64.c                |  13 +-
  dlls/win32u/vulkan.c                          |  28 +++
- horizon-wine/CMakeLists.txt                   |  38 +++-
+ horizon-wine/CMakeLists.txt                   |  38 ++-
  horizon-wine/assets/falloutnv.jpg             | Bin 0 -> 26740 bytes
  horizon-wine/assets/left4dead.jpg             | Bin 0 -> 30146 bytes
  horizon-wine/assets/theforest-splash.jpg      | Bin 0 -> 149994 bytes
@@ -49,13 +49,13 @@ Claude-Session: https://claude.ai/code/session_016JMTyeKV9nEeZ3awCLYzEV
  horizon-wine/source/forwarder_launch.h        |   3 +-
  horizon-wine/source/launcher_list.h           |   3 +-
  horizon-wine/source/lsfg.cpp                  |   5 +-
- horizon-wine/source/runtime.c                 | 215 +++++++++++++++++-
+ horizon-wine/source/runtime.c                 | 217 +++++++++++++++++-
  horizon-wine/source/thread_profile.c          |  87 ++++++-
  horizon-wine/source/thread_profile.h          |  10 +
  horizon-wine/source/wow64_box64_dynarec.c     |  19 ++
  horizon-wine/tools/drop-foreign-objects.sh    |  32 +++
  horizon-wine/tools/package-single-game.py     | 106 +++++++++
- 37 files changed, 984 insertions(+), 39 deletions(-)
+ 37 files changed, 985 insertions(+), 40 deletions(-)
  create mode 100644 horizon-wine/assets/falloutnv.jpg
  create mode 100644 horizon-wine/assets/left4dead.jpg
  create mode 100644 horizon-wine/assets/theforest-splash.jpg
@@ -5739,7 +5739,7 @@ index c52fc59..7ec891d 100644
  float flow_scale = 0.25f;
  
 diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
-index 8def52b..b5f959b 100644
+index 8def52b..fdf804d 100644
 --- a/horizon-wine/source/runtime.c
 +++ b/horizon-wine/source/runtime.c
 @@ -75,7 +75,13 @@ uint64_t __nx_exception_stack_size = sizeof(__nx_exception_stack);
@@ -6027,6 +6027,15 @@ index 8def52b..b5f959b 100644
          struct wine_nx_launcher_options options =
          {
              .runtime_dir = RUNTIME_DIR,
+@@ -4286,7 +4493,7 @@ int main( int argc, char **argv )
+      * unix-side debug buffers into TEBs, which the runtime's threads lack. */
+     {
+         struct __wine_debug_channel *options = (void *)((char *)teb->Peb + 2 * page_size);
+-        static const char channels[][15] = { "iphlpapi", "secur32", "winsock" };
++        static const char channels[][15] = { "iphlpapi", "secur32", "winsock", "seh" };
+         unsigned int i = 0;
+ 
+         for (; wine_nx_runtime_verbose && i < ARRAY_SIZE(channels); i++)
 diff --git a/horizon-wine/source/thread_profile.c b/horizon-wine/source/thread_profile.c
 index e037740..d358064 100644
 --- a/horizon-wine/source/thread_profile.c
