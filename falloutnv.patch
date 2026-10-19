@@ -6372,3 +6372,53 @@ index 0000000..f7e462e
 -- 
 2.43.0
 
+From eef5875f11ca7963e98fdba8a2936240c281674e Mon Sep 17 00:00:00 2001
+From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
+Date: Sun, 18 Oct 2026 21:46:38 -0600
+Subject: [PATCH] dsound: no dividir entre cero con buffers sin tamano de
+ bloque (Fallout New Vegas)
+
+El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
+cero (Box64: crash; FEX: el hilo del mezclador se queda dando vueltas y el
+juego se congela). Se salta el buffer y se mezcla silencio.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016JMTyeKV9nEeZ3awCLYzEV
+---
+ dlls/dsound/mixer.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/dsound/mixer.c b/dlls/dsound/mixer.c
+index 783dde9..de821d5 100644
+--- a/dlls/dsound/mixer.c
++++ b/dlls/dsound/mixer.c
+@@ -376,6 +376,17 @@ static inline void get_samples(const IDirectSoundBufferImpl *dsb, BYTE *buffer,
+     DWORD advance;
+     DWORD pos;
+ 
++    /* A buffer whose format reads back as block size 0 would divide by zero
++     * below. Seen under emulation (Fallout: New Vegas): the mixer thread then
++     * dies or spins. Play silence for that buffer instead. */
++    if (!istride || !buflen) {
++        static LONG warned;
++        if (!InterlockedExchange(&warned, 1))
++            ERR("buffer %p has block size %u, length %lu: mixing silence\n", dsb, istride, buflen);
++        memset(dst, 0, count * ostride);
++        return;
++    }
++
+     if (dsb->state == STATE_STOPPING) {
+         memset(dst, 0, count * ostride);
+         return;
+@@ -931,7 +942,7 @@ static void DSOUND_MixToPrimary(const DirectSoundDevice *device, float *mix_buff
+ 
+ 		TRACE("MixToPrimary for %p, state=%ld\n", dsb, dsb->state);
+ 
+-		if (dsb->buflen && dsb->state) {
++		if (dsb->buflen && dsb->state && dsb->pwfx && dsb->pwfx->nBlockAlign) {
+ 			TRACE("Checking %p, frames=%ld\n", dsb, frames);
+ 			AcquireSRWLockShared(&dsb->lock);
+ 			if (dsb->state != STATE_STOPPED) {
+-- 
+2.43.0
+
