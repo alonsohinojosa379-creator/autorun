@@ -1,7 +1,7 @@
 From 7acf17d074dee83a0f5d62225eea1c00d204f52b Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
-Subject: [PATCH 1/7] Fallout: New Vegas para Nintendo Switch: build de un solo
+Subject: [PATCH 1/8] Fallout: New Vegas para Nintendo Switch: build de un solo
  juego (Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche:
@@ -6376,7 +6376,7 @@ index 0000000..f7e462e
 From e69b802c6042b9988a3bec22800e02494c2d3093 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Sun, 18 Oct 2026 21:46:38 -0600
-Subject: [PATCH 2/7] dsound: no dividir entre cero con buffers sin tamano de
+Subject: [PATCH 2/8] dsound: no dividir entre cero con buffers sin tamano de
  bloque (Fallout New Vegas)
 
 El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
@@ -6427,7 +6427,7 @@ index 783dde9..de821d5 100644
 From a13cb8369fe8e54f44816ca99f54795f6b4f6c67 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Mon, 19 Oct 2026 11:26:11 -0600
-Subject: [PATCH 3/7] falloutnv: fija el nombre de la GPU y trae
+Subject: [PATCH 3/8] falloutnv: fija el nombre de la GPU y trae
  FalloutPrefs.ini
 
 El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
@@ -6474,7 +6474,7 @@ index 0000000..1120781
 From a86469b250c02959ce18c68e226aa36c9afc8f97 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Wed, 21 Oct 2026 20:26:14 -0600
-Subject: [PATCH 4/7] Resident Evil 2 (2019) para Nintendo Switch: build de un
+Subject: [PATCH 4/8] Resident Evil 2 (2019) para Nintendo Switch: build de un
  solo juego (Hecho por Ascencion H.O)
 
 ---
@@ -7625,7 +7625,7 @@ index 0000000..e69de29
 From 2fab10ab00336cc0ee9a78dde9730457e96b0592 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 19:05:17 -0600
-Subject: [PATCH 5/7] re2: swap experimental a la SD (se crea solo al arrancar,
+Subject: [PATCH 5/8] re2: swap experimental a la SD (se crea solo al arrancar,
  swap-mb=2048)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7720,7 +7720,7 @@ index fdf804d..673640d 100644
 From 1f6c87deb784312ba895fce9af519daec00e722d Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 22:18:25 -0600
-Subject: [PATCH 6/7] re2: el swap empieza a sacar memoria antes (384 MiB
+Subject: [PATCH 6/8] re2: el swap empieza a sacar memoria antes (384 MiB
  libres) y saca hasta 64 MiB por vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7772,7 +7772,7 @@ index 673640d..abbc8ed 100644
 From afaca01e57635a25bc6885d11d9c39ac874b9be9 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 16:00:22 -0600
-Subject: [PATCH 7/7] re2: el swap reutiliza el escaneo exacto del heap por 300
+Subject: [PATCH 7/8] re2: el swap reutiliza el escaneo exacto del heap por 300
  ms en vez de repetirlo cada vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7840,6 +7840,59 @@ index 72aec94..9cb5556 100644
      }
  }
  
+-- 
+2.43.0
+
+
+From f4aa1ef9b5e65affae3f3a31fe05620ac473a166 Mon Sep 17 00:00:00 2001
+From: b <b@l>
+Date: Fri, 23 Oct 2026 17:53:49 -0600
+Subject: [PATCH 8/8] Mesosphere: las aplicaciones pueden crear 192 hilos en
+ vez de 96
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ horizon-wine/mesosphere/low-window.patch | 29 ++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/horizon-wine/mesosphere/low-window.patch b/horizon-wine/mesosphere/low-window.patch
+index 45c052f..e188fba 100644
+--- a/horizon-wine/mesosphere/low-window.patch
++++ b/horizon-wine/mesosphere/low-window.patch
+@@ -130,3 +130,32 @@ index 2764848..92005e6 100644
+                          break;
+                      AMS_UNREACHABLE_DEFAULT_CASE();
+                  }
++diff --git a/libraries/libmesosphere/source/board/nintendo/nx/kern_k_system_control.cpp b/libraries/libmesosphere/source/board/nintendo/nx/kern_k_system_control.cpp
++index bb7581c..e5078f9 100644
++--- a/libraries/libmesosphere/source/board/nintendo/nx/kern_k_system_control.cpp
+++++ b/libraries/libmesosphere/source/board/nintendo/nx/kern_k_system_control.cpp
++@@ -313,7 +313,7 @@ namespace ams::kern::board::nintendo::nx {
++     }
++ 
++     bool KSystemControl::Init::ShouldIncreaseThreadResourceLimit() {
++-        return GetKernelConfigurationForInit().Get<smc::KernelConfiguration::IncreaseThreadResourceLimit>();
+++        return true;
++     }
++ 
++     size_t KSystemControl::Init::GetApplicationPoolSize() {
++diff --git a/libraries/libmesosphere/source/kern_k_resource_limit.cpp b/libraries/libmesosphere/source/kern_k_resource_limit.cpp
++index 6ed10a7..2385a30 100644
++--- a/libraries/libmesosphere/source/kern_k_resource_limit.cpp
+++++ b/libraries/libmesosphere/source/kern_k_resource_limit.cpp
++@@ -105,6 +105,11 @@ namespace ams::kern {
++         KScopedLightLock lk(m_lock);
++         R_UNLESS(m_current_values[which] <= value, svc::ResultInvalidState());
++ 
+++        /* Autorun: applications get 192 threads instead of 96 (retail boost value). */
+++        if (which == ams::svc::LimitableResource_ThreadCountMax && value == 0x60) {
+++            value = 0xC0;
+++        }
+++
++         m_limit_values[which] = value;
++         m_peak_values[which]  = m_current_values[which];
++ 
 -- 
 2.43.0
 
