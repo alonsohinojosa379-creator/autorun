@@ -1,7 +1,7 @@
 From 7acf17d074dee83a0f5d62225eea1c00d204f52b Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
-Subject: [PATCH 1/5] Fallout: New Vegas para Nintendo Switch: build de un solo
+Subject: [PATCH 1/6] Fallout: New Vegas para Nintendo Switch: build de un solo
  juego (Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche:
@@ -6376,7 +6376,7 @@ index 0000000..f7e462e
 From e69b802c6042b9988a3bec22800e02494c2d3093 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Sun, 18 Oct 2026 21:46:38 -0600
-Subject: [PATCH 2/5] dsound: no dividir entre cero con buffers sin tamano de
+Subject: [PATCH 2/6] dsound: no dividir entre cero con buffers sin tamano de
  bloque (Fallout New Vegas)
 
 El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
@@ -6427,7 +6427,7 @@ index 783dde9..de821d5 100644
 From a13cb8369fe8e54f44816ca99f54795f6b4f6c67 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Mon, 19 Oct 2026 11:26:11 -0600
-Subject: [PATCH 3/5] falloutnv: fija el nombre de la GPU y trae
+Subject: [PATCH 3/6] falloutnv: fija el nombre de la GPU y trae
  FalloutPrefs.ini
 
 El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
@@ -6474,7 +6474,7 @@ index 0000000..1120781
 From a86469b250c02959ce18c68e226aa36c9afc8f97 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Wed, 21 Oct 2026 20:26:14 -0600
-Subject: [PATCH 4/5] Resident Evil 2 (2019) para Nintendo Switch: build de un
+Subject: [PATCH 4/6] Resident Evil 2 (2019) para Nintendo Switch: build de un
  solo juego (Hecho por Ascencion H.O)
 
 ---
@@ -7625,7 +7625,7 @@ index 0000000..e69de29
 From 2fab10ab00336cc0ee9a78dde9730457e96b0592 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 19:05:17 -0600
-Subject: [PATCH 5/5] re2: swap experimental a la SD (se crea solo al arrancar,
+Subject: [PATCH 5/6] re2: swap experimental a la SD (se crea solo al arrancar,
  swap-mb=2048)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7713,6 +7713,58 @@ index fdf804d..673640d 100644
              if (bits < (UINT64_C(1) << 36) || swap_file_open( &game_swap, RUNTIME_DIR "/swap-poc", size ))
              {
                  log_line( "[SWAP-GAME] startup failed: check SD swap files and the 39-bit forwarder (errno=%d fs=0x%x)",
+-- 
+2.43.0
+
+
+From 1f6c87deb784312ba895fce9af519daec00e722d Mon Sep 17 00:00:00 2001
+From: b <b@l>
+Date: Thu, 22 Oct 2026 22:18:25 -0600
+Subject: [PATCH 6/6] re2: el swap empieza a sacar memoria antes (384 MiB
+ libres) y saca hasta 64 MiB por vez
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ dlls/ntdll/unix/horizon.c     | 4 ++--
+ horizon-wine/source/runtime.c | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/horizon.c b/dlls/ntdll/unix/horizon.c
+index 95b43ac..72aec94 100644
+--- a/dlls/ntdll/unix/horizon.c
++++ b/dlls/ntdll/unix/horizon.c
+@@ -17730,7 +17730,7 @@ static void swap_pressure_locked( size_t size )
+ {
+     extern size_t wine_nx_native_heap_free_estimate( size_t * );
+     extern size_t wine_nx_native_heap_free_exact(void);
+-    unsigned long long target = size + 128 * UINT64_C(1048576);
++    unsigned long long target = size + 384 * UINT64_C(1048576);
+     size_t lower_bound, available, trimmed;
+     u64 tick;
+     if (!__atomic_load_n( &swap_active, __ATOMIC_ACQUIRE )) return;
+@@ -17753,7 +17753,7 @@ static void swap_pressure_locked( size_t size )
+         trimmed = horizon_pages_trim( &backing_pages );
+         __atomic_add_fetch( &swap_profile.native_trim_bytes, trimmed, __ATOMIC_RELAXED );
+         if (trimmed < target - available)
+-            swap_reclaim_locked( min( target - available - trimmed, 16 * UINT64_C(1048576) ) );
++            swap_reclaim_locked( min( target - available - trimmed, 64 * UINT64_C(1048576) ) );
+     }
+ }
+ 
+diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
+index 673640d..abbc8ed 100644
+--- a/horizon-wine/source/runtime.c
++++ b/horizon-wine/source/runtime.c
+@@ -4457,7 +4457,7 @@ int main( int argc, char **argv )
+                                                     swap_file_discard, game_swap.store.size };
+             horizon_swap_configure( &storage );
+             __atomic_store_n( &game_swap_open, 1, __ATOMIC_RELEASE );
+-            log_line( "[SWAP-GAME] enabled capacity=%uMiB reserve=128MiB path=" RUNTIME_DIR "/swap-poc", size );
++            log_line( "[SWAP-GAME] enabled capacity=%uMiB reserve=384MiB path=" RUNTIME_DIR "/swap-poc", size );
+         }
+     }
+ #endif
 -- 
 2.43.0
 
