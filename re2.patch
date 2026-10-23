@@ -1,7 +1,7 @@
-From 3d2c15cb2dbc49c82e9bbcc99818a1c833cb9c15 Mon Sep 17 00:00:00 2001
+From 7acf17d074dee83a0f5d62225eea1c00d204f52b Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
-Subject: [PATCH 1/4] Fallout: New Vegas para Nintendo Switch: build de un solo
+Subject: [PATCH 1/5] Fallout: New Vegas para Nintendo Switch: build de un solo
  juego (Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche:
@@ -6373,10 +6373,10 @@ index 0000000..f7e462e
 2.43.0
 
 
-From 1c07708bce961865bb67e6694efa381d39be30e0 Mon Sep 17 00:00:00 2001
+From e69b802c6042b9988a3bec22800e02494c2d3093 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Sun, 18 Oct 2026 21:46:38 -0600
-Subject: [PATCH 2/4] dsound: no dividir entre cero con buffers sin tamano de
+Subject: [PATCH 2/5] dsound: no dividir entre cero con buffers sin tamano de
  bloque (Fallout New Vegas)
 
 El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
@@ -6424,10 +6424,10 @@ index 783dde9..de821d5 100644
 2.43.0
 
 
-From 48894adc47d9f429511bcf020eda20b0a1e65491 Mon Sep 17 00:00:00 2001
+From a13cb8369fe8e54f44816ca99f54795f6b4f6c67 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Mon, 19 Oct 2026 11:26:11 -0600
-Subject: [PATCH 3/4] falloutnv: fija el nombre de la GPU y trae
+Subject: [PATCH 3/5] falloutnv: fija el nombre de la GPU y trae
  FalloutPrefs.ini
 
 El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
@@ -6471,10 +6471,10 @@ index 0000000..1120781
 2.43.0
 
 
-From 1e2ddc999620f384580f263cba8050df7543a7a8 Mon Sep 17 00:00:00 2001
+From a86469b250c02959ce18c68e226aa36c9afc8f97 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Wed, 21 Oct 2026 20:26:14 -0600
-Subject: [PATCH 4/4] Resident Evil 2 (2019) para Nintendo Switch: build de un
+Subject: [PATCH 4/5] Resident Evil 2 (2019) para Nintendo Switch: build de un
  solo juego (Hecho por Ascencion H.O)
 
 ---
@@ -7618,6 +7618,101 @@ index 0000000..e69de29
 diff --git a/horizon-wine/games/re2/drive_c/RE2/steam_settings/offline.txt b/horizon-wine/games/re2/drive_c/RE2/steam_settings/offline.txt
 new file mode 100644
 index 0000000..e69de29
+-- 
+2.43.0
+
+
+From 2fab10ab00336cc0ee9a78dde9730457e96b0592 Mon Sep 17 00:00:00 2001
+From: b <b@l>
+Date: Thu, 22 Oct 2026 19:05:17 -0600
+Subject: [PATCH 5/5] re2: swap experimental a la SD (se crea solo al arrancar,
+ swap-mb=2048)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ horizon-wine/build-amd64-components.sh |  4 ++--
+ horizon-wine/build-game.sh             |  2 ++
+ horizon-wine/games/re2.conf            |  1 +
+ horizon-wine/games/re2/launcher.txt    |  1 +
+ horizon-wine/source/runtime.c          | 12 ++++++++++++
+ 5 files changed, 18 insertions(+), 2 deletions(-)
+ create mode 100644 horizon-wine/games/re2/launcher.txt
+
+diff --git a/horizon-wine/build-amd64-components.sh b/horizon-wine/build-amd64-components.sh
+index 2e355b4..1e05c80 100644
+--- a/horizon-wine/build-amd64-components.sh
++++ b/horizon-wine/build-amd64-components.sh
+@@ -55,7 +55,7 @@ docker run --rm --network none -v "$root:/work" -w /work \
+     -e NX_ROOT_NAME="${WINE_NX_ROOT_NAME:-}" -e NX_APP_NAME="${WINE_NX_APP_NAME:-}" \
+     -e NX_APP_AUTHOR="${WINE_NX_APP_AUTHOR:-}" -e NX_APP_ICON="${WINE_NX_APP_ICON:+/work/$WINE_NX_APP_ICON}" \
+     -e NX_FIXED_TARGET="${WINE_NX_FIXED_TARGET:-}" -e NX_FIXED_ARGS="${WINE_NX_FIXED_ARGS:-}" -e NX_SPLASH="${WINE_NX_SPLASH:-}" \
+-    -e NX_BOX64_CODE_MAX_MB="${WINE_NX_BOX64_CODE_MAX_MB:-}" -e NX_LOW_WINDOW="${WINE_NX_LOW_WINDOW:-0}" \
++    -e NX_BOX64_CODE_MAX_MB="${WINE_NX_BOX64_CODE_MAX_MB:-}" -e NX_LOW_WINDOW="${WINE_NX_LOW_WINDOW:-0}" -e NX_SWAP_POC="${WINE_NX_SWAP_POC:-}" \
+     "${WINE_NX_DEVKIT_IMAGE:-$(cat "$root/horizon-wine/switch-dev.txt")}" sh -ec '
+     # The image libvulkan.a can carry a host (x86-64) object; ld rejects it.
+     sh /work/horizon-wine/tools/drop-foreign-objects.sh \
+@@ -71,7 +71,7 @@ docker run --rm --network none -v "$root:/work" -w /work \
+         ${NX_APP_AUTHOR:+-DWINE_NX_APP_AUTHOR="$NX_APP_AUTHOR"} ${NX_APP_ICON:+-DWINE_NX_APP_ICON="$NX_APP_ICON"} \
+         -DWINE_NX_FIXED_TARGET="$NX_FIXED_TARGET" -DWINE_NX_FIXED_ARGS="$NX_FIXED_ARGS" -DWINE_NX_SPLASH="$NX_SPLASH" \
+         ${NX_BOX64_CODE_MAX_MB:+-DWINE_NX_BOX64_CODE_MAX_MB="$NX_BOX64_CODE_MAX_MB"} \
+-        -DWINE_NX_LOW_WINDOW="$NX_LOW_WINDOW"
++        ${NX_SWAP_POC:+-DWINE_NX_SWAP_POC=ON} -DWINE_NX_LOW_WINDOW="$NX_LOW_WINDOW"
+     cmake --build "$NX_BUILD" --target wine-nx-runtime-nro -j "$NX_JOBS"
+     '
+ # The Windows modules this runtime runs -- system32, syswow64, FEX's CPU modules,
+diff --git a/horizon-wine/build-game.sh b/horizon-wine/build-game.sh
+index c503b62..ad9060d 100644
+--- a/horizon-wine/build-game.sh
++++ b/horizon-wine/build-game.sh
+@@ -39,6 +39,8 @@ export WINE_NX_SPLASH="$SPLASH"
+ # LOW_WINDOW=1: the HOME icon takes Autorun's own title ID, the only one the
+ # Atmosphere low-address patch serves, for an .exe that only loads low.
+ export WINE_NX_LOW_WINDOW="${LOW_WINDOW:-0}"
++# SWAP_POC=1: experimental SD swap (needs swap-mb in launcher.txt).
++[ "${SWAP_POC:-0}" = 1 ] && export WINE_NX_SWAP_POC=1
+ printf '==> %s: %s %s\n' "$APP_NAME" "$WINE_NX_FIXED_TARGET" "$ARGS"
+ 
+ sh "$root/build.sh" "$@"
+diff --git a/horizon-wine/games/re2.conf b/horizon-wine/games/re2.conf
+index 134bc1d..b3efe65 100644
+--- a/horizon-wine/games/re2.conf
++++ b/horizon-wine/games/re2.conf
+@@ -15,3 +15,4 @@ ARGS=""
+ # Files copied onto the card as they are, under switch/re2: settings
+ # (re2.wine-nx.txt), dxvk.conf and Goldberg offline settings.
+ FILES=horizon-wine/games/re2
++SWAP_POC=1
+diff --git a/horizon-wine/games/re2/launcher.txt b/horizon-wine/games/re2/launcher.txt
+new file mode 100644
+index 0000000..dad594f
+--- /dev/null
++++ b/horizon-wine/games/re2/launcher.txt
+@@ -0,0 +1 @@
++swap-mb=2048
+diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
+index fdf804d..673640d 100644
+--- a/horizon-wine/source/runtime.c
++++ b/horizon-wine/source/runtime.c
+@@ -4435,6 +4435,18 @@ int main( int argc, char **argv )
+             unsigned int size = launcher_kv_get_int( &kv, "swap-mb", 0 );
+             u64 bits = 0;
+             svcGetInfo( &bits, InfoType_AslrRegionSize, CUR_PROCESS_HANDLE, 0 );
++            if (bits >= (UINT64_C(1) << 36))
++            {
++                /* Fixed single-game build: no launcher to prepare the store. */
++                struct swap_store prep;
++                if (swap_file_open( &game_swap, RUNTIME_DIR "/swap-poc", size ))
++                {
++                    log_line( "[SWAP-GAME] creating %uMiB store on the SD (this takes a while once)", size );
++                    if (!swap_store_open( &prep, RUNTIME_DIR "/swap-poc", size, NULL, NULL )) swap_store_close( &prep );
++                    else log_line( "[SWAP-GAME] create failed (%s) errno=%d", prep.operation ? prep.operation : "?", errno );
++                }
++                else swap_file_close( &game_swap );
++            }
+             if (bits < (UINT64_C(1) << 36) || swap_file_open( &game_swap, RUNTIME_DIR "/swap-poc", size ))
+             {
+                 log_line( "[SWAP-GAME] startup failed: check SD swap files and the 39-bit forwarder (errno=%d fs=0x%x)",
 -- 
 2.43.0
 
