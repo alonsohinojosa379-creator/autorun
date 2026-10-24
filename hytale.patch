@@ -1,7 +1,7 @@
-From 7acf17d074dee83a0f5d62225eea1c00d204f52b Mon Sep 17 00:00:00 2001
+From 00c5118a80e2bf839066e92f97a8852b70c3374f Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
-Subject: [PATCH 01/10] Fallout: New Vegas para Nintendo Switch: build de un
+Subject: [PATCH 01/11] Fallout: New Vegas para Nintendo Switch: build de un
  solo juego (Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche:
@@ -6373,10 +6373,10 @@ index 0000000..f7e462e
 2.43.0
 
 
-From e69b802c6042b9988a3bec22800e02494c2d3093 Mon Sep 17 00:00:00 2001
+From 0fbb20fe87fb5f6deefed079f1056913175e8eb7 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Sun, 18 Oct 2026 21:46:38 -0600
-Subject: [PATCH 02/10] dsound: no dividir entre cero con buffers sin tamano de
+Subject: [PATCH 02/11] dsound: no dividir entre cero con buffers sin tamano de
  bloque (Fallout New Vegas)
 
 El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
@@ -6424,10 +6424,10 @@ index 783dde9..de821d5 100644
 2.43.0
 
 
-From a13cb8369fe8e54f44816ca99f54795f6b4f6c67 Mon Sep 17 00:00:00 2001
+From 87b0bcf362fef295055d927fa128d2e141a0d778 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Mon, 19 Oct 2026 11:26:11 -0600
-Subject: [PATCH 03/10] falloutnv: fija el nombre de la GPU y trae
+Subject: [PATCH 03/11] falloutnv: fija el nombre de la GPU y trae
  FalloutPrefs.ini
 
 El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
@@ -6471,10 +6471,10 @@ index 0000000..1120781
 2.43.0
 
 
-From a86469b250c02959ce18c68e226aa36c9afc8f97 Mon Sep 17 00:00:00 2001
+From 0b7f179537fde02a11425204c73f9818466e50dc Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Wed, 21 Oct 2026 20:26:14 -0600
-Subject: [PATCH 04/10] Resident Evil 2 (2019) para Nintendo Switch: build de
+Subject: [PATCH 04/11] Resident Evil 2 (2019) para Nintendo Switch: build de
  un solo juego (Hecho por Ascencion H.O)
 
 ---
@@ -7622,10 +7622,10 @@ index 0000000..e69de29
 2.43.0
 
 
-From 2fab10ab00336cc0ee9a78dde9730457e96b0592 Mon Sep 17 00:00:00 2001
+From 197ffeaa6eb638bc2554e159fa63cff0db2846a6 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 19:05:17 -0600
-Subject: [PATCH 05/10] re2: swap experimental a la SD (se crea solo al
+Subject: [PATCH 05/11] re2: swap experimental a la SD (se crea solo al
  arrancar, swap-mb=2048)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7717,10 +7717,10 @@ index fdf804d..673640d 100644
 2.43.0
 
 
-From 1f6c87deb784312ba895fce9af519daec00e722d Mon Sep 17 00:00:00 2001
+From 471d860dc0e6e99ecb7b6c8d90189fe117abe007 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 22:18:25 -0600
-Subject: [PATCH 06/10] re2: el swap empieza a sacar memoria antes (384 MiB
+Subject: [PATCH 06/11] re2: el swap empieza a sacar memoria antes (384 MiB
  libres) y saca hasta 64 MiB por vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7769,10 +7769,10 @@ index 673640d..abbc8ed 100644
 2.43.0
 
 
-From afaca01e57635a25bc6885d11d9c39ac874b9be9 Mon Sep 17 00:00:00 2001
+From 68e649d5b7cf2a7f7f266ae50b25b485b531e36f Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 16:00:22 -0600
-Subject: [PATCH 07/10] re2: el swap reutiliza el escaneo exacto del heap por
+Subject: [PATCH 07/11] re2: el swap reutiliza el escaneo exacto del heap por
  300 ms en vez de repetirlo cada vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7844,10 +7844,10 @@ index 72aec94..9cb5556 100644
 2.43.0
 
 
-From f4aa1ef9b5e65affae3f3a31fe05620ac473a166 Mon Sep 17 00:00:00 2001
+From 2feacf5bcee71ff52c04ad52ee0a1d677975b159 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 17:53:49 -0600
-Subject: [PATCH 08/10] Mesosphere: las aplicaciones pueden crear 192 hilos en
+Subject: [PATCH 08/11] Mesosphere: las aplicaciones pueden crear 192 hilos en
  vez de 96
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -7897,10 +7897,10 @@ index 45c052f..e188fba 100644
 2.43.0
 
 
-From eda44effe9c3e5b5beed6b427b421ac9dea30b6e Mon Sep 17 00:00:00 2001
+From 4009b50bcc8ca77f3071b150293eb63722e52cdb Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 19:16:24 -0600
-Subject: [PATCH 09/10] Hytale: se abre HytaleClient.exe directo con sus
+Subject: [PATCH 09/11] Hytale: se abre HytaleClient.exe directo con sus
  opciones (el launcher de 32 bits no puede lanzar el de 64), sin swap
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -8655,10 +8655,10 @@ index 0000000..8845eea
 2.43.0
 
 
-From 417ab6505467c1b6cc74d74fac0bd3c86b1fef8b Mon Sep 17 00:00:00 2001
+From 02525c795c1eae04ab29b96b8990eaa881790e20 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 19:40:00 -0600
-Subject: [PATCH 10/10] re2: el swap no vuelve a sacar lo que acaba de leer de
+Subject: [PATCH 10/11] re2: el swap no vuelve a sacar lo que acaba de leer de
  la SD (20 s)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
@@ -8717,6 +8717,50 @@ index 9cb5556..963dc42 100644
      __atomic_add_fetch( &swap_profile.restore_count, 1, __ATOMIC_RELAXED );
      __atomic_add_fetch( &swap_in_ticks, elapsed, __ATOMIC_RELAXED );
      longest = __atomic_load_n( &swap_max_restore_ticks, __ATOMIC_RELAXED );
+-- 
+2.43.0
+
+
+From a69214da6d289538ee6d765093f715a36e8a8320 Mon Sep 17 00:00:00 2001
+From: b <b@l>
+Date: Sat, 24 Oct 2026 04:42:58 -0600
+Subject: [PATCH 11/11] Hytale: anota las llamadas del sistema que responden
+ 'no implementado' (diagnostico del Invalid function)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ dlls/ntdll/unix/signal_arm64.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index fa6d06c..09a312d 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -648,6 +648,23 @@ ULONG_PTR wine_nx_do_syscall( ULONG_PTR *stack_args,
+                                            a8,a9,a10,a11,a12,a13,a14,a15);
+     }
+ 
++    /* diagnostico: anota (aunque no haya verbose) las llamadas que responden
++     * "no implementado" con sus primeros argumentos; la clase suele ir en x1 */
++    if ((unsigned)result == 0xC0000002 && syscall_id < 0x200)
++    {
++        static unsigned int notimpl_seen[0x200];
++        if (notimpl_seen[syscall_id] < 6)
++        {
++            char buf[200];
++            notimpl_seen[syscall_id]++;
++            snprintf( buf, sizeof(buf), "[NOTIMPL] id=0x%04x x0=%llx x1=%llx x2=%llx x3=%llx x5=%llx tid=%04x",
++                      syscall_id, (unsigned long long)x0, (unsigned long long)x1,
++                      (unsigned long long)x2, (unsigned long long)x3, (unsigned long long)x5,
++                      (unsigned)HandleToULong( NtCurrentTeb()->ClientId.UniqueThread ) );
++            wine_nx_runtime_trace( buf );
++        }
++    }
++
+     if (trace_syscall)
+     {
+         char buf[128];
 -- 
 2.43.0
 
