@@ -1,0 +1,173 @@
+import { getVersion } from "@tauri-apps/api/app";
+import { open } from "@tauri-apps/plugin-dialog";
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { SettingsEditor } from "@/features/autorun-settings/SettingsEditor";
+import { LanguageSwitch } from "@/features/preferences/LanguageSwitch";
+import { usePreferences } from "@/features/preferences/usePreferences";
+import { UpdateSettings } from "@/features/updates/UpdateSettings";
+import { api, isCommandError } from "@/shared/api/commands";
+import type { KeysReport } from "@/shared/api/bindings/KeysReport";
+import type { Preferences } from "@/shared/api/bindings/Preferences";
+import type { Theme } from "@/shared/api/bindings/Theme";
+import { Button } from "@/shared/ui/Button";
+import { Field } from "@/shared/ui/Field";
+import { Notice } from "@/shared/ui/Notice";
+import { PageHeader } from "@/shared/ui/PageHeader";
+import { Panel } from "@/shared/ui/Panel";
+import { Segmented } from "@/shared/ui/Segmented";
+import { TextInput } from "@/shared/ui/TextInput";
+import styles from "./SettingsPage.module.css";
+
+export function SettingsPage() {
+  const { t } = useTranslation();
+  const { preferences, save } = usePreferences();
+  const [keys, setKeys] = useState<KeysReport | null>(null);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [artKey, setArtKey] = useState(preferences.steamGridDbKey ?? "");
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getVersion().then(setVersion);
+  }, []);
+
+  const resetDefaults = async () => {
+    const recommended = await api.recommendedSettings();
+    update({ defaults: recommended });
+    setConfirmReset(false);
+  };
+  const update = (patch: Partial<Preferences>) => void save({ ...preferences, ...patch });
+  const defaults = preferences.defaults;
+
+  const pickKeys = async () => {
+    const path = await open({ multiple: false, filters: [{ name: "prod.keys", extensions: ["keys"] }] });
+    if (typeof path === "string") {
+      update({ keysPath: path });
+      setKeys(await api.checkKeys(path));
+    }
+  };
+
+  const pickLibrary = async () => {
+    const path = await open({ directory: true, multiple: false });
+    if (typeof path !== "string") {
+      return;
+    }
+    setLibraryError(null);
+    try {
+      const libraryDir = await api.libraryDirFor(path);
+      await api.createLibraryDir(libraryDir);
+      update({ libraryDir });
+    } catch (failure) {
+      setLibraryError(isCommandError(failure) ? failure.code : "unknown");
+    }
+  };
+
+  return (
+    <div className={styles.page}>
+      <PageHeader title={t("settings.title")} backTo="/library" backLabel={t("library.title")} />
+      <main className={styles.main}>
+        <Panel className={`${styles.section} ${styles.appearance}`}>
+          <h2>{t("settings.appearance")}</h2>
+          <div className={styles.row}>
+            <Field label={t("settings.language")}>
+              <LanguageSwitch />
+            </Field>
+            <Field label={t("settings.theme")}>
+              <Segmented<Theme>
+                label={t("settings.theme")}
+                value={preferences.theme}
+                options={[
+                  { value: "system", label: t("settings.system") },
+                  { value: "light", label: t("settings.light") },
+                  { value: "dark", label: t("settings.dark") },
+                ]}
+                onChange={(theme) => update({ theme })}
+              />
+            </Field>
+          </div>
+        </Panel>
+
+        <Panel className={styles.section}>
+          <h2>{t("settings.files")}</h2>
+          <Field label={t("onboarding.keysPath")} htmlFor="settings-keys" hint={t("onboarding.keysPrivacy")}>
+            <div className={styles.pathRow}>
+              <TextInput id="settings-keys" value={preferences.keysPath ?? ""} readOnly />
+              <Button onClick={() => void pickKeys()}>{t("common.browse")}</Button>
+            </div>
+          </Field>
+          {keys && !(keys.headerKey && keys.keyAreaKey) ? <Notice tone="error">{t("settings.keysIncomplete")}</Notice> : null}
+          <Field label={t("onboarding.libraryDir")} htmlFor="settings-library">
+            <div className={styles.pathRow}>
+              <TextInput id="settings-library" value={preferences.libraryDir ?? ""} readOnly />
+              <Button onClick={() => void pickLibrary()}>{t("common.browse")}</Button>
+            </div>
+          </Field>
+          {libraryError ? <Notice tone="error">{t(`errors.${libraryError}`)}</Notice> : null}
+          <Field label={t("settings.steamGridDbKey")} htmlFor="settings-sgdb" hint={t("settings.steamGridDbHint")}>
+            <TextInput
+              id="settings-sgdb"
+              type="password"
+              autoComplete="off"
+              value={artKey}
+              onChange={(event) => setArtKey(event.target.value)}
+              onBlur={() => {
+                const steamGridDbKey = artKey.trim() === "" ? null : artKey.trim();
+                if (steamGridDbKey !== preferences.steamGridDbKey) {
+                  update({ steamGridDbKey });
+                }
+              }}
+            />
+          </Field>
+        </Panel>
+
+        <Panel className={styles.section}>
+          <div className={styles.sectionHead}>
+            <div>
+              <h2>{t("settings.defaults")}</h2>
+              <p className={styles.muted}>{t("settings.defaultsHint")}</p>
+            </div>
+          </div>
+          <SettingsEditor value={defaults} onChange={(next) => update({ defaults: next })} />
+          {confirmReset ? (
+            <Notice tone="warning">
+              <p className={styles.resetText}>{t("settings.resetConfirm")}</p>
+              <div className={styles.resetActions}>
+                <Button variant="primary" onClick={() => void resetDefaults()}>
+                  {t("settings.resetYes")}
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirmReset(false)}>
+                  {t("common.cancel")}
+                </Button>
+              </div>
+            </Notice>
+          ) : (
+            <div className={styles.resetRow}>
+              <Button variant="ghost" onClick={() => setConfirmReset(true)}>
+                {t("settings.reset")}
+              </Button>
+            </div>
+          )}
+        </Panel>
+
+        <Panel className={styles.section}>
+          <h2>{t("settings.about")}</h2>
+          <p className={styles.aboutName}>{version ? t("settings.version", { version }) : "Carafe"}</p>
+          <UpdateSettings mode={preferences.updates} onModeChange={(updates) => update({ updates })} />
+          <div className={styles.about}>
+            <p className={styles.muted}>{t("settings.copyright")}</p>
+            <p className={styles.aboutNotice}>{t("settings.licenseNotice")}</p>
+          </div>
+          <div className={styles.links}>
+            <Button variant="ghost" onClick={() => void api.openLink("source")}>
+              {t("settings.sourceCode")}
+            </Button>
+            <Button variant="ghost" onClick={() => void api.openLink("license")}>
+              {t("settings.license")}
+            </Button>
+          </div>
+        </Panel>
+      </main>
+    </div>
+  );
+}

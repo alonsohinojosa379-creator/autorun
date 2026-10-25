@@ -1,0 +1,191 @@
+//! Tauri shell of the Carafe builder: the composition root.
+
+mod builds;
+mod commands;
+mod error;
+mod preferences;
+mod rebuilds;
+mod services;
+mod shell;
+mod updates;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use carafe_core::library::library_dir_for;
+use carafe_core::wizard::RuntimeCapabilities;
+use carafe_folder::DiskFolderInspector;
+use carafe_images::FileImageReader;
+use carafe_keys::FileKeysChecker;
+use carafe_library::DiskGameStore;
+use carafe_mtp::MtpDevice;
+use carafe_pack::nro::NroPacker;
+use carafe_regfiles::DiskRegistryFiles;
+use carafe_steamgriddb::SteamGridDb;
+use tauri::path::PathResolver;
+use tauri::{Manager, RunEvent, Runtime};
+
+use crate::builds::Builds;
+use crate::preferences::PREFERENCES_FILE;
+use crate::rebuilds::Rebuilds;
+use crate::services::Services;
+use crate::updates::Updates;
+
+const RUNTIME_VERSION: &str = match option_env!("CARAFE_RUNTIME_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+const RUNTIME_ARCHIVE: &str = "carafe-runtime.bin";
+const DEV_RUNTIME_ARCHIVE: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/resources/carafe-runtime.bin");
+const LAUNCHER_STUB: &str = "carafe-launcher.nro";
+const DEV_LAUNCHER_STUB: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/resources/carafe-launcher.nro");
+
+/// Starts the application; if Tauri fails to start it, prints the error and exits the process with code 1.
+pub fn run() {
+    let services = Services::new(
+        Arc::new(DiskGameStore),
+        Arc::new(DiskFolderInspector),
+        Arc::new(NroPacker::new(launcher_stub())),
+        Arc::new(MtpDevice),
+        Arc::new(FileKeysChecker),
+        Arc::new(FileImageReader),
+        Arc::new(SteamGridDb::new()),
+        Arc::new(DiskRegistryFiles),
+        RUNTIME_VERSION,
+        RuntimeCapabilities { stable_x64: false },
+    );
+    let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(services)
+        .manage(Rebuilds::default())
+        .manage(Builds::default())
+        .setup(|app| {
+            app.manage(Updates::new(updates::enabled(app.handle())));
+            let services = app.state::<Services>();
+            let file = app
+                .path()
+                .app_config_dir()
+                .ok()
+                .map(|dir| dir.join(PREFERENCES_FILE));
+            let mut preferences = services.preferences();
+            if let Some(file) = file {
+                if let Some(stored) = preferences::load(&file) {
+                    *preferences = stored;
+                }
+                services.set_preferences_file(file);
+            }
+            if preferences.library_dir.is_none() {
+                preferences.library_dir = default_library_dir(app.path());
+            }
+            if let Some(dir) = preferences.library_dir.clone() {
+                let packer = Arc::clone(&services.packer);
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = packer.clean(&dir);
+                });
+            }
+            drop(preferences);
+            updates::start(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::preferences::get_preferences,
+            commands::preferences::save_preferences,
+            commands::preferences::check_keys,
+            commands::preferences::recommended_settings,
+            commands::preferences::settings_catalog,
+            commands::preferences::library_dir_for,
+            commands::preferences::create_library_dir,
+            commands::device::device_status,
+            commands::library::list_games,
+            commands::library::get_record,
+            commands::library::delete_game,
+            commands::library::install_game,
+            commands::library::fetch_logs,
+            commands::wizard::inspect_folder,
+            commands::wizard::wizard_warnings,
+            commands::wizard::start_build,
+            commands::wizard::build_status,
+            commands::wizard::cancel_build,
+            commands::wizard::dismiss_build,
+            commands::icons::read_image,
+            commands::icons::executable_icon,
+            commands::icons::art_games,
+            commands::icons::art_images,
+            commands::icons::art_download,
+            commands::about::open_link,
+            commands::about::open_release,
+            commands::updates::update_status,
+            commands::updates::check_updates,
+            commands::updates::download_update,
+            commands::updates::cancel_update_download,
+            commands::updates::skip_update,
+            commands::updates::install_update,
+            commands::updates::install_update_on_close,
+            commands::updates::install_update_when_idle,
+            commands::rebuild::rebuild_offer_status,
+            commands::rebuild::dismiss_rebuild_offer,
+            commands::rebuild::rebuild_space_needed,
+            commands::rebuild::start_rebuild,
+            commands::rebuild::stop_rebuild,
+            commands::rebuild::rebuild_status,
+            commands::registry::import_registry,
+            commands::registry::export_registry,
+        ])
+        .build(tauri::generate_context!());
+    match result {
+        Ok(app) => app.run(|app, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                updates::on_exit(app);
+            }
+        }),
+        Err(error) => {
+            eprintln!("Carafe failed to start: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Returns the path to the sidecar program `name` next to the application executable, where Tauri
+/// places it from `bundle.externalBin`.
+///
+/// If the application path is unknown, returns the bare name: the system looks the program up.
+#[allow(dead_code)]
+fn sidecar(name: &str) -> PathBuf {
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&file)))
+        .unwrap_or_else(|| PathBuf::from(file))
+}
+
+/// Returns the launcher program every game's NRO is made from: next to the application executable if it is
+/// there (that is where the installer places it), otherwise the crate's `resources/carafe-launcher.nro`.
+fn launcher_stub() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(LAUNCHER_STUB)))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(DEV_LAUNCHER_STUB))
+}
+
+/// Returns the path to the runtime archive (kept for the NSP packer, which the NRO output replaces).
+#[allow(dead_code)]
+fn runtime_archive() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(RUNTIME_ARCHIVE)))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(DEV_RUNTIME_ARCHIVE))
+}
+
+/// Returns the library folder the onboarding suggests by default: `Carafe` in the documents
+/// folder, or in the home folder if there is no documents folder.
+///
+/// Returns `None` if the system reports neither.
+fn default_library_dir<R: Runtime>(paths: &PathResolver<R>) -> Option<String> {
+    let base = paths.document_dir().or_else(|_| paths.home_dir()).ok()?;
+    Some(library_dir_for(&base).to_string_lossy().into_owned())
+}

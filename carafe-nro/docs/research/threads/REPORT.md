@@ -1,0 +1,285 @@
+# Threads: the 96-thread limit and what the runtime spends of it
+
+Started for issue #31: a 32-bit Direct3D 9 game dies when it tries to create a thread past `threads=96/96`.
+Autorun was read at `636913ca` (the pinned submodule) unless a line says otherwise.
+
+## The limit
+
+- Atmosphère's process manager gives every application 96 threads: `BaseApplicationThreads = 96` in
+  `stratosphere/pm/source/impl/pm_spec.cpp` (master, commit not recorded). The runtime only reads this value back
+  (`dlls/ntdll/unix/horizon.c:19739-19746`).
+- A refusal is `0x10801`: module Kernel, description 132, `LimitReached`.
+- `BoostApplicationThreadResourceLimit` raises the limit to 256 (`ExtraApplicationThreads = 256 - 96`), but only when
+  the kernel has spare threads (`g_extra_threads_available` in the same file). Autorun `9b02ed2` (2026-10-06, after the
+  pinned commit) calls it at start-up and forces `ShouldIncreaseThreadResourceLimit` to `true` in its own Mesosphere
+  patch. Whether the call changes anything on a stock Atmosphère is not verified.
+- Eden gives a process 800 threads (`src/core/hle/kernel/k_resource_limit.cpp:167`). Carafe Lab's Eden patch 0050
+  sets it to 96, so Lab meets the limit where the console does.
+
+## What a game gets
+
+Measured in Carafe Lab with `tools/probes/threads.c` (32-bit, DXVK, FEX, Horizon sync), run `2026-10-19_04-44-53`:
+
+- The probe could hold 35 threads of its own. With a Direct3D 9 device open it could hold 30: DXVK keeps 5.
+- Every Windows thread costs two Horizon threads. When the program ends with 35 Windows threads, the runtime ends 70
+  (`[QUIT] … ending 70 threads`). The second one is the in-process server's thread for that client:
+  `horizon_server_handle_new_thread` (`horizon.c:11527`) starts `horizon_server_thread` for each new thread
+  (`horizon.c:11583`), and that thread serves the client's requests until its pipe closes (`horizon.c:15947`).
+  Autorun's current `HEAD` still says "Each client connection is served by its own pthread".
+- The rest belongs to the runtime itself; see the map below.
+- With `Thread synchronization = Horizon` waits, events, mutexes and semaphores run on the calling thread
+  (`horizon_server_sync_call`, `horizon.c:15892-15945`), yet the server thread is still created for every client.
+- No leak was found: 300 threads that ended with their handles left open did not lower the ceiling; 300 threads
+  closed right after creation lowered it for a moment (35 → 31), until the next creation reaped them.
+
+## Map of the threads
+
+Every Horizon thread of the probe, from Carafe Lab's thread stacks with the runtime's symbols (run
+`2026-10-19_17-04-06`, 32-bit, DXVK, FEX, Horizon sync). At rest, with a Direct3D 9 device open, the process has 34;
+with every thread the probe could take, 96:
+
+| Role | At rest | At the limit | Where |
+| --- | --- | --- | --- |
+| Windows threads | 5 | 36 | the program's main thread and DXVK's; then the probe's |
+| Server thread of each Windows thread | 5 | 36 | `horizon_server_thread`, `dlls/ntdll/unix/horizon.c:15947` |
+| TLS page holders | 12–13 | 12–13 | `tls_placeholder`, `horizon-wine/source/runtime.c:3084` |
+| Mesa queues | 5 | 5 | `util_queue_thread_func`, in the prebuilt Mesa; which queues is not verified |
+| Compositor | 1 | 1 | `presenter_thread`, `horizon-wine/source/compositor.c:319` |
+| Input | 1 | 1 | `wine_nx_input_thread`, `dlls/win32u/winnx_drv.c:90`, polls with `usleep` |
+| Shared user data clock | 1 | 1 | `usd_clock_thread`, `dlls/ntdll/unix/virtual.c:5549`, polls with `usleep` |
+| Stall watch | 1 | 1 | `stall_watch`, `horizon-wine/source/runtime.c:451`, polls with `svcSleepThread` |
+| Log flusher | 1 | 1 | `log_flusher`, `horizon-wine/source/runtime.c:276`, polls with `svcSleepThread` |
+| Save commit | 1 | 1 | `commitLoop`, Carafe's `runtime/overlay/carafe_overlay.c:1204` |
+| In the exception handler | 1 | 1 | sleeps in `__libnx_exception_handler`; whose it is is not verified |
+
+- The runtime keeps 24–25 threads of its own, the server one per Windows thread, so a program gets
+  `(96 − 25) / 2 ≈ 35` threads.
+- The TLS page holders exist only so that the kernel's thread-local pages stay out of a 32-bit program's memory: the
+  kernel puts a page at random when no page has a free slot, and the runtime keeps one thread per page so its pages
+  are never given back (`runtime.c:3062-3076`). They hold 13 of the 96 places for the whole run.
+- Five threads wake up on a timer only to look at something: input, the shared data clock, the stall watch, the log
+  flusher and the save commit.
+- With `Thread synchronization = Standard` the probe also held 31 threads with a device open, the same as with Horizon
+  (run `2026-10-19_16-48-10`): both modes start a server thread for every Windows thread.
+- The runtime now notes the start routine of every native thread it starts (`[NATIVE]` lines, `runtime/overlay/
+  carafe_diag.c`). In Need for Speed Underground and OpenTTD (run `2026-10-20_22-13-40`): Mesa's `u_thread`
+  queue workers 8–15, the server pool 2 and its bootstrap thread 1, then one each for the shared data clock, input,
+  the log flusher and the compositor; Windows threads (`spawn_thread`) 16–31 in NFSU and 32–63 in OpenTTD over a
+  run. Mesa is the largest native group: three shader disk cache queues (`disk$`, four threads each, one per driver
+  that opens a cache) and a `gl` queue of one thread for each OpenGL context (five in a run). Starting the disk
+  cache queues with one thread changed nothing: the first shader writes bring them back to four, and NFSU used 45
+  of the 96 places either way (run `2026-10-20_23-07-02`).
+
+## What the server threads serve
+
+Counted by `runtime/patches/autorun/0019-horizon-thread-budget-and-server-requests.patch`, which logs a `[SERVED]`
+line every 30 s (`[SERVER]` is taken by the profiler's round trips, `horizon-wine/source/thread_profile.c:850`). Last
+lines of run `2026-10-19_17-32-48`, about two minutes of each game in Lab's standard scenario:
+
+- OpenTTD: 75 058 requests through the client threads, 13 815 served on the calling thread. 62 160 of them were
+  `GET_HANDLE_FD`, the file descriptor behind a handle that every file read and write asks for; then
+  `SET_QUEUE_MASK` 2 103, `GET_OBJECT_INFO` 1 879, `CLOSE_HANDLE` 1 427. The 34 client threads that ended had served
+  51 to 500 requests each.
+- Need for Speed Underground: 14 057 through the client threads, 22 994 on the calling thread; `GET_HANDLE_FD` 3 743,
+  `CLOSE_HANDLE` 1 621, `GET_OBJECT_INFO` 1 170, `OPEN_KEY` 886, `CREATE_FILE` 881. 17 client threads alive.
+- Time inside the handlers was 2–3 s per launch; the switches to the client thread and back are not in it.
+- Every thread asks the server something in its first moments, so starting a client thread only when one is needed
+  would save little: a few shared threads or serving on the calling thread is what frees the places.
+- `GET_HANDLE_FD` alone is 83 % of OpenTTD's requests and only looks a handle up. Served on the calling thread like
+  the waits are, it would also save two thread switches per file read.
+
+The five Mesa queues are probably the two shader disk caches (`disk$`), Gallium's driver thread (`gdrv`), glthread
+and the shader compiler: these are the queue names in the runtime's binary; which thread is which is not verified.
+
+## A stall after many short threads
+
+After its churn phases (900 threads that start and end at once), the probe stands still when it opens its
+Direct3D 9 device: 4 runs of 4 since `2026-10-19_17-57-44`, with this runtime and with the one before patch 0019. The
+main thread waits in `NtWaitForAlertByThreadId` under `ntdll.dll+0x6d700`; new threads started for the device spin in
+`RtlEnterCriticalSection` (`ntdll.dll+0x6d024`, called from `RtlLookupFunctionEntry+0x30`) or wait next to it, one at
+90 % of a core (run `2026-10-19_18-25-22`, `backtraces.txt`). It looks like the start-up stall of OpenTTD in Carafe's
+roadmap; whether it is the same lock is not verified. Without the churn phases the device opens at once.
+
+## Thread-local page holders give their place
+
+- `0024` and `0025`: at the limit, a refused thread creation first ends one of the 13 page holders and tries again.
+  At the limit every page is full, so the holder's page stays and the new thread takes its slot; a page the kernel
+  places anew is still checked against the program's reservations (`tls_retries` stayed 0).
+- The probe then holds 77 threads with a Direct3D 9 device open instead of 64; with the device it is 82 Windows
+  threads of 96.
+- `Threads probe`, three runs each in turn: 2 of 3 passed with the pool alone, 3 of 3 with the holders giving way
+  (runtimes `ab5f90b47f04` and `30e5890520b5`). The failures were DXVK refused while the probe's threads were still
+  ending: in a fresh Eden they end slowly, and the 5 s wait runs out.
+- A later run stood still for good: the creating thread waited for the holder to end inside libnx's
+  `threadCreate`, and the holder never ended. The creator now waits for it at most 50 ms; a holder that ends later is
+  closed on the next refusal or when the program ends, and only then counts as a free place.
+
+## Why many threads stall
+
+- The release of 64 held threads varies from 0.3 s to more than 60 s in Eden. It is slow in a fresh Eden and fast
+  when the same Eden ran the probe before: Eden translates the runtime's code as it first runs. Whether the console
+  stalls too is not verified.
+- Patch 0005 wakes an endless alert wait every 250 ms. Waits of that length would point at lost wakes, so the
+  runtime was built once with 25 ms instead: the release took 19.4 s and 0.3 s, as before. Not lost wakes.
+- While the release stalls, the process uses 0.2–0.4 of a core (`--diag profiler`): the threads wait in turn.
+- The probe's `locks` mode makes 4, 16 and 48 threads take one critical section 2000 times each. Every entry is
+  counted, none is lost, and with 48 threads it took 4.5 s, with 290 waits over 100 ms and one of 1.2 s (run
+  `2026-10-19_21-31-28`). A thread woken for the section joins the back of its core's queue at priority 59, behind
+  the 10 ms slices of the threads there, and the section is taken by another one meanwhile.
+- Tried and dropped: a thread sleeping for an alert at 58 and going back to 59 once woken, as decision 25 does for
+  libnx mutexes. 48 threads took about half as long (1733–3767 ms against 3556–4844 ms, runs in turn; the longest
+  wait 136–859 ms against up to 1242 ms), but `Threads probe` passed 0 of 3 with it on top of the holders giving
+  way, against 3 of 3 without it: DXVK was refused while the probe's threads were still ending. A program
+  surviving its peak comes first.
+
+## A place comes free when the thread is closed
+
+- The kernel gives a thread's place back when the thread object is destroyed, after its last handle is closed, not
+  when it exits (`KThread::Exit` releases only a hint, `KThread::PostDestroy` the place; Eden's kernel,
+  `src/core/hle/kernel/k_thread.cpp`, which follows Mesosphère). A thread creation at the limit that sees an exited
+  thread still open waits for it in the kernel, up to 10 s (`KResourceLimit::Reserve`).
+- Wine's threads are closed by the next thread to end (`exit_thread` joins the one before it), so the last one to end
+  holds its place; the runtime's server threads close each other the same way.
+- The runtime's thread creation holds `mapping_mutex` around `svcCreateThread`, so such a kernel wait stopped every
+  memory change in the process with it, the ending threads' own among them.
+- `0026` and `0027`: at the limit a creation no longer calls the kernel. It joins the Wine thread and the server
+  threads that have ended, without waiting for any that has not, then takes a page holder's place or waits.
+
+## Why the threads end late in Eden
+
+The runtime's stall watch took the threads' stacks during a refused wait (run `2026-10-20_00-54-52`, three reports
+5 s apart, all alike): the 41 probe threads let go and the main thread wait in `RtlWaitOnAddress` of the arm64
+`ntdll.dll`, the way FEX's own locks wait, and three or four run in FEX and queue for newlib's `malloc` lock. FEX
+translates the code the ending threads run, and in Eden that translated code is translated again. No thread ended
+for more than 10 s, so a creation waiting 5 s was refused in 2 runs of 3 (runtime with `0026`, `0027`) and 1 of 3
+before them. Whether the console is as slow is not verified.
+
+- The threads that run are in FEX's compiler (`FEXCore::IR::IREmitter`, `ConstrainedRAPass`, `ARMEmitter`) and its
+  allocator (`FEXCore::Allocator::malloc`, `aligned_alloc`), from `libwow64fex.dll`'s symbols.
+- `0029` makes the stall report name a Windows thread's native callers from its stack. With it (run
+  `2026-10-20_03-02-13`) the waiting threads stand at two of FEX's locks, both taken for every block FEX compiles:
+  - about 22 at the one mutex of the decoder's buffer pool (`LookupCache::FindBlock` →
+    `Decoder::SetupDecodeInstructionsAtEntry` → `PoolBufferWithTimedRetirement::ReownOrClaimBuffer`, and
+    `GenerateIR` → `DelayedDisownBuffer`, both into `RtlAcquireSRWLockExclusive`);
+  - about 13 at the code invalidation lock (`CompileBlock` → `WritePriorityMutex::lock_shared`). It lets a writer go
+    first, and the writer is `InvalidationTracker::InvalidateAlignedInterval`, called from `wow64`'s
+    `NtFreeVirtualMemory` as an ending thread frees its memory. Each such free waits for every block being
+    compiled and holds up every new one.
+- `Threads probe churn` (run `2026-10-20_03-59-14`): 82 threads at start, and letting them go took 180 s, one
+  of them more than 10 s; 62 of the threads the stall report read stood in `CompileBlock` at the code invalidation
+  lock. The churn hang seen before is this, and it ends.
+- With all the patches, the probe holds 77 threads with a Direct3D 9 device under Box64 as under FEX, and 37 with
+  `Thread synchronization = Standard`, where the pool is off.
+- 41 threads ending at once therefore compile their way out one lock at a time, and every free they make stops all
+  compiling. FEX comes prebuilt from Autorun's DLL repository (`horizon-dlls`); changing this means building FEX.
+
+## FEX built with Carafe's patches
+
+- The runtime build now builds FEX's WoW64 module itself (decision 29). Without Carafe's patches the DLL is
+  Autorun's to the byte, apart from the time stamp and padding.
+- FEX `0001`: memory that meets no executable interval is freed without the invalidation lock. With it the
+  invalidation lock was gone from the probe's stall reports, and DXVK found a place 2.1 s after asking, as soon as
+  the probe's threads let go (run `2026-10-20_04-32-43`), where it had waited 13–16 s.
+- Three runtimes in turn, all with the faster stall report: Autorun's FEX, FEX with `0001`, and FEX with `0001` and
+  a second patch that let the decoder's buffer pool allocate outside its mutex. With `0001` alone DXVK found a place
+  1.3–1.9 s after asking and made its device in 2–3 s, 3 runs of 4; with Autorun's FEX it waited 12.8 s; with the
+  second patch the device was not made within 180 s in 3 runs of 3, though OpenTTD started at 27–28 s against
+  39–48 s. The second patch was dropped.
+- The first stall report with native callers looked an image up for every stack word, under `virtual_mutex`; a
+  creation waiting for a place stood 67 s in it. `0029` now looks only at words after a call in executable memory.
+- A game without `NX_COMPAT` runs with DEP off, and FEX then counts every readable page as executable, so `0001`
+  skips nothing for it; the probe has the flag.
+- `Threads probe churn` still stands at the invalidation lock with both patches, with no writer among the threads
+  the report reads.
+- With the wait at 20 s (`0028`) `Threads probe` passed 3 of 4 and 2 of 4. Of the failures one was a refusal after
+  20 s; in the others the probe was still making its second device when Lab looked: it took 89 s once without any
+  thread waiting for a place (run `2026-10-20_02-13-56`). The process stood still in FEX, not at the limit.
+- The same picture, threads waiting in the native `RtlWaitOnAddress` while a few compile, is OpenTTD's start-up
+  stall in Carafe's roadmap.
+
+## Suspending and ending another thread
+
+- Before `0031`–`0034` the lifecycle probe (`Threads probe lifecycle`) showed the same on Carafe and on v0.2.4: a
+  suspended thread went on counting, and a terminated one was still running 5 s later with exit code 259. Exit codes
+  and user APCs worked.
+- A 32-bit thread under FEX sleeps in the kernel (`NtDelayExecution` calls `svcSleepThread`) and, while FEX
+  suspends it, spins in FEX's own code; the server's only safe point was a wait in the server. FEX then read the
+  thread's registers through the server, which waits for that safe point, and wrote its x86 context, which the
+  runtime answered for the calling thread only.
+- With the patches (decision 31, run `2026-10-20_18-12-34`): `SuspendThread` returns in 5 ms and the counter stops,
+  `GetThreadContext` gives an x86 `Eip` in ntdll and a stack pointer, `ResumeThread` lets it count again,
+  `TerminateThread` ends it in 30 ms with exit code 77. The peak check holds 77 threads; OpenTTD and Need for Speed
+  Underground pass.
+
+## Each thread costs a 32-bit game address space
+
+- A 32-bit game runs in a 32-bit address space, and each of its threads takes part of it on top of its own stack:
+  a 64-bit stack of 256 KB, FEX's lookup cache (about 5.5 MB: page pointers, a 4 MB second-level backing and the
+  first level) and FEX's call-return stack (4 MB, committed).
+- `Threads probe churn` holds 82 threads at a time, again and again. With the 4 MB call-return stack the address
+  space ran out after the first release (`[VA] out of address space: 16384 KB`, the runtime retrying code mappings
+  with `0xd401`), threads could neither start nor end, and one of them held the loader lock for minutes (run
+  `2026-10-20_21-27-53`).
+- FEX `0002` makes the call-return stack 512 KB (decision 29). At 77 threads with a Direct3D 9 device the probe then
+  had 1259 MB free and a largest free range of 1084 MB, against 899 MB and 638 MB (runs `2026-10-20_21-45-59`,
+  `2026-10-20_21-54-18`). The churn probe went through all seven ceilings of 81–82 threads and its three rounds of
+  300 short threads with nothing refused; free space settled at about 840 MB and did not shrink further (run
+  `2026-10-20_21-57-01`).
+- It then stood still while making its Direct3D 9 device: a thread took an exception inside FEX's `CompileBlock`
+  and kept looking up unwind information in ntdll (`RtlLookupFunctionEntry` from `dispatch_exception`) without end,
+  holding the compile lock in shared mode; the main thread, loading `winevulkan.dll`, waited for the same lock in
+  `ImageTracker::HandleImageMap`. Open in the roadmap.
+
+## A crash in the thread-local page holders
+
+- Since 2026-10-17 eight launches in Lab ended the same way: a write fault in libnx's `_waiterNodeRemove`
+  (`wait.h:73`, from `waitObjects`) at an address 40 KB above the faulting stack, in memory that had been the stack
+  of a holder already ended. All of them fell in the holders' waits: at start-up, right after
+  `[THREAD] create failed … 96/96` and before the `[TLS] … placeholder threads` line, and once when a holder gave
+  its place. The main thread then waited for that holder for good, so the game never drew a frame (OpenTTD
+  2026-10-17, the threads probe, Need for Speed Underground, Heroes of Might and Magic IV run `2026-10-20_18-12-34`).
+- Up to 96 holders wait on one libnx `UEvent`, each with a node on its own stack in the event's list. `0035` makes
+  them wait with `svcWaitForAddress` on a word each, so no node is left anywhere.
+
+## The crash
+
+- When the limit is reached, `NtCreateThreadEx` fails and Windows code gets an error. DXVK's own thread wrapper
+  throws `std::system_error("Failed to create thread")` and nothing catches it: the string is in the bundled
+  `dxvk/d3d9.dll`, built against libc++. The process ends with exit code 3.
+- The probe ended with the same lines as the issue's log: `[THREAD] create failed rc=0x10801 threads=96/96` and
+  `libc++abi: terminating due to uncaught exception of type std::__1::system_error`.
+- The `[THREAD] create failed … 96/96` line at the very start of every log is not this problem: it is the runtime
+  filling the limit with TLS placeholder threads on purpose (`horizon-wine/source/runtime.c:3076-3109`).
+
+## Waiting for a place
+
+`runtime/patches/autorun/0020` makes a refused thread creation wait up to 5 s for a place while the program runs.
+Carafe Lab's `Threads probe` takes every thread, asks for a second Direct3D 9 device and lets half of its threads end
+2 s later, as a burst of loading threads would:
+
+- without the wait (runtime `c42a97510abc`, run `2026-10-19_19-03-49`) DXVK ends the probe with exit code 3, as in
+  issue #31;
+- with it (runtime `90edc254b356`, runs `2026-10-19_18-45-00` and `2026-10-19_18-55-23`) the device is made once the
+  threads end and the probe finishes.
+
+With no thread ending (`Threads probe hard`) DXVK still ends the probe: the wait cannot make places that never come
+free.
+
+## Fewer server threads
+
+- `0021` and `0022` serve `GET_HANDLE_FD` on the calling thread. OpenTTD's requests to the client threads fell from
+  75 058 to 8 943, and the direct ones rose from 13 815 to 45 391 (run `2026-10-19_19-40-43`).
+- `0023` replaces the client threads with a pool when Horizon sync is on: a client's request pipe tells the pool it
+  holds data, a pool thread serves one request and moves on, and a pool thread that waits inside a request counts as
+  blocked so another one starts. With it the probe holds 69 threads at start (35 before) and 63–64 with a Direct3D 9
+  device open (30–31), with 2 pool threads and one bootstrap server thread at the limit (run `2026-10-19_20-16-25`).
+- OpenTTD's second launch had used 66 of the 96 at start-up before the pool (18 Windows threads, 21 server threads):
+  a real game, not only the probe, comes close to the limit.
+- When 64 threads end at once the process stands still for 10–20 s: new threads wait on a critical section in ntdll
+  at start, each ending thread joins the one that ended before it (`exit_thread` → `pthread_join`), and each writes a
+  `[LIFECYCLE]` line. More threads make this stall longer; it is the stall of the churn phases above. The probe now
+  times it: 64 threads let go at once took 19 293 ms to end, one of them more than 10 s (run `2026-10-19_20-45-54`,
+  `Threads probe census`).
+- Carafe Lab's `Threads probe` passes with the pool: 64 threads with a device open, and DXVK makes its second device
+  once half of them end (run `2026-10-19_20-42-25`). OpenTTD, Need for Speed Underground and Heroes of Might and
+  Magic IV pass Lab's standard scenario with it (run `2026-10-19_20-27-00`).

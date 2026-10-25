@@ -1,0 +1,49 @@
+name: Carafe NRO
+
+# Pestaña Actions -> "Carafe NRO" -> Run workflow.
+# Deja el instalador de Windows en "Artifacts" (carafe-nro-windows).
+on:
+  workflow_dispatch:
+
+jobs:
+  launcher:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Compilar el lanzador NRO
+        run: |
+          docker run --rm -v "$PWD/carafe-nro/nro-stub:/src" -w /src devkitpro/devkita64 make
+          ls -l carafe-nro/nro-stub/carafe-launcher.nro
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: carafe-launcher
+          path: carafe-nro/nro-stub/carafe-launcher.nro
+
+  app:
+    needs: launcher
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: carafe-nro/app
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: carafe-launcher
+          path: carafe-nro/app/crates/carafe-desktop/resources
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Dependencias
+        run: npm ci
+      - name: Pruebas del empaquetador
+        run: cargo test -p carafe-pack -p carafe-library
+      - name: Compilar el instalador
+        run: npm run build:app
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: carafe-nro-windows
+          path: carafe-nro/app/target/release/bundle/nsis/*.exe
