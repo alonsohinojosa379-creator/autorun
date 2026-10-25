@@ -47,7 +47,7 @@ pub fn run() {
     let services = Services::new(
         Arc::new(DiskGameStore),
         Arc::new(DiskFolderInspector),
-        Arc::new(NroPacker::new(launcher_stub())),
+        Arc::new(NroPacker::new(launcher_stub()).with_runtime(runtime_archive())),
         Arc::new(MtpDevice),
         Arc::new(FileKeysChecker),
         Arc::new(FileImageReader),
@@ -171,8 +171,8 @@ fn launcher_stub() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEV_LAUNCHER_STUB))
 }
 
-/// Returns the path to the runtime archive (kept for the NSP packer, which the NRO output replaces).
-#[allow(dead_code)]
+/// Returns the runtime archive `carafe-runtime.bin`: next to the executable if it is there (copy it from an
+/// official Carafe install), otherwise `resources/carafe-runtime.bin`. If neither exists the runtime is not unpacked.
 fn runtime_archive() -> PathBuf {
     std::env::current_exe()
         .ok()

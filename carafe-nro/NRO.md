@@ -10,3 +10,10 @@ Salida (carpeta `<TitleID>-sd` dentro de tu biblioteca): copiala tal cual a la r
 
 El runtime (`switch/wine/wine-nx-runtime.nro` y el prefijo de Wine) se instala una sola vez, aparte.
 No hace falta `prod.keys` ni Docker para empaquetar.
+
+## Runtime incluido
+
+Si `carafe-runtime.bin` (del instalador oficial de Carafe) esta junto a la app, la primera vez se
+desempaqueta en `<biblioteca>/runtime-sd`. Copiala tambien a la SD (una sola vez): trae
+`switch/wine/wine-nx-runtime.nro` y el prefijo de Wine. Fuera de hbmenu el overlay de Carafe se
+desactiva solo ("not installed") y corre como Autorun normal.

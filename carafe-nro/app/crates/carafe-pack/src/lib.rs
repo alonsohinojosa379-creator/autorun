@@ -627,7 +627,6 @@ mod tests {
         assert_eq!(left, (false, false));
     }
 
-
     #[test]
     fn the_nro_packer_writes_a_folder_for_the_sd_card() {
         let dir = std::env::temp_dir().join(format!("carafe-pack-nro-{}", std::process::id()));
@@ -656,7 +655,8 @@ mod tests {
         );
         let sd = library.join(format!("{}-sd", rec.title_id));
         let found = (
-            sd.join("switch/wine/drive_c/Games/openttd/openttd.exe").is_file(),
+            sd.join("switch/wine/drive_c/Games/openttd/openttd.exe")
+                .is_file(),
             sd.join("switch/Carafe/OpenTTD.nro").is_file(),
             fs::read_to_string(sd.join("switch/Carafe/OpenTTD.argv")).unwrap_or_default(),
             library.join(format!("{}.carafe", rec.title_id)).is_file(),

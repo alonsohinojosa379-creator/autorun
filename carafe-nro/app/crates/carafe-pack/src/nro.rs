@@ -34,12 +34,53 @@ const NACP_SIZE: usize = 0x4000;
 /// Builds a folder for the SD card with an NRO launcher per game.
 pub struct NroPacker {
     stub: PathBuf,
+    runtime: Option<PathBuf>,
 }
 
 impl NroPacker {
     /// `stub` is the launcher program, a homebrew `.nro` without an asset section.
     pub fn new(stub: impl Into<PathBuf>) -> Self {
-        Self { stub: stub.into() }
+        Self {
+            stub: stub.into(),
+            runtime: None,
+        }
+    }
+
+    /// Also unpacks the runtime from Carafe's `carafe-runtime.bin` into `<library>/runtime-sd` the first time,
+    /// so that the folder to copy to the SD card carries `switch/wine/wine-nx-runtime.nro` and Wine's prefix.
+    #[must_use]
+    pub fn with_runtime(mut self, archive: impl Into<PathBuf>) -> Self {
+        self.runtime = Some(archive.into());
+        self
+    }
+
+    fn unpack_runtime(
+        &self,
+        library: &Path,
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(BuildProgress),
+    ) -> Result<(), AdapterError> {
+        let Some(archive) = self.runtime.as_ref().filter(|path| path.is_file()) else {
+            return Ok(());
+        };
+        let dest = library.join("runtime-sd");
+        if dest.join("switch/wine/wine-nx-runtime.nro").is_file() {
+            return Ok(());
+        }
+        let partial = library.join("runtime-sd.part");
+        remove_dir(&partial)?;
+        create_dir(&partial)?;
+        let runtime = crate::archive::RuntimeArchive::open(archive)?;
+        runtime.extract("romfs", &partial, cancel, &mut |percent| {
+            report(
+                progress,
+                BuildStage::Runtime,
+                percent,
+                Some("runtime → runtime-sd".to_owned()),
+            );
+        })?;
+        remove_dir(&dest)?;
+        fs::rename(&partial, &dest).map_err(|error| io_error(&dest, &error))
     }
 
     fn build(
@@ -63,7 +104,11 @@ impl NroPacker {
             progress,
             BuildStage::Game,
             0,
-            Some(format!("game: {} → {}", game_folder.display(), package.game_dir)),
+            Some(format!(
+                "game: {} → {}",
+                game_folder.display(),
+                package.game_dir
+            )),
         );
         game.copy_to(&out.join(&package.game_dir), cancel, &mut |percent| {
             report(progress, BuildStage::Game, percent, None);
@@ -87,12 +132,16 @@ impl NroPacker {
             }
             write(&path, file.contents.as_bytes())?;
         }
-        let argv = argv.ok_or_else(|| AdapterError::Tool("carafe/argv was not rendered".to_owned()))?;
+        let argv =
+            argv.ok_or_else(|| AdapterError::Tool("carafe/argv was not rendered".to_owned()))?;
 
         let name = launcher_name(&record.metadata.title);
         let dir = out.join(LAUNCHER_DIR);
         create_dir(&dir)?;
-        write(&dir.join(format!("{name}.argv")), format!("{argv}\n").as_bytes())?;
+        write(
+            &dir.join(format!("{name}.argv")),
+            format!("{argv}\n").as_bytes(),
+        )?;
         let stub = fs::read(&self.stub).map_err(|error| io_error(&self.stub, &error))?;
         let icon_bytes = icon.map(|icon| icon.bytes().to_vec()).unwrap_or_default();
         let nro = with_assets(&stub, &icon_bytes, &package.nacp)?;
@@ -128,6 +177,11 @@ impl Packer for NroPacker {
         service::hide(&library.join(service::SERVICE_DIR));
         let lock = service::BuildLock::acquire(&work)?;
         let staging = work.join("sd");
+        if let Err(error) = self.unpack_runtime(library, cancel, progress) {
+            drop(lock);
+            let _ = remove_dir(&work);
+            return Err(error);
+        }
         let result = self.build(record, icon, &package, target, &staging, cancel, progress);
         let finished = result.and_then(|bytes| {
             cancel.check()?;
@@ -141,7 +195,10 @@ impl Packer for NroPacker {
                 progress,
                 BuildStage::Finish,
                 100,
-                Some(format!("copy the contents of {} to the SD card", final_dir.display())),
+                Some(format!(
+                    "copy the contents of {} to the SD card",
+                    final_dir.display()
+                )),
             );
             Ok(StoredGame {
                 record: record.clone(),
@@ -164,20 +221,35 @@ impl Packer for NroPacker {
 fn launcher_name(title: &str) -> String {
     let cleaned: String = title
         .chars()
-        .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c })
+        .map(|c| {
+            if c.is_control() || "<>:\"/\\|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = cleaned.trim().trim_end_matches('.');
-    if trimmed.is_empty() { "Game".to_owned() } else { trimmed.to_owned() }
+    if trimmed.is_empty() {
+        "Game".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 /// Appends the asset section that hbmenu reads for the name and the icon: `ASET`, a version,
 /// then offset and size of the icon, the NACP and RomFS, each from the start of the section.
 fn with_assets(stub: &[u8], icon: &[u8], nacp: &[u8]) -> Result<Vec<u8>, AdapterError> {
     if stub.len() < 0x14 || &stub[0x10..0x14] != b"NRO0" {
-        return Err(AdapterError::Tool("the launcher is not an NRO file".to_owned()));
+        return Err(AdapterError::Tool(
+            "the launcher is not an NRO file".to_owned(),
+        ));
     }
     if nacp.len() != NACP_SIZE {
-        return Err(AdapterError::Tool(format!("control.nacp is {} bytes, expected {NACP_SIZE}", nacp.len())));
+        return Err(AdapterError::Tool(format!(
+            "control.nacp is {} bytes, expected {NACP_SIZE}",
+            nacp.len()
+        )));
     }
     let mut out = stub.to_vec();
     while out.len() % 0x10 != 0 {
@@ -202,7 +274,11 @@ fn with_assets(stub: &[u8], icon: &[u8], nacp: &[u8]) -> Result<Vec<u8>, Adapter
 }
 
 /// Writes the library index: a PFS0 with the build record and the icon, and no NCA.
-fn write_index(record: &BuildRecord, icon: Option<&IconJpeg>, path: &Path) -> Result<(), AdapterError> {
+fn write_index(
+    record: &BuildRecord,
+    icon: Option<&IconJpeg>,
+    path: &Path,
+) -> Result<(), AdapterError> {
     let json = serde_json::to_vec_pretty(record)
         .map_err(|error| AdapterError::Io(format!("{RECORD_FILE}: {error}")))?;
     let mut extras: Vec<(&str, &[u8])> = vec![(RECORD_FILE, &json)];
@@ -211,7 +287,10 @@ fn write_index(record: &BuildRecord, icon: Option<&IconJpeg>, path: &Path) -> Re
     }
     let entries: Vec<Pfs0Entry> = extras
         .iter()
-        .map(|(name, bytes)| Pfs0Entry { name: (*name).to_owned(), size: bytes.len() as u64 })
+        .map(|(name, bytes)| Pfs0Entry {
+            name: (*name).to_owned(),
+            size: bytes.len() as u64,
+        })
         .collect();
     let header = pfs0::header(&entries).map_err(|error| AdapterError::Tool(error.to_string()))?;
     let partial = path.with_extension("carafe.part");
@@ -236,7 +315,10 @@ mod tests {
         stub[0x10..0x14].copy_from_slice(b"NRO0");
         let nro = with_assets(&stub, &[1, 2, 3], &vec![9u8; NACP_SIZE]).unwrap();
         assert_eq!(&nro[0x80..0x84], b"ASET");
-        assert_eq!(u64::from_le_bytes(nro[0x88..0x90].try_into().unwrap()), 0x38);
+        assert_eq!(
+            u64::from_le_bytes(nro[0x88..0x90].try_into().unwrap()),
+            0x38
+        );
         assert_eq!(u64::from_le_bytes(nro[0x90..0x98].try_into().unwrap()), 3);
         assert_eq!(nro.len(), 0x80 + 0x38 + 3 + NACP_SIZE);
     }
