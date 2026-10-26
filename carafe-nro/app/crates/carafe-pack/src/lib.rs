@@ -657,8 +657,8 @@ mod tests {
         let found = (
             sd.join("switch/wine/drive_c/Games/openttd/openttd.exe")
                 .is_file(),
-            sd.join("switch/Carafe/OpenTTD.nro").is_file(),
-            fs::read_to_string(sd.join("switch/Carafe/OpenTTD.argv")).unwrap_or_default(),
+            sd.join("switch/OpenTTD.nro").is_file(),
+            fs::read_to_string(sd.join("switch/OpenTTD.argv")).unwrap_or_default(),
             library.join(format!("{}.carafe", rec.title_id)).is_file(),
         );
         fs::remove_dir_all(&dir).unwrap();

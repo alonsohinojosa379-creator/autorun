@@ -3,8 +3,8 @@
 //! Instead of hacBrewPack it writes a folder that is copied onto the SD card as it is:
 //!
 //! - `switch/wine/drive_c/Games/<folder>/` — the game with the settings files Carafe renders next to the `.exe`;
-//! - `switch/Carafe/<Title>.nro` — a small launcher with the game's name and icon that hbmenu lists;
-//! - `switch/Carafe/<Title>.argv` — what the launcher starts: the runtime `.nro` and the path to the `.exe`.
+//! - `switch/<Title>.nro` — a small launcher with the game's name and icon that hbmenu lists;
+//! - `switch/<Title>.argv` — what the launcher starts: the runtime `.nro` and the path to the `.exe`.
 //!
 //! The runtime itself (`switch/wine/wine-nx-runtime.nro` and Wine's prefix) is not packed: it is installed once.
 //! A small index `<Title ID>.carafe` goes into the library so that the app lists, rebuilds and deletes the game.
@@ -26,7 +26,7 @@ use crate::{create_dir, io_error, remove_dir, report, service, write};
 /// Extension of the index file in the library.
 pub const INDEX_EXTENSION: &str = "carafe";
 
-const LAUNCHER_DIR: &str = "switch/Carafe";
+const LAUNCHER_DIR: &str = "switch";
 const ASSET_MAGIC: &[u8; 4] = b"ASET";
 const ASSET_HEADER_SIZE: usize = 0x38;
 const NACP_SIZE: usize = 0x4000;
