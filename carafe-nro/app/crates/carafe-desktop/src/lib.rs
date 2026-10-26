@@ -174,10 +174,23 @@ fn launcher_stub() -> PathBuf {
 /// Returns the runtime archive `carafe-runtime.bin`: next to the executable if it is there (copy it from an
 /// official Carafe install), otherwise `resources/carafe-runtime.bin`. If neither exists the runtime is not unpacked.
 fn runtime_archive() -> PathBuf {
-    std::env::current_exe()
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(RUNTIME_ARCHIVE)))
-        .filter(|path| path.is_file())
+        .and_then(|exe| exe.parent().map(PathBuf::from))
+    {
+        dirs.push(dir);
+    }
+    // Where the official Carafe installer puts it.
+    for var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(base) = std::env::var_os(var).map(PathBuf::from) {
+            dirs.push(base.join("Carafe"));
+            dirs.push(base.join("Programs").join("Carafe"));
+        }
+    }
+    dirs.into_iter()
+        .map(|dir| dir.join(RUNTIME_ARCHIVE))
+        .find(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(DEV_RUNTIME_ARCHIVE))
 }
 

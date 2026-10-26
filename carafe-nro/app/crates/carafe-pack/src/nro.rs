@@ -60,13 +60,19 @@ impl NroPacker {
         cancel: &CancelToken,
         progress: &mut dyn FnMut(BuildProgress),
     ) -> Result<(), AdapterError> {
-        let Some(archive) = self.runtime.as_ref().filter(|path| path.is_file()) else {
-            return Ok(());
-        };
         let dest = library.join("runtime-sd");
         if dest.join("switch/wine/wine-nx-runtime.nro").is_file() {
             return Ok(());
         }
+        let Some(archive) = self.runtime.as_ref().filter(|path| path.is_file()) else {
+            report(
+                progress,
+                BuildStage::Runtime,
+                100,
+                Some("no carafe-runtime.bin found: install the official Carafe or put the file next to this app".to_owned()),
+            );
+            return Ok(());
+        };
         let partial = library.join("runtime-sd.part");
         remove_dir(&partial)?;
         create_dir(&partial)?;
