@@ -17,3 +17,9 @@ Si `carafe-runtime.bin` (del instalador oficial de Carafe) esta junto a la app, 
 desempaqueta en `<biblioteca>/runtime-sd`. Copiala tambien a la SD (una sola vez): trae
 `switch/wine/wine-nx-runtime.nro` y el prefijo de Wine. Fuera de hbmenu el overlay de Carafe se
 desactiva solo ("not installed") y corre como Autorun normal.
+
+## Cambio de rumbo: runtime de Autorun, no el de Carafe
+
+El runtime de Carafe trae un overlay que, al abrirse desde hbmenu, lee `switch/wine` del RomFS vacio del
+Album y no de la SD (`romfs index: 0 entries`), asi que no encuentra las DLL. La app ya no lo desempaqueta:
+usa el Autorun normal instalado en `switch/wine` (con sus DLL bajadas desde su menu).

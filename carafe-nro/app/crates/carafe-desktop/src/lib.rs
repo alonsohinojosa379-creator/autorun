@@ -35,9 +35,6 @@ const RUNTIME_VERSION: &str = match option_env!("CARAFE_RUNTIME_VERSION") {
     Some(version) => version,
     None => env!("CARGO_PKG_VERSION"),
 };
-const RUNTIME_ARCHIVE: &str = "carafe-runtime.bin";
-const DEV_RUNTIME_ARCHIVE: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/resources/carafe-runtime.bin");
 const LAUNCHER_STUB: &str = "carafe-launcher.nro";
 const DEV_LAUNCHER_STUB: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/resources/carafe-launcher.nro");
@@ -47,7 +44,7 @@ pub fn run() {
     let services = Services::new(
         Arc::new(DiskGameStore),
         Arc::new(DiskFolderInspector),
-        Arc::new(NroPacker::new(launcher_stub()).with_runtime(runtime_archive())),
+        Arc::new(NroPacker::new(launcher_stub())),
         Arc::new(MtpDevice),
         Arc::new(FileKeysChecker),
         Arc::new(FileImageReader),
@@ -169,29 +166,6 @@ fn launcher_stub() -> PathBuf {
         .and_then(|exe| exe.parent().map(|dir| dir.join(LAUNCHER_STUB)))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from(DEV_LAUNCHER_STUB))
-}
-
-/// Returns the runtime archive `carafe-runtime.bin`: next to the executable if it is there (copy it from an
-/// official Carafe install), otherwise `resources/carafe-runtime.bin`. If neither exists the runtime is not unpacked.
-fn runtime_archive() -> PathBuf {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(PathBuf::from))
-    {
-        dirs.push(dir);
-    }
-    // Where the official Carafe installer puts it.
-    for var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
-        if let Some(base) = std::env::var_os(var).map(PathBuf::from) {
-            dirs.push(base.join("Carafe"));
-            dirs.push(base.join("Programs").join("Carafe"));
-        }
-    }
-    dirs.into_iter()
-        .map(|dir| dir.join(RUNTIME_ARCHIVE))
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from(DEV_RUNTIME_ARCHIVE))
 }
 
 /// Returns the library folder the onboarding suggests by default: `Carafe` in the documents
