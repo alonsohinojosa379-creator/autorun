@@ -1,0 +1,134 @@
+name: Runtime universal
+
+# Pestaña Actions -> "Runtime universal" -> Run workflow.
+# Deja universal-runtime.zip (switch/wine con las DLL) como artifact y en el release "universal-runtime".
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - name: Liberar espacio en disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup
+          sudo docker image prune -af >/dev/null
+          df -h /
+
+      - name: Descargar el codigo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+
+      - name: Aplicar el parche (runtime con los ajustes propios)
+        run: |
+          cp moh.patch /tmp/moh.patch
+          git config user.name "build"
+          git config user.email "build@localhost"
+          base=c889e4eb722ba6435e50500d9dde51f59781ce99
+          git fetch --depth 1 origin "$base"
+          git checkout --force "$base"
+          git am /tmp/moh.patch
+          git log -3 --oneline
+
+      - name: Usar la imagen de compilacion vigente
+        run: |
+          # El autor del proyecto retira las etiquetas viejas de la imagen de
+          # compilacion ("manifest unknown"); se toma la etiqueta actual del original.
+          if git fetch --depth 1 https://github.com/autorunhq/autorun.git main &&
+             git show FETCH_HEAD:horizon-wine/switch-dev.txt > /tmp/switch-dev.txt && [ -s /tmp/switch-dev.txt ]; then
+            cp /tmp/switch-dev.txt horizon-wine/switch-dev.txt
+          else
+            echo "ghcr.io/autorunhq/switch-dev:2026.10.01" > horizon-wine/switch-dev.txt
+          fi
+          cat horizon-wine/switch-dev.txt
+
+      - name: Descargar las DLL de Windows (horizon-dlls)
+        run: git submodule update --init --depth 1 horizon-dlls
+
+      - name: Arreglar la ruta del compilador de Windows
+        run: |
+          # Los scripts de empaquetado traen escrita la ruta de macOS; aqui es Linux ARM.
+          tc="llvm-mingw-20260505-ucrt-ubuntu-22.04-$(uname -m)"
+          sed -i "s/llvm-mingw-20260505-ucrt-macos-universal/$tc/g" horizon-wine/tools/package-autorun.py horizon-wine/tools/verify-package.py
+          grep -n "llvm-mingw" horizon-wine/tools/package-autorun.py horizon-wine/tools/verify-package.py
+
+      - name: Instalar herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bison make curl python3
+
+      - name: Compilar
+        run: |
+          # Docker compila como root: la carpeta tiene que ser de root, o git
+          # se niega a leer vendor/box64 ("dubious ownership").
+          sudo chown -R root:root "$GITHUB_WORKSPACE"
+          sudo git config --global --add safe.directory '*'
+          sudo -E env "PATH=$PATH" sh build.sh
+
+      - name: Devolver la carpeta al usuario normal
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
+      - name: Juntar el runtime con las DLL de Windows
+        run: |
+          python3 - <<'PY'
+          import glob, os, sys
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          src = sorted(glob.glob('horizon-wine/build-autorun/autorun-*.zip'), key=os.path.getmtime)[-1]
+          dlls = Path('horizon-dlls/switch/wine')
+          assert (dlls / 'horizon-dlls/manifest.json').is_file(), 'faltan las DLL'
+          SKIP = {'target.txt', 'run-entry.txt', 'vulkan-probe.txt'}
+          written = set()
+          out = 'universal-runtime.zip'
+          with ZipFile(out, 'w', ZIP_DEFLATED) as o, ZipFile(src) as z:
+              for info in z.infolist():
+                  if info.is_dir() or not info.filename.startswith('switch/wine/'):
+                      continue
+                  if info.filename[len('switch/wine/'):] in SKIP:
+                      continue
+                  o.writestr(info.filename, z.read(info))
+                  written.add(info.filename)
+              n = 0
+              for p in sorted(dlls.rglob('*')):
+                  if p.is_file():
+                      dest = 'switch/wine/' + p.relative_to(dlls).as_posix()
+                      if dest not in written:
+                          o.write(p, dest); written.add(dest); n += 1
+          assert 'switch/wine/wine-nx-runtime.nro' in written, 'falta el runtime'
+          print(src, '->', out, len(written), 'archivos,', n, 'de las DLL')
+          PY
+          ls -l universal-runtime.zip
+
+      - name: Subir el runtime como artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: universal-runtime
+          path: universal-runtime.zip
+          compression-level: 0
+          retention-days: 14
+
+      - name: Publicar en un release (para que la app lo incluya)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete universal-runtime --yes --cleanup-tag 2>/dev/null || true
+          gh release create universal-runtime universal-runtime.zip --title "Runtime universal" \
+            --notes "switch/wine con el runtime de Autorun y las DLL de Windows." --target "$GITHUB_SHA"
+
+      - name: Subir registros si fallo
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: logs
+          path: |
+            horizon-wine/build-*/**/*.log
+            horizon-wine/build-*/config.log
+          if-no-files-found: ignore
