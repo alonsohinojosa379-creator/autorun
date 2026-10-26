@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "resources/carafe-launcher.nro": "carafe-launcher.nro"
+      "resources/carafe-launcher.nro": "carafe-launcher.nro",
+      "resources/universal-runtime.zip": "universal-runtime.zip"
     }
   }
 }

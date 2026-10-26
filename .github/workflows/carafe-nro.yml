@@ -32,6 +32,11 @@ jobs:
         with:
           name: carafe-launcher
           path: carafe-nro/app/crates/carafe-desktop/resources
+      - name: Bajar el runtime universal
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download universal-runtime -p universal-runtime.zip -D crates/carafe-desktop/resources
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24

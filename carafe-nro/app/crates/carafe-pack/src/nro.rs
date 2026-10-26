@@ -69,22 +69,35 @@ impl NroPacker {
                 progress,
                 BuildStage::Runtime,
                 100,
-                Some("no carafe-runtime.bin found: install the official Carafe or put the file next to this app".to_owned()),
+                Some("universal-runtime.zip is missing from the app".to_owned()),
             );
             return Ok(());
         };
         let partial = library.join("runtime-sd.part");
         remove_dir(&partial)?;
         create_dir(&partial)?;
-        let runtime = crate::archive::RuntimeArchive::open(archive)?;
-        runtime.extract("romfs", &partial, cancel, &mut |percent| {
-            report(
-                progress,
-                BuildStage::Runtime,
-                percent,
-                Some("runtime → runtime-sd".to_owned()),
-            );
-        })?;
+        let file = File::open(archive).map_err(|error| io_error(archive, &error))?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|error| AdapterError::Io(error.to_string()))?;
+        let total = zip.len().max(1);
+        for index in 0..zip.len() {
+            cancel.check()?;
+            let mut entry = zip.by_index(index).map_err(|error| AdapterError::Io(error.to_string()))?;
+            let Some(relative) = entry.enclosed_name() else { continue };
+            let target = partial.join(relative);
+            if entry.is_dir() {
+                create_dir(&target)?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    create_dir(parent)?;
+                }
+                let mut out_file = File::create(&target).map_err(|error| io_error(&target, &error))?;
+                std::io::copy(&mut entry, &mut out_file).map_err(|error| io_error(&target, &error))?;
+            }
+            if index % 50 == 0 {
+                report(progress, BuildStage::Runtime, (index * 100 / total) as u8, Some("runtime → runtime-sd".to_owned()));
+            }
+        }
+        report(progress, BuildStage::Runtime, 100, Some("runtime → runtime-sd".to_owned()));
         remove_dir(&dest)?;
         fs::rename(&partial, &dest).map_err(|error| io_error(&dest, &error))
     }

@@ -44,7 +44,7 @@ pub fn run() {
     let services = Services::new(
         Arc::new(DiskGameStore),
         Arc::new(DiskFolderInspector),
-        Arc::new(NroPacker::new(launcher_stub())),
+        Arc::new(NroPacker::new(launcher_stub()).with_runtime(runtime_zip())),
         Arc::new(MtpDevice),
         Arc::new(FileKeysChecker),
         Arc::new(FileImageReader),
@@ -156,6 +156,15 @@ fn sidecar(name: &str) -> PathBuf {
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(&file)))
         .unwrap_or_else(|| PathBuf::from(file))
+}
+
+/// Returns the bundled `universal-runtime.zip` (next to the executable, else the crate's resources).
+fn runtime_zip() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("universal-runtime.zip")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("resources/universal-runtime.zip"))
 }
 
 /// Returns the launcher program every game's NRO is made from: next to the application executable if it is
