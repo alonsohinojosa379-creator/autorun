@@ -37,6 +37,21 @@ jobs:
           node-version: 24
       - name: Rust
         run: rustup toolchain install stable --profile minimal
+      - name: Sacar carafe-runtime.bin del instalador oficial de Carafe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: .
+        run: |
+          mkdir -p /tmp/off /tmp/offx
+          gh release download --repo carafe-nx/carafe --pattern "*.exe" --dir /tmp/off
+          ls -l /tmp/off
+          for f in /tmp/off/*.exe; do 7z x -y -o/tmp/offx "$f" > /dev/null || true; done
+          find /tmp/offx -iname "carafe-runtime.bin" -print
+          bin=$(find /tmp/offx -iname "carafe-runtime.bin" | head -1)
+          test -n "$bin"
+          cp "$bin" carafe-nro/app/crates/carafe-desktop/resources/carafe-runtime.bin
+          ls -l carafe-nro/app/crates/carafe-desktop/resources
       - name: Dependencias
         run: npm ci
       - name: Pruebas del empaquetador
