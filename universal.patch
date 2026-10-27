@@ -1,8 +1,8 @@
 From 00c5118a80e2bf839066e92f97a8852b70c3374f Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
-Subject: [PATCH 01/14] Fallout: New Vegas para Nintendo Switch: build de un
- solo juego (Hecho por Ascencion H.O)
+Subject: Fallout: New Vegas para Nintendo Switch: build de un solo juego
+ (Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche:
 - Build de un solo juego (abre directo, carpeta e icono propios en HOME)
@@ -6376,8 +6376,8 @@ index 0000000..f7e462e
 From 0fbb20fe87fb5f6deefed079f1056913175e8eb7 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Sun, 18 Oct 2026 21:46:38 -0600
-Subject: [PATCH 02/14] dsound: no dividir entre cero con buffers sin tamano de
- bloque (Fallout New Vegas)
+Subject: dsound: no dividir entre cero con buffers sin tamano de bloque
+ (Fallout New Vegas)
 
 El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
 cero (Box64: crash; FEX: el hilo del mezclador se queda dando vueltas y el
@@ -6427,8 +6427,7 @@ index 783dde9..de821d5 100644
 From 87b0bcf362fef295055d927fa128d2e141a0d778 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Mon, 19 Oct 2026 11:26:11 -0600
-Subject: [PATCH 03/14] falloutnv: fija el nombre de la GPU y trae
- FalloutPrefs.ini
+Subject: falloutnv: fija el nombre de la GPU y trae FalloutPrefs.ini
 
 El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
 no coincide, abre el launcher y se cierra. Se fija el nombre con
@@ -6474,8 +6473,8 @@ index 0000000..1120781
 From 0b7f179537fde02a11425204c73f9818466e50dc Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Wed, 21 Oct 2026 20:26:14 -0600
-Subject: [PATCH 04/14] Resident Evil 2 (2019) para Nintendo Switch: build de
- un solo juego (Hecho por Ascencion H.O)
+Subject: Resident Evil 2 (2019) para Nintendo Switch: build de un solo juego
+ (Hecho por Ascencion H.O)
 
 ---
  horizon-wine/assets/falloutnv.jpg             | Bin 27054 -> 0 bytes
@@ -7625,8 +7624,8 @@ index 0000000..e69de29
 From 197ffeaa6eb638bc2554e159fa63cff0db2846a6 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 19:05:17 -0600
-Subject: [PATCH 05/14] re2: swap experimental a la SD (se crea solo al
- arrancar, swap-mb=2048)
+Subject: re2: swap experimental a la SD (se crea solo al arrancar,
+ swap-mb=2048)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7720,8 +7719,8 @@ index fdf804d..673640d 100644
 From 471d860dc0e6e99ecb7b6c8d90189fe117abe007 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 22:18:25 -0600
-Subject: [PATCH 06/14] re2: el swap empieza a sacar memoria antes (384 MiB
- libres) y saca hasta 64 MiB por vez
+Subject: re2: el swap empieza a sacar memoria antes (384 MiB libres) y saca
+ hasta 64 MiB por vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7772,8 +7771,8 @@ index 673640d..abbc8ed 100644
 From 68e649d5b7cf2a7f7f266ae50b25b485b531e36f Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 16:00:22 -0600
-Subject: [PATCH 07/14] re2: el swap reutiliza el escaneo exacto del heap por
- 300 ms en vez de repetirlo cada vez
+Subject: re2: el swap reutiliza el escaneo exacto del heap por 300 ms en vez
+ de repetirlo cada vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7847,8 +7846,7 @@ index 72aec94..9cb5556 100644
 From 2feacf5bcee71ff52c04ad52ee0a1d677975b159 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 17:53:49 -0600
-Subject: [PATCH 08/14] Mesosphere: las aplicaciones pueden crear 192 hilos en
- vez de 96
+Subject: Mesosphere: las aplicaciones pueden crear 192 hilos en vez de 96
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7900,8 +7898,8 @@ index 45c052f..e188fba 100644
 From 4009b50bcc8ca77f3071b150293eb63722e52cdb Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 19:16:24 -0600
-Subject: [PATCH 09/14] Hytale: se abre HytaleClient.exe directo con sus
- opciones (el launcher de 32 bits no puede lanzar el de 64), sin swap
+Subject: Hytale: se abre HytaleClient.exe directo con sus opciones (el
+ launcher de 32 bits no puede lanzar el de 64), sin swap
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -8658,8 +8656,7 @@ index 0000000..8845eea
 From 02525c795c1eae04ab29b96b8990eaa881790e20 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 19:40:00 -0600
-Subject: [PATCH 10/14] re2: el swap no vuelve a sacar lo que acaba de leer de
- la SD (20 s)
+Subject: re2: el swap no vuelve a sacar lo que acaba de leer de la SD (20 s)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -8724,8 +8721,8 @@ index 9cb5556..963dc42 100644
 From a69214da6d289538ee6d765093f715a36e8a8320 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Sat, 24 Oct 2026 04:42:58 -0600
-Subject: [PATCH 11/14] Hytale: anota las llamadas del sistema que responden
- 'no implementado' (diagnostico del Invalid function)
+Subject: Hytale: anota las llamadas del sistema que responden 'no
+ implementado' (diagnostico del Invalid function)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -8768,8 +8765,8 @@ index fa6d06c..09a312d 100644
 From 5c44010c6aa911edd64f2a086f7391da742e0a4c Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Sat, 24 Oct 2026 16:03:34 -0600
-Subject: [PATCH 12/14] God of War (2018) para Nintendo Switch: build de un
- solo juego (Hecho por Ascencion H.O), experimental
+Subject: God of War (2018) para Nintendo Switch: build de un solo juego (Hecho
+ por Ascencion H.O), experimental
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -9017,8 +9014,8 @@ index 0000000..dad594f
 From a2ae59649f0861232ec902b240a3d2d8d534aaac Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Sun, 25 Oct 2026 12:55:11 -0600
-Subject: [PATCH 13/14] Medal of Honor (2010) para Switch: build de un solo
- juego, experimental
+Subject: Medal of Honor (2010) para Switch: build de un solo juego,
+ experimental
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -9127,8 +9124,8 @@ index 0000000..a1b31fd
 From dced67a04f608bd2bf9ec9ffbc0e1eb33d16df70 Mon Sep 17 00:00:00 2001
 From: build <b@l>
 Date: Mon, 26 Oct 2026 18:55:29 -0600
-Subject: [PATCH 14/14] Runtime: al abrir un juego desde hbmenu ofrece crear su
- icono directo en HOME (A) o jugar (B)
+Subject: Runtime: al abrir un juego desde hbmenu ofrece crear su icono directo
+ en HOME (A) o jugar (B)
 
 ---
  horizon-wine/source/runtime.c | 118 ++++++++++++++++++++++++++++++++++
@@ -9270,6 +9267,174 @@ index abbc8ed..d706637 100644
      if (forwarded_game > 0 || resumed_program || (!forwarded_game && argc > 1 && argv[1] && argv[1][0]))
      {
          const char *name;
+-- 
+2.43.0
+
+
+From 4ae2c2a39d96b9e003203500566d15fb80531cca Mon Sep 17 00:00:00 2001
+From: build <b@l>
+Date: Mon, 26 Oct 2026 21:40:13 -0600
+Subject: Icono directo por juego: el parche de direcciones bajas cubre un
+ rango de titulos y cada juego tiene su propio icono sin lanzador
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ horizon-wine/mesosphere/README.txt            |  2 +-
+ horizon-wine/mesosphere/low-window.patch      |  2 +-
+ .../mesosphere-1.12.0-low-window.patch        |  2 +-
+ horizon-wine/source/forwarder.c               | 22 +++++++++++++++++++
+ horizon-wine/source/forwarder.h               |  4 ++++
+ horizon-wine/source/runtime.c                 |  9 ++++----
+ .../tests/check_low_window_routing.py         |  3 ++-
+ 7 files changed, 36 insertions(+), 8 deletions(-)
+
+diff --git a/horizon-wine/mesosphere/README.txt b/horizon-wine/mesosphere/README.txt
+index f2524c0..78ff8ca 100644
+--- a/horizon-wine/mesosphere/README.txt
++++ b/horizon-wine/mesosphere/README.txt
+@@ -1,7 +1,7 @@
+ Autorun low-window patch
+ 
+ Base: Atmosphere 1.11.2, 5388824be146a89619e8d641acd64599cf1c5f62.
+-Only 39-bit processes with program ID 0548EABB35576000 receive the new layout.
++Only 39-bit processes with a program ID from 0548EABB35000000 to 0548EABB35FFFFFF receive the new layout.
+ That is Autorun's generation-2 main forwarder for
+ sdmc:/switch/wine/wine-nx-runtime.nro, without additional arguments.
+ Other titles keep their normal layout.
+diff --git a/horizon-wine/mesosphere/low-window.patch b/horizon-wine/mesosphere/low-window.patch
+index e188fba..dca4711 100644
+--- a/horizon-wine/mesosphere/low-window.patch
++++ b/horizon-wine/mesosphere/low-window.patch
+@@ -109,7 +109,7 @@ index 08bf177..bda56a3 100644
+      constexpr inline size_t    AddressMap39Size  = AddressMap39End - AddressMap39Start;
+  
+ +    constexpr inline bool HasAutorunLowWindow(u64 program_id) {
+-+        return program_id == UINT64_C(0x0548EABB35576000);
+++        return (program_id & UINT64_C(0xFFFFFFFFFF000000)) == UINT64_C(0x0548EABB35000000);
+ +    }
+ +
+ +    constexpr inline u64 AutorunNativeAddressStart = UINT64_C(0x100000000);
+diff --git a/horizon-wine/mesosphere/mesosphere-1.12.0-low-window.patch b/horizon-wine/mesosphere/mesosphere-1.12.0-low-window.patch
+index 9ec0cd0..dae5ec6 100644
+--- a/horizon-wine/mesosphere/mesosphere-1.12.0-low-window.patch
++++ b/horizon-wine/mesosphere/mesosphere-1.12.0-low-window.patch
+@@ -123,7 +123,7 @@ index 55bb5ec..78b9c4a 100644
+      constexpr inline size_t    AddressMap42Size  = AddressMap42End - AddressMap42Start;
+ +
+ +    constexpr inline bool HasAutorunLowWindow(u64 program_id) {
+-+        return program_id == UINT64_C(0x0548EABB35576000);
+++        return (program_id & UINT64_C(0xFFFFFFFFFF000000)) == UINT64_C(0x0548EABB35000000);
+ +    }
+ +
+ +    constexpr inline u64 AutorunNativeAddressStart = UINT64_C(0x100000000);
+diff --git a/horizon-wine/source/forwarder.c b/horizon-wine/source/forwarder.c
+index 16e0c35..2bd1ee8 100644
+--- a/horizon-wine/source/forwarder.c
++++ b/horizon-wine/source/forwarder.c
+@@ -952,6 +952,22 @@ unsigned long long wine_nx_forwarder_title_id( const char *nro_path, const char
+     return 0x0500000000000000ull | (hash[0] & 0x00FFFFFFFFFFF000ull);
+ }
+ 
++int wine_nx_title_in_low_range( unsigned long long title_id )
++{
++    return (title_id & 0xFFFFFFFFFF000000ull) == 0x0548EABB35000000ull;
++}
++
++unsigned long long wine_nx_forwarder_low_title_id( const char *nro_path, const char *args )
++{
++    u64 hash[SHA256_HASH_SIZE / sizeof(u64)];
++    unsigned long long tid;
++
++    forwarder_hash( nro_path, args, FORWARDER_GENERATION, hash );
++    tid = 0x0548EABB35000000ull | (hash[0] & 0x0000000000FFF000ull);
++    if (tid == AUTORUN_TITLE_ID) tid ^= 0x1000ull;
++    return tid;
++}
++
+ unsigned long long wine_nx_forwarder_game_title_id( unsigned int game_id )
+ {
+     char args[64];
+@@ -1239,6 +1255,12 @@ unsigned int wine_nx_forwarder_install( const struct wine_nx_forwarder *request,
+         old_tid = tid;
+         tid = AUTORUN_TITLE_ID;
+     }
++    if (!request->game_id && request->low_window && request->args && request->args[0])
++    {
++        /* Taken away: the same game's ordinary-ID forwarder, if one was made. */
++        old_tid = plain_tid = tid;
++        tid = wine_nx_forwarder_low_title_id( request->nro_path, request->args );
++    }
+     if (request->game_id)
+     {
+         tid = old_tid = plain_tid = wine_nx_forwarder_game_title_id( request->game_id );
+diff --git a/horizon-wine/source/forwarder.h b/horizon-wine/source/forwarder.h
+index c9e2da6..4dd2754 100644
+--- a/horizon-wine/source/forwarder.h
++++ b/horizon-wine/source/forwarder.h
+@@ -20,10 +20,14 @@ struct wine_nx_forwarder
+     const unsigned char *icon;  /* a 256x256 JPEG */
+     size_t icon_size;
+     unsigned int game_id;
++    int low_window;         /* title ID inside the low-address range (one icon per fixed-base game) */
+ };
+ 
+ unsigned long long wine_nx_forwarder_title_id( const char *nro_path, const char *args );
+ unsigned long long wine_nx_forwarder_game_title_id( unsigned int game_id );
++/* A direct forwarder in the range the patched kernel gives the low window. */
++unsigned long long wine_nx_forwarder_low_title_id( const char *nro_path, const char *args );
++int wine_nx_title_in_low_range( unsigned long long title_id );
+ 
+ /* Where the installer says what the console made of what it wrote. */
+ extern void (*wine_nx_forwarder_report)( const char *line );
+diff --git a/horizon-wine/source/runtime.c b/horizon-wine/source/runtime.c
+index d706637..7cc7820 100644
+--- a/horizon-wine/source/runtime.c
++++ b/horizon-wine/source/runtime.c
+@@ -3919,7 +3919,7 @@ static int offer_game_icon( const char *exe )
+     u64 down = 0;
+     FILE *file;
+ 
+-    if (runtime_title_id() == own) return 1;
++    if (runtime_title_id() == own || wine_nx_title_in_low_range( runtime_title_id() )) return 1;
+     snprintf( dir, sizeof(dir), "%s", exe );
+     if ((slash = strrchr( dir, '/' ))) *slash = 0;
+     snprintf( path, sizeof(path), "%s/carafe-name.txt", dir );
+@@ -3975,8 +3975,8 @@ static int offer_game_icon( const char *exe )
+         {
+             struct wine_nx_forwarder request =
+             {
+-                .nro_path = AUTORUN_NRO, .name = name, .author = "Hecho por Ascencion H.O",
+-                .icon = wine_nx_icon_any, .icon_size = wine_nx_icon_any_size, .game_id = catalog->entries[index].id,
++                .nro_path = AUTORUN_NRO, .args = exe, .name = name, .author = "Hecho por Ascencion H.O",
++                .icon = wine_nx_icon_any, .icon_size = wine_nx_icon_any_size, .low_window = 1,
+             };
+ 
+             snprintf( path, sizeof(path), "%s/carafe-icon.jpg", dir );
+@@ -3994,7 +3994,8 @@ static int offer_game_icon( const char *exe )
+                 }
+                 fclose( file );
+             }
+-            rc = launcher_install_game_forwarder( &request, &step );
++            if (access( AUTORUN_NRO, R_OK )) { step = "reading " AUTORUN_NRO; rc = MAKERESULT( Module_Libnx, LibnxError_NotFound ); }
++            else { wine_nx_forwarder_report = log_line_plain; rc = wine_nx_forwarder_install( &request, &step ); }
+             free( jpeg );
+         }
+         free( catalog );
+diff --git a/horizon-wine/tests/check_low_window_routing.py b/horizon-wine/tests/check_low_window_routing.py
+index 4cf4f2a..10788f3 100644
+--- a/horizon-wine/tests/check_low_window_routing.py
++++ b/horizon-wine/tests/check_low_window_routing.py
+@@ -14,7 +14,8 @@ key = f'{path}{path}\naddress-space=3\nautorun-forwarder={generation}'
+ title = int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], 'little')
+ title = 0x0500000000000000 | (title & 0x00FFFFFFFFFFF000)
+ patch = (root / 'mesosphere/low-window.patch').read_text()
+-assert f'program_id == UINT64_C(0x{title:016X})' in patch
++assert '(program_id & UINT64_C(0xFFFFFFFFFF000000)) == UINT64_C(0x0548EABB35000000)' in patch
++assert (title & 0xFFFFFFFFFF000000) == 0x0548EABB35000000
+ assert title == 0x0548EABB35576000
+ 
+ source = (root / 'source/launcher.c').read_text()
 -- 
 2.43.0
 

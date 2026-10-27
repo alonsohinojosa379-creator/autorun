@@ -76,6 +76,48 @@ jobs:
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
 
+      - name: Armar el parche de direcciones bajas (no depende de tu Atmosphere)
+        run: |
+          # El build ya compila el Mesosphere y el loader con el parche de
+          # direcciones bajas (Atmosphere 1.11.2). Aqui se juntan con el package3
+          # oficial de 1.11.2 en una entrada propia de Hekate, que arranca ese
+          # Atmosphere sin tocar el que tengas instalado: sirve con cualquier
+          # version instalada, en firmware hasta 22.5.0.
+          w=horizon-wine/toolchains/boot-payloads
+          b=out/nintendo_nx_arm64_armv8a/release
+          o=/tmp/lowva
+          d="$o/bootloader/autorun-lowva"
+          mkdir -p "$d" "$o/bootloader/ini"
+          cp "$w/atmosphere/mesosphere/$b/mesosphere.bin" "$d/mesosphere.bin"
+          cp "$w/atmosphere/stratosphere/loader/$b/loader.kip" "$d/autorun-loader.kip"
+          unzip -p "$w/atmosphere-1.11.2.zip" atmosphere/package3 > "$d/package3"
+          [ -s "$d/package3" ] && [ -s "$d/mesosphere.bin" ] && [ -s "$d/autorun-loader.kip" ]
+          cp "$w/atmosphere/LICENSE" "$d/LICENSE.Atmosphere"
+          printf '%s\r\n' \
+            '[Autorun - direcciones bajas]' \
+            'fss0=bootloader/autorun-lowva/package3' \
+            'kip1=bootloader/autorun-lowva/autorun-loader.kip' \
+            'kernel=bootloader/autorun-lowva/mesosphere.bin' > "$o/bootloader/ini/autorun-lowva.ini"
+          printf '%s\r\n' \
+            'Parche de direcciones bajas (Atmosphere 1.11.2 + Mesosphere de Autorun)' \
+            '' \
+            '1. Copia la carpeta bootloader a la raiz de la SD (se une con la tuya).' \
+            '   No se edita hekate_ipl.ini ni se toca tu Atmosphere.' \
+            '2. En Hekate: Launch -> More configs -> "Autorun - direcciones bajas".' \
+            '   Sirve en firmware hasta 22.5.0.' \
+            '3. Abre cada juego desde su icono del menu HOME (cada juego tiene el suyo).' \
+            '' \
+            'Para quitarlo: borra bootloader/autorun-lowva y bootloader/ini/autorun-lowva.ini.' > "$o/LEEME.txt"
+          (cd "$o" && sha256sum bootloader/autorun-lowva/* && zip -qr /tmp/parche-direcciones-bajas.zip .)
+
+      - name: Subir el parche de direcciones bajas
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parche-direcciones-bajas
+          path: /tmp/parche-direcciones-bajas.zip
+          compression-level: 0
+          retention-days: 7
+
       - name: Juntar el runtime con las DLL de Windows
         run: |
           python3 - <<'PY'
@@ -112,6 +154,14 @@ jobs:
         with:
           name: universal-runtime
           path: universal-runtime.zip
+          compression-level: 0
+          retention-days: 14
+
+      - name: Subir el parche de direcciones bajas
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parche-direcciones-bajas
+          path: /tmp/parche-direcciones-bajas.zip
           compression-level: 0
           retention-days: 14
 
