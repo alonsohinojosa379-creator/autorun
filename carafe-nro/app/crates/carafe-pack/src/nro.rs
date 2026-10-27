@@ -135,6 +135,15 @@ impl NroPacker {
 
         cancel.check()?;
         report(progress, BuildStage::Metadata, 0, None);
+        // The runtime reads these when it offers the game's own HOME icon (A on its console).
+        let game_out = out.join(&package.game_dir);
+        write(
+            &game_out.join("carafe-name.txt"),
+            format!("{}\n", record.metadata.title).as_bytes(),
+        )?;
+        if let Some(icon) = icon {
+            write(&game_out.join("carafe-icon.jpg"), icon.bytes())?;
+        }
         let mut argv = None;
         for file in &package.romfs_files {
             if file.path == "carafe/argv" {
