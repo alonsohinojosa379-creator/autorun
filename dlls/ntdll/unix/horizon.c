@@ -12965,6 +12965,40 @@ static unsigned int horizon_sock_ioctl_poll( unsigned int handle, const unsigned
 
             ret = poll( pfds, count, 0 );
             if (ret == -1 && errno == EINTR) continue;
+            if (ret > 0)
+            {
+                /* The bsd service can report POLLHUP on a socket that is
+                 * connected and merely idle. A hang-up with no data and no
+                 * error is only real if a peek sees the end of the stream; if
+                 * it would block, the connection is fine. Believing it makes
+                 * select() return at once with nothing to read, and a program
+                 * that loops on select() spins forever. */
+                unsigned int k, real = 0;
+                static int logged;
+
+                for (k = 0; k < count; k++)
+                {
+                    if (pfds[k].revents && logged < 40)
+                    {
+                        extern void wine_nx_runtime_trace( const char *msg ) __attribute__((weak));
+                        char msg[160];
+
+                        logged++;
+                        snprintf( msg, sizeof(msg), "[POLL] fd=%d events=%#x revents=%#x (entry %u of %u)",
+                                  pfds[k].fd, pfds[k].events, pfds[k].revents, k, count );
+                        if (&wine_nx_runtime_trace) wine_nx_runtime_trace( msg );
+                    }
+                    if ((pfds[k].revents & POLLHUP) && !(pfds[k].revents & (POLLIN | POLLERR | POLLNVAL)))
+                    {
+                        char c;
+                        int n = recv( pfds[k].fd, &c, 1, MSG_PEEK | MSG_DONTWAIT );
+
+                        if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) pfds[k].revents &= ~POLLHUP;
+                    }
+                    if (pfds[k].revents) real++;
+                }
+                ret = real;
+            }
             if (ret != 0 || timeout_ms == 0) break;
             clock_gettime( CLOCK_MONOTONIC, &now );
             elapsed_ms = (long long)(now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
