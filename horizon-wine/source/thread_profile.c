@@ -654,6 +654,112 @@ void wine_nx_threads_report_stalled( void )
     }
 }
 
+/* One thread's position by handle, read as the stall report does. */
+static int report_position_of( Handle handle, Handle self, const char *tag )
+{
+    uint64_t callers[NX_PROF_DEPTH];
+    char line[NX_PROF_LINE], where[96], kind = '?';
+    unsigned int frames, f, tid = 0, i;
+    ThreadContext ctx;
+    Result rc;
+    int tries, len;
+
+    if (!handle || handle == self) return 0;
+    pthread_mutex_lock( &profile_mutex );
+    if (R_FAILED( svcSetThreadActivity( handle, ThreadActivity_Paused ) ))
+    {
+        pthread_mutex_unlock( &profile_mutex );
+        return 0;
+    }
+    for (tries = 0; R_FAILED( rc = svcGetThreadContext3( &ctx, handle ) ) && tries < 4; tries++)
+        svcSleepThread( 0 );
+    frames = R_SUCCEEDED( rc ) ? walk_callers( &ctx, callers ) : 0;
+    for (i = 0; i < NX_PROF_MAX_THREADS; i++)
+        if (registry[i].handle == handle) { tid = registry[i].tid; kind = registry[i].kind; }
+    svcSetThreadActivity( handle, ThreadActivity_Runnable );
+    pthread_mutex_unlock( &profile_mutex );
+    if (R_FAILED( rc )) return 0;
+    name_address( ctx.pc.x, where, sizeof(where) );
+    len = snprintf( line, sizeof(line), "%s thread %u%c at %s sp=%#lx lr=%#lx",
+                    tag, tid, kind, where, (unsigned long)ctx.sp, (unsigned long)ctx.lr );
+    for (f = 0; f < frames; f++)
+    {
+        name_address( callers[f], where, sizeof(where) );
+        len = appendf( line, len, " < %s", where );
+    }
+    wine_nx_runtime_trace( line );
+    return 1;
+}
+
+/* Says who holds a C library lock that a thread has waited on for seconds:
+ * the owner's handle is in the lock's first word, and where that thread is
+ * standing says what it is doing with the lock. */
+static void report_lock_owner( void *lock, uint32_t word, unsigned int waited_ms )
+{
+    Handle self = threadGetCurHandle();
+    Handle owner = word & ~0x40000000u;  /* bit 30: someone is waiting */
+    char line[NX_PROF_LINE];
+    unsigned int i, found = 0;
+
+    snprintf( line, sizeof(line), "[LOCK] thread %#x waited %u ms for lock %p, held by handle %#x (word %#x)",
+              (unsigned int)self, waited_ms, lock, (unsigned int)owner, (unsigned int)word );
+    wine_nx_runtime_trace( line );
+    for (i = 0; i < NX_PROF_MAX_THREADS; i++)
+        if (registry[i].handle == owner) found = report_position_of( owner, self, "[LOCK-OWNER]" );
+    if (!found)
+    {
+        snprintf( line, sizeof(line), "[LOCK] the holder %#x is not a registered thread", (unsigned int)owner );
+        wine_nx_runtime_trace( line );
+    }
+    for (i = 0; i < NX_PROF_MAX_THREADS; i++)
+    {
+        char name[NX_PROF_LINE];
+
+        if (registry[i].handle != self) continue;
+        snprintf( name, sizeof(name), "[LOCK] the waiter is thread %u%c", registry[i].tid, registry[i].kind );
+        wine_nx_runtime_trace( name );
+    }
+}
+
+/* The C library's recursive locks (malloc, stdio) with a way out of a silent
+ * wait: try, sleep a little, and after a few seconds say who has it, once per
+ * lock. Linked in place of the library's (--wrap=__retarget_lock_acquire_recursive). */
+extern void __real___retarget_lock_acquire_recursive( void *lock );
+
+void __wrap___retarget_lock_acquire_recursive( void *lock )
+{
+    static void *volatile reported[4];
+    RMutex *mutex = (RMutex *)lock;
+    uint64_t start;
+    unsigned int spins = 0, i;
+
+    if (rmutexTryLock( mutex )) return;
+    start = armGetSystemTick();
+    for (;;)
+    {
+        unsigned int waited_ms = (unsigned int)(armTicksToNs( armGetSystemTick() - start ) / 1000000);
+
+        if (waited_ms >= 3000)
+        {
+            for (i = 0; i < 4; i++) if (reported[i] == lock) break;
+            if (i == 4)
+            {
+                for (i = 0; i < 4; i++) if (!reported[i]) break;
+                if (i < 4)
+                {
+                    reported[i] = lock;
+                    report_lock_owner( lock, *(volatile uint32_t *)lock, waited_ms );
+                }
+            }
+            /* Past the report, ordinary waiting. */
+            __real___retarget_lock_acquire_recursive( lock );
+            return;
+        }
+        svcSleepThread( spins++ < 20 ? 50000 : 1000000 );
+        if (rmutexTryLock( mutex )) return;
+    }
+}
+
 /* Translated code by module, busiest first. */
 static void report_modules( const struct nx_prof_target *target, char *line )
 {

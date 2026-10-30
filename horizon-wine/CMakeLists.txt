@@ -874,6 +874,7 @@ if(WINE_NX_SWAP_POC)
 endif()
 target_link_options(wine-nx-runtime PRIVATE -Wl,--gc-sections -Wl,--wrap=svcCreateThread
     -Wl,--wrap=svcSetThreadCoreMask
+    -Wl,--wrap=__retarget_lock_acquire_recursive
     -Wl,--wrap=virtmemFindAslr -Wl,--wrap=virtmemFindCodeMemory
     -Wl,--wrap=virtmemFindStack -Wl,--wrap=virtmemAddReservation -Wl,--wrap=virtmemRemoveReservation)
 
