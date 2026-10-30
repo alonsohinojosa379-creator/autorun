@@ -12949,7 +12949,29 @@ static unsigned int horizon_sock_ioctl_poll( unsigned int handle, const unsigned
         timeout_ms = 0;
     }
 
-    while ((ret = poll( pfds, count, timeout_ms )) == -1 && errno == EINTR) {}
+    /* The bsd service answers one request at a time on the session the
+     * program's threads share, so a poll that blocks for seconds keeps every
+     * other thread's socket call (the wakeup that would end this very poll,
+     * for one) waiting until it returns. Look without blocking and sleep
+     * here, where nothing else is held up. */
+    {
+        struct timespec start, now;
+        unsigned int spins = 0;
+
+        clock_gettime( CLOCK_MONOTONIC, &start );
+        for (;;)
+        {
+            long long elapsed_ms;
+
+            ret = poll( pfds, count, 0 );
+            if (ret == -1 && errno == EINTR) continue;
+            if (ret != 0 || timeout_ms == 0) break;
+            clock_gettime( CLOCK_MONOTONIC, &now );
+            elapsed_ms = (long long)(now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+            if (timeout_ms > 0 && elapsed_ms >= timeout_ms) break;
+            usleep( spins++ < 50 ? 1000 : 4000 );
+        }
+    }
     if (ret == -1) return horizon_sock_errno_status( errno );
 
     memcpy( out, data, 16 ); /* timeout/exclusive preserved */
