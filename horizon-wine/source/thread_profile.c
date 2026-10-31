@@ -61,6 +61,8 @@ struct nx_prof_thread
     u64 app_mask;
     uint64_t teb;
     uint64_t last_ticks, balance_ticks;
+    uint64_t tls;   /* the thread's kernel TLS page, where libnx keeps its handle */
+    int tls_reported;
 };
 
 /* horizon.c: a moved Wine thread's server connection thread follows it. */
@@ -268,6 +270,7 @@ void wine_nx_thread_register( char kind, unsigned int tid, void *teb )
         registry[slot].kind = kind;
         registry[slot].core = core;
         registry[slot].teb = (uintptr_t)teb;
+        registry[slot].tls = (uintptr_t)armGetTls();
         registry[slot].fixed = affinity_fixed;
         registry[slot].last_ticks = registry[slot].balance_ticks = thread_ticks( handle );
         if (kind == 'c')
@@ -940,6 +943,64 @@ static void server_report( void )
     wine_nx_runtime_trace( line );
 }
 
+/* A lock is owned by the handle libnx keeps at tls+0x1e4 (ThreadVars). If that
+ * word of some thread no longer matches the thread's real handle, its locks
+ * name the wrong owner and other threads can wait on a lock that is free. */
+static void check_thread_vars( void )
+{
+    static unsigned int rounds;
+    unsigned int i, bad = 0, checked = 0;
+    char line[NX_PROF_LINE];
+
+    pthread_mutex_lock( &registry_mutex );
+    for (i = 0; i < NX_PROF_MAX_THREADS; i++)
+    {
+        struct nx_prof_thread *thread = &registry[i];
+        MemoryInfo info;
+        uint32_t word;
+        unsigned int j;
+
+        if (!thread->handle || !thread->tls) continue;
+        checked++;
+        if (!readable_size( thread->tls + 0x1e4, 4, &info ))
+        {
+            if (!thread->tls_reported++)
+            {
+                snprintf( line, sizeof(line), "[TLSCHK] thread %u%c: its TLS page %#lx is not readable any more",
+                          thread->tid, thread->kind, (unsigned long)thread->tls );
+                wine_nx_runtime_trace( line );
+            }
+            bad++;
+            continue;
+        }
+        word = *(volatile uint32_t *)(uintptr_t)(thread->tls + 0x1e4);
+        for (j = 0; j < i; j++)
+            if (registry[j].handle && registry[j].tls == thread->tls && !thread->tls_reported++)
+            {
+                snprintf( line, sizeof(line), "[TLSCHK] threads %u%c and %u%c share the TLS page %#lx",
+                          registry[j].tid, registry[j].kind, thread->tid, thread->kind, (unsigned long)thread->tls );
+                wine_nx_runtime_trace( line );
+            }
+        if (word != thread->handle)
+        {
+            if (!thread->tls_reported++)
+            {
+                snprintf( line, sizeof(line), "[TLSCHK] thread %u%c: libnx handle %#x but the real handle is %#x (TLS %#lx)",
+                          thread->tid, thread->kind, (unsigned int)word, (unsigned int)thread->handle,
+                          (unsigned long)thread->tls );
+                wine_nx_runtime_trace( line );
+            }
+            bad++;
+        }
+    }
+    pthread_mutex_unlock( &registry_mutex );
+    if (bad || !(rounds++ % 6))
+    {
+        snprintf( line, sizeof(line), "[TLSCHK] %u of %u threads checked have a wrong or unreadable handle", bad, checked );
+        wine_nx_runtime_trace( line );
+    }
+}
+
 void wine_nx_thread_report( void )
 {
     static u64 last;
@@ -972,6 +1033,7 @@ void wine_nx_thread_report( void )
     }
     pthread_mutex_unlock( &registry_mutex );
     if (!interval) return;
+    check_thread_vars();
 
     /* tid, w (Wine) or s (server connection), @core, share of that core. */
     len = appendf( line, 0, "[THREADS] %u threads use %u.%02u cores:", count, total / 1000, total % 1000 / 10 );
