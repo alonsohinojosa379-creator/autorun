@@ -693,6 +693,19 @@ void wine_nx_threads_report_stalled( void )
             name_address( callers[f], where, sizeof(where) );
             len = appendf( line, len, " < %s", where );
         }
+        {
+            /* Inside a lock wait the first argument is the lock owner's handle
+             * (ArbitrateLock) or the futex address (condvar); say which thread
+             * that handle is, if it is one of ours. */
+            Handle arg = (Handle)ctx.cpu_gprs[0].x;
+            unsigned int k;
+
+            len = appendf( line, len, " x0=%#lx x1=%#lx x2=%#lx", (unsigned long)ctx.cpu_gprs[0].x,
+                           (unsigned long)ctx.cpu_gprs[1].x, (unsigned long)ctx.cpu_gprs[2].x );
+            for (k = 0; k < NX_PROF_MAX_THREADS; k++)
+                if (arg && registry[k].handle == arg)
+                    len = appendf( line, len, " [x0=thread %u%c]", registry[k].tid, registry[k].kind );
+        }
         wine_nx_runtime_trace( line );
         reported++;
     }

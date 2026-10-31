@@ -9658,3 +9658,41 @@ index d358064..3719d19 100644
 -- 
 2.43.0
 
+From 311ac39ed4c999053391946e75bd096d3716f13e Mon Sep 17 00:00:00 2001
+From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
+Date: Sat, 31 Oct 2026 00:33:40 +0000
+Subject: [PATCH] diag: show lock owner/args of every stalled thread
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012hH9K3hE19fJ7789y2LWPf
+---
+ horizon-wine/source/thread_profile.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/horizon-wine/source/thread_profile.c b/horizon-wine/source/thread_profile.c
+index 3719d19..01c61ae 100644
+--- a/horizon-wine/source/thread_profile.c
++++ b/horizon-wine/source/thread_profile.c
+@@ -776,6 +776,19 @@ void wine_nx_threads_report_stalled( void )
+             name_address( callers[f], where, sizeof(where) );
+             len = appendf( line, len, " < %s", where );
+         }
++        {
++            /* Inside a lock wait the first argument is the lock owner's handle
++             * (ArbitrateLock) or the futex address (condvar); say which thread
++             * that handle is, if it is one of ours. */
++            Handle arg = (Handle)ctx.cpu_gprs[0].x;
++            unsigned int k;
++
++            len = appendf( line, len, " x0=%#lx x1=%#lx x2=%#lx", (unsigned long)ctx.cpu_gprs[0].x,
++                           (unsigned long)ctx.cpu_gprs[1].x, (unsigned long)ctx.cpu_gprs[2].x );
++            for (k = 0; k < NX_PROF_MAX_THREADS; k++)
++                if (arg && registry[k].handle == arg)
++                    len = appendf( line, len, " [x0=thread %u%c]", registry[k].tid, registry[k].kind );
++        }
+         wine_nx_runtime_trace( line );
+         reported++;
+     }
+-- 
+2.43.0
+
