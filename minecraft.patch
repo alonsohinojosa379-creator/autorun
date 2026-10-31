@@ -9792,3 +9792,39 @@ index 01c61ae..53a62bb 100644
 -- 
 2.43.0
 
+From 5a5b74ecff600063138b2eda8cdc398d7cb41502 Mon Sep 17 00:00:00 2001
+From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
+Date: Sat, 31 Oct 2026 04:18:19 +0000
+Subject: [PATCH] Minecraft: no pausar hilos para leer el stall si el
+ perfilador esta apagado
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012hH9K3hE19fJ7789y2LWPf
+---
+ horizon-wine/source/thread_profile.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/horizon-wine/source/thread_profile.c b/horizon-wine/source/thread_profile.c
+index 53a62bb..c1587e1 100644
+--- a/horizon-wine/source/thread_profile.c
++++ b/horizon-wine/source/thread_profile.c
+@@ -796,6 +796,16 @@ void wine_nx_threads_report_stalled( void )
+     Handle self = threadGetCurHandle();
+     unsigned int i, reported = 0;
+ 
++    /* Reading a thread's position means pausing it, and a thread paused while
++     * it enters or leaves a lock wait can lose the wake-up that was meant for
++     * it: Minecraft froze completely, every thread waiting for a free lock,
++     * right after the first report made with all its threads. Without the
++     * profiler (profile.txt=1) no thread is paused. */
++    if (!profiling)
++    {
++        wine_nx_runtime_trace( "[STALL] threads are not paused to be read (profiler off)" );
++        return;
++    }
+     for (i = 0; i < NX_PROF_MAX_THREADS; i++)
+     {
+         uint64_t callers[NX_PROF_DEPTH];
+-- 
+2.43.0
+

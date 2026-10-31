@@ -713,6 +713,16 @@ void wine_nx_threads_report_stalled( void )
     Handle self = threadGetCurHandle();
     unsigned int i, reported = 0;
 
+    /* Reading a thread's position means pausing it, and a thread paused while
+     * it enters or leaves a lock wait can lose the wake-up that was meant for
+     * it: Minecraft froze completely, every thread waiting for a free lock,
+     * right after the first report made with all its threads. Without the
+     * profiler (profile.txt=1) no thread is paused. */
+    if (!profiling)
+    {
+        wine_nx_runtime_trace( "[STALL] threads are not paused to be read (profiler off)" );
+        return;
+    }
     for (i = 0; i < NX_PROF_MAX_THREADS; i++)
     {
         uint64_t callers[NX_PROF_DEPTH];
