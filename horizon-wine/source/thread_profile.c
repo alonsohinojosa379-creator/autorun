@@ -657,26 +657,47 @@ static void name_site( uint32_t site, int guest, char *buf, size_t size )
     else snprintf( buf, size, "+%#x", (unsigned int)site );
 }
 
-/* Who holds the C library's allocator lock. __malloc_lock is "adrp x0, page;
- * add x0, x0, #offset; b lock", so the lock's address is read from those two
- * instructions rather than by wrapping the lock (which would change how every
- * thread waits for it). The first word of the lock is its owner's thread
- * handle, with bit 30 set while someone waits. */
-extern void nx_malloc_lock_code( void ) __asm__( "__malloc_lock" );
+/* The C library's allocator lock, replaced (linked with --wrap=__malloc_lock
+ * and __malloc_unlock). Minecraft's client thread was found asleep in the
+ * kernel's lock wait on the allocator lock while the lock was free, and woke
+ * only at long intervals, so the program crawled at 2% CPU. This lock never
+ * sleeps in the kernel: a thread that finds it taken yields and tries again.
+ * The word holds the owner's handle, 0 when free. */
+static volatile uint32_t malloc_owner;
+static uint32_t malloc_depth;
+
+void __wrap___malloc_lock( void *reent )
+{
+    Handle self = threadGetCurHandle() ? threadGetCurHandle() : 1;
+    unsigned int spins = 0;
+
+    (void)reent;
+    if (__atomic_load_n( &malloc_owner, __ATOMIC_RELAXED ) == self)
+    {
+        malloc_depth++;
+        return;
+    }
+    for (;;)
+    {
+        uint32_t expected = 0;
+
+        if (__atomic_compare_exchange_n( &malloc_owner, &expected, self, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED )) break;
+        if (++spins < 64) svcSleepThread( -2 );        /* let any other thread run */
+        else svcSleepThread( 50000 );                  /* 50 microseconds */
+    }
+    malloc_depth = 1;
+}
+
+void __wrap___malloc_unlock( void *reent )
+{
+    (void)reent;
+    if (--malloc_depth) return;
+    __atomic_store_n( &malloc_owner, 0, __ATOMIC_RELEASE );
+}
 
 static volatile uint32_t *malloc_lock_word( void )
 {
-    const uint32_t *code = (const uint32_t *)(void *)nx_malloc_lock_code;
-    uint32_t adrp = code[0], add = code[1];
-    int64_t imm;
-    uintptr_t page;
-
-    if ((adrp & 0x9f000000) != 0x90000000 || (add & 0xff800000) != 0x91000000) return NULL;
-    if ((adrp & 31) != ((add >> 5) & 31)) return NULL;
-    imm = (int64_t)((((adrp >> 5) & 0x7ffff) << 2) | ((adrp >> 29) & 3));
-    if (imm & 0x100000) imm -= 0x200000;
-    page = ((uintptr_t)code & ~(uintptr_t)0xfff) + (uintptr_t)(imm * 4096);
-    return (volatile uint32_t *)(page + (((add >> 10) & 0xfff) << (((add >> 22) & 1) ? 12 : 0)));
+    return &malloc_owner;
 }
 
 static void report_malloc_lock( void )
@@ -693,7 +714,7 @@ static void report_malloc_lock( void )
         return;
     }
     word = *lock;
-    snprintf( line, sizeof(line), "[LOCK] allocator lock %p word=%#x owner handle=%#x waiters=%d",
+    snprintf( line, sizeof(line), "[LOCK] allocator lock %p word=%#x owner handle=%#x waiters=%d (own spin lock)",
               (void *)lock, (unsigned int)word, (unsigned int)(word & ~0x40000000u), !!(word & 0x40000000u) );
     wine_nx_runtime_trace( line );
     for (i = 0; i < NX_PROF_MAX_THREADS; i++)

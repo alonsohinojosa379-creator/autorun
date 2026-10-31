@@ -872,7 +872,8 @@ if(WINE_NX_SWAP_POC)
         target_link_options(wine-nx-runtime PRIVATE "-Wl,--wrap=${symbol}")
     endforeach()
 endif()
-target_link_options(wine-nx-runtime PRIVATE -Wl,--gc-sections -Wl,--wrap=svcCreateThread
+target_link_options(wine-nx-runtime PRIVATE -Wl,--gc-sections -Wl,--wrap=__malloc_lock -Wl,--wrap=__malloc_unlock
+    -Wl,--wrap=svcCreateThread
     -Wl,--wrap=svcSetThreadCoreMask
     -Wl,--wrap=virtmemFindAslr -Wl,--wrap=virtmemFindCodeMemory
     -Wl,--wrap=virtmemFindStack -Wl,--wrap=virtmemAddReservation -Wl,--wrap=virtmemRemoveReservation)
