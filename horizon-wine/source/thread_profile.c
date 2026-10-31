@@ -406,6 +406,56 @@ static unsigned int walk_x86_frames( const ThreadContext *ctx, uint32_t *callers
     return nx_prof_x86_frames( esp, ebp, info.addr, info.addr + info.size, read_word32, callers, NX_PROF_DEPTH );
 }
 
+/* Whom a thread waiting in ArbitrateLock (svc 0x1a) is waiting for: the call
+ * is made with the owner's handle in x0 and the lock's address in x1. */
+#define NX_LOCKWAIT_MAX 24
+static struct { uint32_t waiter, owner; uint64_t address; unsigned int count; } lockwait[NX_LOCKWAIT_MAX];
+
+static void note_lock_wait( const struct nx_prof_target *target, const ThreadContext *ctx )
+{
+    uint32_t owner = (uint32_t)ctx->cpu_gprs[0].x;
+    uint64_t address = ctx->cpu_gprs[1].x;
+    unsigned int i;
+
+    for (i = 0; i < NX_LOCKWAIT_MAX; i++)
+        if (lockwait[i].count && lockwait[i].waiter == target->tid && lockwait[i].owner == owner &&
+            lockwait[i].address == address) { lockwait[i].count++; return; }
+    for (i = 0; i < NX_LOCKWAIT_MAX; i++)
+        if (!lockwait[i].count)
+        {
+            lockwait[i].waiter = target->tid;
+            lockwait[i].owner = owner;
+            lockwait[i].address = address;
+            lockwait[i].count = 1;
+            return;
+        }
+}
+
+static void report_lock_waits( void )
+{
+    char line[NX_PROF_LINE];
+    unsigned int i, k;
+
+    for (i = 0; i < NX_LOCKWAIT_MAX; i++)
+    {
+        const char *name = "?";
+        char who[24];
+
+        if (!lockwait[i].count) continue;
+        for (k = 0; k < NX_PROF_MAX_THREADS; k++)
+            if (registry[k].handle && registry[k].handle == lockwait[i].owner)
+            {
+                snprintf( who, sizeof(who), "%u%c", registry[k].tid, registry[k].kind );
+                name = who;
+            }
+        snprintf( line, sizeof(line), "[LOCKWAIT] thread %u waits on lock %#lx owned by handle %#x (thread %s): %u samples",
+                  lockwait[i].waiter, (unsigned long)lockwait[i].address, (unsigned int)lockwait[i].owner, name,
+                  lockwait[i].count );
+        wine_nx_runtime_trace( line );
+        lockwait[i].count = 0;
+    }
+}
+
 static void record( struct nx_prof_target *target, const ThreadContext *ctx, int translated, uintptr_t x86,
                     const uint64_t *callers, unsigned int count, const uint32_t *x86_callers, unsigned int x86_count )
 {
@@ -421,7 +471,11 @@ static void record( struct nx_prof_target *target, const ThreadContext *ctx, int
     kind = nx_prof_classify( translated, native, svc );
     if (kind == NX_PROF_X86) key = x86 & ~0x1full;
     else if (kind == NX_PROF_IMAGE) key = pc & ~0xffull;
-    else if (kind == NX_PROF_SVC) key = nx_prof_svc_key( svc, ctx->lr - runtime_base );
+    else if (kind == NX_PROF_SVC)
+    {
+        key = nx_prof_svc_key( svc, ctx->lr - runtime_base );
+        if (svc == 0x1a) note_lock_wait( target, ctx );
+    }
     else key = (pc - runtime_base) & ~0x1full;
     target->samples++;
     target->kinds[kind]++;
@@ -918,6 +972,7 @@ void wine_nx_thread_report( void )
     wine_nx_runtime_trace( line );
     if (profiling) server_report();
     if (profiling) profile_report( rows, count );
+    if (profiling) report_lock_waits();
 }
 
 /* Names the threads that did not stop, so the wait they are in can be found. */
