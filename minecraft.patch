@@ -10044,3 +10044,55 @@ index 26ab6a6..21ca77a 100644
 -- 
 2.43.0
 
+From 67662a8a72465aa5c4fcb2e6e1eeb452795531ad Mon Sep 17 00:00:00 2001
+From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
+Date: Sun, 1 Nov 2026 03:54:25 +0000
+Subject: [PATCH] diag: log how long creating a thread holds the mapping lock
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012hH9K3hE19fJ7789y2LWPf
+---
+ dlls/ntdll/unix/horizon.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/dlls/ntdll/unix/horizon.c b/dlls/ntdll/unix/horizon.c
+index 7301de5..f35fa4d 100644
+--- a/dlls/ntdll/unix/horizon.c
++++ b/dlls/ntdll/unix/horizon.c
+@@ -19781,9 +19781,11 @@ Result __wrap_svcCreateThread( Handle *handle, ThreadFunc entry, void *arg, void
+     Result rc = 0;
+     unsigned int retries = 0;
+     u64 conflict = 0;
++    u64 started = armGetSystemTick(), locked, finished;
+ 
+     /* Kernel TLS placement does not consult libnx's virtual reservations. */
+     pthread_mutex_lock( &mapping_mutex );
++    locked = armGetSystemTick();
+     for (;;)
+     {
+         Handle created;
+@@ -19807,6 +19809,21 @@ Result __wrap_svcCreateThread( Handle *handle, ThreadFunc entry, void *arg, void
+         }
+     }
+     pthread_mutex_unlock( &mapping_mutex );
++    finished = armGetSystemTick();
++    {
++        /* A thread being created holds the mapping lock for the whole search,
++         * so every thread that maps memory waits for it. */
++        u64 wait_ms = armTicksToNs( locked - started ) / 1000000, hold_ms = armTicksToNs( finished - locked ) / 1000000;
++
++        if (wait_ms >= 20 || hold_ms >= 20 || retries)
++        {
++            char message[128];
++
++            snprintf( message, sizeof(message), "[THREAD] created: waited %llu ms for the mapping lock, held it %llu ms, %u retries",
++                      (unsigned long long)wait_ms, (unsigned long long)hold_ms, retries );
++            wine_nx_runtime_trace( message );
++        }
++    }
+     if (R_FAILED(rc))
+     {
+         u64 resource = 0;
+-- 
+2.43.0
+

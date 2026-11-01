@@ -19612,9 +19612,11 @@ Result __wrap_svcCreateThread( Handle *handle, ThreadFunc entry, void *arg, void
     Result rc = 0;
     unsigned int retries = 0;
     u64 conflict = 0;
+    u64 started = armGetSystemTick(), locked, finished;
 
     /* Kernel TLS placement does not consult libnx's virtual reservations. */
     pthread_mutex_lock( &mapping_mutex );
+    locked = armGetSystemTick();
     for (;;)
     {
         Handle created;
@@ -19638,6 +19640,21 @@ Result __wrap_svcCreateThread( Handle *handle, ThreadFunc entry, void *arg, void
         }
     }
     pthread_mutex_unlock( &mapping_mutex );
+    finished = armGetSystemTick();
+    {
+        /* A thread being created holds the mapping lock for the whole search,
+         * so every thread that maps memory waits for it. */
+        u64 wait_ms = armTicksToNs( locked - started ) / 1000000, hold_ms = armTicksToNs( finished - locked ) / 1000000;
+
+        if (wait_ms >= 20 || hold_ms >= 20 || retries)
+        {
+            char message[128];
+
+            snprintf( message, sizeof(message), "[THREAD] created: waited %llu ms for the mapping lock, held it %llu ms, %u retries",
+                      (unsigned long long)wait_ms, (unsigned long long)hold_ms, retries );
+            wine_nx_runtime_trace( message );
+        }
+    }
     if (R_FAILED(rc))
     {
         u64 resource = 0;
