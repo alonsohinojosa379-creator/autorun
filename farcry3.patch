@@ -1,8 +1,8 @@
 From d1c21e40f6bc7597e86f186f52575ae45be38769 Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Tue, 6 Oct 2026 17:48:04 -0600
-Subject: Fallout: New Vegas para Nintendo Switch: build de un solo juego
- (Hecho por Ascencion H.O)
+Subject: [PATCH 01/15] Fallout: New Vegas para Nintendo Switch: build de un
+ solo juego (Hecho por Ascencion H.O)
 
 Todo el fork de Autorun encima de c889e4eb en un solo parche:
 - Build de un solo juego (abre directo, carpeta e icono propios en HOME)
@@ -6376,8 +6376,8 @@ index 00000000..f7e462ef
 From 3ea053125aa63dac5cbaf22bb35e174a8df65d35 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Sun, 18 Oct 2026 21:46:38 -0600
-Subject: dsound: no dividir entre cero con buffers sin tamano de bloque
- (Fallout New Vegas)
+Subject: [PATCH 02/15] dsound: no dividir entre cero con buffers sin tamano de
+ bloque (Fallout New Vegas)
 
 El mezclador leia nBlockAlign = 0 de un buffer secundario y dividia entre
 cero (Box64: crash; FEX: el hilo del mezclador se queda dando vueltas y el
@@ -6427,7 +6427,8 @@ index 783dde94..de821d53 100644
 From 088dfb654076d25e8aeedd8b5d6e79ccdc83fbd9 Mon Sep 17 00:00:00 2001
 From: "Ascencion H.O" <alonsohinojosa379@gmail.com>
 Date: Mon, 19 Oct 2026 11:26:11 -0600
-Subject: falloutnv: fija el nombre de la GPU y trae FalloutPrefs.ini
+Subject: [PATCH 03/15] falloutnv: fija el nombre de la GPU y trae
+ FalloutPrefs.ini
 
 El juego compara sD3DDevice de FalloutPrefs.ini con el nombre de la GPU y, si
 no coincide, abre el launcher y se cierra. Se fija el nombre con
@@ -6473,8 +6474,8 @@ index 00000000..1120781b
 From 2254fa2baafdac53bf6e7abc1db9d6ec605ce442 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Wed, 21 Oct 2026 20:26:14 -0600
-Subject: Resident Evil 2 (2019) para Nintendo Switch: build de un solo juego
- (Hecho por Ascencion H.O)
+Subject: [PATCH 04/15] Resident Evil 2 (2019) para Nintendo Switch: build de
+ un solo juego (Hecho por Ascencion H.O)
 
 ---
  horizon-wine/assets/falloutnv.jpg             | Bin 27054 -> 0 bytes
@@ -7624,8 +7625,8 @@ index 00000000..e69de29b
 From 8028a1323cc0930d041159ad653670c7f37df548 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 19:05:17 -0600
-Subject: re2: swap experimental a la SD (se crea solo al arrancar,
- swap-mb=2048)
+Subject: [PATCH 05/15] re2: swap experimental a la SD (se crea solo al
+ arrancar, swap-mb=2048)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7719,8 +7720,8 @@ index fdf804d2..673640dd 100644
 From d224dd976012035f686efdf37431c3b1ea4156ce Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Thu, 22 Oct 2026 22:18:25 -0600
-Subject: re2: el swap empieza a sacar memoria antes (384 MiB libres) y saca
- hasta 64 MiB por vez
+Subject: [PATCH 06/15] re2: el swap empieza a sacar memoria antes (384 MiB
+ libres) y saca hasta 64 MiB por vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7771,8 +7772,8 @@ index 673640dd..abbc8ed5 100644
 From 16bfa82f986429f1a905c8e95478bfa87c0339cb Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 16:00:22 -0600
-Subject: re2: el swap reutiliza el escaneo exacto del heap por 300 ms en vez
- de repetirlo cada vez
+Subject: [PATCH 07/15] re2: el swap reutiliza el escaneo exacto del heap por
+ 300 ms en vez de repetirlo cada vez
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7846,7 +7847,8 @@ index 72aec943..9cb55567 100644
 From 33f04e1001cf16ea9ef0a8d5745c0f82883a8fb3 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 17:53:49 -0600
-Subject: Mesosphere: las aplicaciones pueden crear 192 hilos en vez de 96
+Subject: [PATCH 08/15] Mesosphere: las aplicaciones pueden crear 192 hilos en
+ vez de 96
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -7898,8 +7900,8 @@ index 45c052f7..e188fba2 100644
 From 5dc0a2f519a8cf2216c4aab5f00b2e5c1be3cb92 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 19:16:24 -0600
-Subject: Hytale: se abre HytaleClient.exe directo con sus opciones (el
- launcher de 32 bits no puede lanzar el de 64), sin swap
+Subject: [PATCH 09/15] Hytale: se abre HytaleClient.exe directo con sus
+ opciones (el launcher de 32 bits no puede lanzar el de 64), sin swap
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -8656,7 +8658,8 @@ index 00000000..8845eea4
 From 25b250a4e4c2682309ef6fe178bea47ea2ad200a Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Fri, 23 Oct 2026 19:40:00 -0600
-Subject: re2: el swap no vuelve a sacar lo que acaba de leer de la SD (20 s)
+Subject: [PATCH 10/15] re2: el swap no vuelve a sacar lo que acaba de leer de
+ la SD (20 s)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -8721,8 +8724,8 @@ index 9cb55567..963dc422 100644
 From f74036da32fc5510d979c60a1e51c3ebfd337375 Mon Sep 17 00:00:00 2001
 From: b <b@l>
 Date: Sat, 24 Oct 2026 04:42:58 -0600
-Subject: Hytale: anota las llamadas del sistema que responden 'no
- implementado' (diagnostico del Invalid function)
+Subject: [PATCH 11/15] Hytale: anota las llamadas del sistema que responden
+ 'no implementado' (diagnostico del Invalid function)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
@@ -8765,8 +8768,8 @@ index fa6d06c7..09a312d4 100644
 From 75df30568d11fe92d1d4b9214c0c55f9e3389ae3 Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Thu, 29 Oct 2026 02:49:15 +0000
-Subject: Minecraft Java 1.12.2 + OptiFine para Nintendo Switch: perfil de un
- solo juego (Hecho por Ascencion H.O)
+Subject: [PATCH 12/15] Minecraft Java 1.12.2 + OptiFine para Nintendo Switch:
+ perfil de un solo juego (Hecho por Ascencion H.O)
 
 - Perfil minecraft: abre javaw.exe (Java 8 de 64 bits de la carpeta mcdata)
   con los argumentos de 1.12.2 + OptiFine (launchwrapper, tweakClass), sin el
@@ -9067,8 +9070,8 @@ index 00000000..fcff1cad
 From 1b2fb680f800a9e0a779e99d104a83ad2f5296a0 Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Fri, 30 Oct 2026 04:03:59 +0000
-Subject: Minecraft: el icono lleva 'Fork hecho por Ascencion H.O' abajo a la
- derecha
+Subject: [PATCH 13/15] Minecraft: el icono lleva 'Fork hecho por Ascencion
+ H.O' abajo a la derecha
 
 ---
  horizon-wine/assets/minecraft.jpg | Bin 9098 -> 16183 bytes
@@ -9514,8 +9517,8 @@ sxp=TX(h&cj?ol}Fj)x&m-u-`>O-&qGAs6(=_d_@`vHl<ZkfJC43*`hMW&i*H
 From efc216cce1c537825ba8c6e66c8225cc6acd7f97 Mon Sep 17 00:00:00 2001
 From: Asce22 <alonsohinojosa379@gmail.com>
 Date: Sat, 31 Oct 2026 21:11:15 -0600
-Subject: Far Cry 3 para Nintendo Switch: perfil de un solo juego (Hecho por
- Ascencion H.O)
+Subject: [PATCH 14/15] Far Cry 3 para Nintendo Switch: perfil de un solo juego
+ (Hecho por Ascencion H.O)
 
 Perfil farcry3: carpeta fc3nx, farcry3.exe (32 bits, DXVK + FEX), un solo icono
 en HOME con la caratula, sin parche de direcciones bajas. Ajustes de FEX/DXVK
@@ -10259,6 +10262,47 @@ index 00000000..f95dde16
 +STAGING_SHARED_MEMORY=0
 +WINEDLLOVERRIDES="xinput1_3=n,b;d3d10=n,b;d3d10core=n,b;d3d11=n,b;dxgi=n,b;dxdiagn=d;uplay_r1_loader=n,b;ubiorbitapi_r2=n,b;ubiorbitapi_r2_loader=n,b;"
 +
+-- 
+2.43.0
+
+
+From 5c838ce72112719f91fa5b02baba524e20138ac3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 1 Nov 2026 22:56:34 -0600
+Subject: [PATCH 15/15] Far Cry 3: la prueba de OpenGL usa un pbuffer fuera de
+ pantalla cuando Vulkan tiene la pantalla
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016vCWYFeSt88D5G1QzjUVsH
+---
+ dlls/win32u/winnx_opengl.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/winnx_opengl.c b/dlls/win32u/winnx_opengl.c
+index aa800dc7..95d6c730 100644
+--- a/dlls/win32u/winnx_opengl.c
++++ b/dlls/win32u/winnx_opengl.c
+@@ -317,7 +317,19 @@ static BOOL nx_surface_create( struct client_surface *client, int format, struct
+ 
+     if (!(window = wine_nx_gl_acquire_window()))
+     {
+-        ERR( "hwnd %p: the screen already has an OpenGL surface\n", hwnd );
++        /* Vulkan (DXVK) or another surface has the screen. A program that only
++         * probes OpenGL meanwhile (wined3d's adapter probe) gets an off-screen
++         * pbuffer, which is not shown; refusing it makes such programs quit. */
++        static const EGLint pb_attribs[] = { EGL_WIDTH, 64, EGL_HEIGHT, 64, EGL_NONE };
++
++        if ((gl->base.surface = funcs->p_eglCreatePbufferSurface( egl->display, nx_config_for_format( format ),
++                                                                  pb_attribs )))
++        {
++            nx_log( "[NXGL] screen busy; hwnd %p gets an off-screen pbuffer", hwnd );
++            *drawable = &gl->base;
++            return TRUE;
++        }
++        ERR( "hwnd %p: the screen is busy and the pbuffer failed, error %#x\n", hwnd, funcs->p_eglGetError() );
+         goto err;
+     }
+     gl->screen = TRUE;
 -- 
 2.43.0
 
