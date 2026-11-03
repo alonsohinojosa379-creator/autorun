@@ -138,6 +138,27 @@ CarafeLanguage carafeLanguage(void) {
     return (CarafeLanguage)language;
 }
 
+const char* carafeWindowsLocale(void) {
+    static const char* const locales[CarafeLanguageCount] = {
+        [CarafeLanguageRu] = "ru-RU",
+        [CarafeLanguageEn] = "en-US",
+        [CarafeLanguageZhHans] = "zh-CN",
+        [CarafeLanguageJa] = "ja-JP",
+        [CarafeLanguageKo] = "ko-KR",
+        [CarafeLanguageZhHant] = "zh-TW",
+        [CarafeLanguageFr] = "fr-FR",
+        [CarafeLanguageFrCa] = "fr-CA",
+        [CarafeLanguageDe] = "de-DE",
+        [CarafeLanguageIt] = "it-IT",
+        [CarafeLanguageEs] = "es-ES",
+        [CarafeLanguageEs419] = "es-MX",
+        [CarafeLanguageNl] = "nl-NL",
+        [CarafeLanguagePt] = "pt-PT",
+        [CarafeLanguagePtBr] = "pt-BR",
+    };
+    return locales[carafeLanguage()];
+}
+
 int carafePluralForm(int count) {
     switch (carafeLanguage()) {
     case CarafeLanguageRu:
@@ -486,6 +507,88 @@ static void volatilePath(const char* name, char* out, size_t size) {
     u64 program_id = 0;
     svcGetInfo(&program_id, InfoType_ProgramId, CUR_PROCESS_HANDLE, 0);
     snprintf(out, size, VOLATILE_FILE, program_id, name);
+}
+
+static char* programText(void) {
+    char path[PATH_SIZE];
+    if (!filePath(CarafeFileProgram, path, sizeof(path))) {
+        return NULL;
+    }
+    char* text = readWhole(path, FILE_LIMIT);
+    return text != NULL ? text : romfsText(CarafeFileProgram);
+}
+
+bool carafeMeasuring(void) {
+    char* text = programText();
+    char value[16] = "";
+    bool profiling = textValue(text, "profile", value, sizeof(value)) && strcmp(value, "1") == 0;
+    free(text);
+    return profiling;
+}
+
+bool carafeOrchestrating(void) {
+    char* text = programText();
+    char value[16] = "";
+    bool on = !textValue(text, "orchestrator", value, sizeof(value)) || strcmp(value, "0") != 0;
+    free(text);
+    return on;
+}
+
+__attribute__((constructor(105))) static void carafeSettingsEnvironment(void) {
+    char* text = programText();
+    char value[16] = "";
+    setenv("NVK_SWITCH_CPU_WRITE_MEM_UNCACHED", "0", 1);
+    if (textValue(text, "large-pages", value, sizeof(value)) && strcmp(value, "1") == 0) {
+        setenv("CARAFE_LARGE_GUEST_PAGES", "1", 1);
+        note("[CARAFE] settings: large views of the game's memory start on 2 MB");
+    }
+    if (textValue(text, "suspend-wakes", value, sizeof(value)) && strcmp(value, "1") == 0) {
+        setenv("CARAFE_SUSPEND_WAKES", "1", 1);
+        note("[CARAFE] settings: a suspended thread is woken from its wait");
+    }
+    free(text);
+}
+
+bool carafeOptionsSummary(char* out, size_t size) {
+    char* text = programText();
+    if (text == NULL || size == 0) {
+        free(text);
+        return false;
+    }
+    size_t used = 0;
+    out[0] = '\0';
+    for (const char* line = text; *line != '\0' && used + 1 < size;) {
+        const char* end = strchr(line, '\n');
+        size_t length = end != NULL ? (size_t)(end - line) : strlen(line);
+        const char* start = line;
+        while (start < line + length && (*start == ' ' || *start == '\t')) {
+            start++;
+        }
+        const char* equals = memchr(start, '=', (size_t)(line + length - start));
+        if (equals != NULL &&
+            (strncmp(start, "FEX_", 4) == 0 || strncmp(start, "d3d9.", 5) == 0 || strncmp(start, "dxvk.", 5) == 0)) {
+            const char* key_end = equals;
+            while (key_end > start && (key_end[-1] == ' ' || key_end[-1] == '\t')) {
+                key_end--;
+            }
+            const char* value = equals + 1;
+            const char* value_end = line + length;
+            while (value < value_end && (*value == ' ' || *value == '\t')) {
+                value++;
+            }
+            while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t' || value_end[-1] == '\r')) {
+                value_end--;
+            }
+            used += (size_t)snprintf(out + used, size - used, "%s%.*s=%.*s", used > 0 ? " " : "",
+                (int)(key_end - start), start, (int)(value_end - value), value);
+            if (used >= size) {
+                used = size - 1;
+            }
+        }
+        line = end != NULL ? end + 1 : line + length;
+    }
+    free(text);
+    return true;
 }
 
 __attribute__((constructor(104))) static void carafeSettingsMerge(void) {

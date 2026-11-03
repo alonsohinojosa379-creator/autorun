@@ -8,16 +8,12 @@
     "sections": {
       "controls": "操作",
       "graphics": "圖形",
-      "directx": "DirectX",
-      "processor": "處理器",
-      "system": "系統"
+      "system": "系統",
+      "experimental": "實驗性功能"
     },
     "groups": {
       "dxvk": "DXVK 選項",
-      "fex-memory": "記憶體順序",
-      "fex-compat": "相容性與快取",
-      "box64-precision": "精確度與旗標",
-      "box64-memory": "記憶體與執行緒"
+      "fex": "FEX 選項"
     },
     "pages": {
       "dxvk-memory": "記憶體",
@@ -27,7 +23,11 @@
       "dxvk-display": "顯示模式",
       "dxvk-fixes": "修正",
       "dxvk-render": "繪製路徑",
-      "dxvk-identity": "遊戲看到的硬體"
+      "dxvk-identity": "遊戲看到的硬體",
+      "dxvk-sarek": "DXVK-Sarek",
+      "fex-general": "一般",
+      "fex-memory": "記憶體順序",
+      "fex-compat": "相容性與快取"
     },
     "presets": {
       "balanced": { "name": "平衡", "hint": "Autorun 預設的執行方式。" },
@@ -47,8 +47,7 @@
         "fex-maxinst": "遊戲轉譯後的程式碼佔用較少記憶體。"
       },
       "threads": {
-        "dxvk-numCompilerThreads": "把更多工作留給遊戲本身。新效果會較慢出現。",
-        "sync": "遊戲每次啟動都這樣關閉時使用。"
+        "dxvk-numCompilerThreads": "把更多工作留給遊戲本身。新效果會較慢出現。"
       }
     },
     "values": {
@@ -67,36 +66,13 @@
       "constantBuffers": "常數",
       "shaderResources": "著色器資源",
       "vertexIndex": "頂點與索引",
-      "safe": "安全",
-      "small": "小",
-      "large": "大",
-      "balanced": "平衡",
-      "wine": "適用 Wine",
-      "fast": "快速",
-      "guarded": "受保護",
-      "basic": "基本",
-      "strong": "強",
-      "precise": "精確",
-      "hybrid": "混合",
-      "double": "雙精度",
-      "honor": "依遊戲要求",
-      "full": "完整",
-      "reduced": "減少",
-      "minimal": "最少",
-      "ignore": "忽略",
-      "yield": "讓出",
-      "files": "僅檔案",
-      "weak": "輕量",
-      "weakest": "最輕量",
       "flowEighth": "12.5%",
       "flowQuarter": "25%",
       "flowHalf": "50%",
       "mib": "{{value}} MiB",
       "percent": "{{value}}%",
-      "seconds": "{{value}} 秒",
       "hz": "{{value}} Hz",
-      "times": "{{value}}×",
-      "bundled": "{{value}} · 套件內建"
+      "times": "{{value}}×"
     },
     "settings": {
       "input-mode": { "name": "操作模式", "hint": "控制器：遊戲會看到 Xbox 360 控制器。鍵盤與滑鼠：Switch 按鈕會按下鍵盤按鍵。" },
@@ -111,10 +87,6 @@
       "lsfg": { "name": "LSFG-VK 影格生成", "hint": "在遊戲影格之間插入生成的影格：更流暢，但操作會稍有延遲。需要 Lossless.dll。" },
       "lsfg-performance": { "name": "效能模式", "hint": "較快，但中間影格較不精確。" },
       "lsfg-flow": { "name": "光流比例", "hint": "偵測動態所用的解析度：越低越快，越高越精確。" },
-      "d3d": { "name": "Direct3D", "hint": "Direct3D 如何轉換成 Switch 的圖形。DXVK 最快，幾乎適合所有遊戲。" },
-      "dxvk-source": { "name": "DXVK 組建", "hint": "GPL Async 與 Sarek 組建尚未放入套件：請保持「官方」。" },
-      "dxvk-version": { "name": "DXVK 版本", "hint": "套件內只有一個版本。等 Carafe 能把其他版本放入套件後才會提供。" },
-      "vkd3d-version": { "name": "VKD3D 版本", "hint": "用於 DirectX 12 遊戲。套件內只有一個版本。" },
       "dxvk-maxMemoryBudget": { "name": "DXVK 記憶體預算", "hint": "DXVK 用於材質與緩衝區的記憶體。越低越不容易用完，但材質可能較晚載入。" },
       "dxgi-maxDeviceMemory": { "name": "遊戲可見的顯示記憶體（DX10–12）", "hint": "遊戲看到的顯示記憶體大小。遊戲塞滿記憶體而當機時請調低；不會增加實際記憶體。" },
       "dxgi-maxSharedMemory": { "name": "遊戲可見的共用記憶體（DX10–12）", "hint": "告訴遊戲的共用記憶體大小。不會預留任何記憶體。" },
@@ -166,8 +138,15 @@
       "dxgi-hideNvkGpu": { "name": "隱藏 NVK 驅動程式（DX10–12）", "hint": "遊戲看不出驅動程式是 NVK。" },
       "d3d9-hideNvidiaGpu": { "name": "隱藏 NVIDIA（DX9）", "hint": "遊戲認不出 NVIDIA GPU，會略過專用路徑。" },
       "d3d9-hideNvkGpu": { "name": "隱藏 NVK 驅動程式（DX9）", "hint": "遊戲看不出驅動程式是 NVK。" },
-      "cpu": { "name": "CPU 模擬器", "hint": "FEX 是主要的，適用 32 與 64 位元遊戲。Box64 是備用的，僅適用 32 位元遊戲。" },
       "fex-tso": { "name": "嚴格記憶體順序", "hint": "依 x86 的方式排序記憶體存取。較慢；多執行緒遊戲當機、卡住或資料損毀時請開啟。" },
+      "fex-call-cache": { "name": "記住間接呼叫的目標", "hint": "目標只能在執行時確定的呼叫會記住第一次前往的位置，之後前往同一位置的呼叫略過查找。如果遊戲當機、卡死或變慢，請關閉。" },
+      "large-pages": { "name": "大記憶體分頁", "hint": "把遊戲的大塊記憶體放在主機能以大塊對應的位置，讓處理器更快找到資料。如果遊戲當機、卡死、記憶體不足或變慢，請關閉。" },
+      "fex-x87-single": { "name": "x87 以 32 位元運算", "hint": "與降低 x87 精確度一起使用時，舊式 x87 運算改用 32 位元，與 Direct3D 8 和 9 在許多遊戲中的設定相同，更快。遊戲卡住、時間跳動或當機時請關閉。" },
+      "suspend-wakes": { "name": "停止等待中的執行緒", "hint": "像 Unity 和 Mono 遊戲清理記憶體時那樣，讓遊戲即使在執行緒等待時也能停止它們。如果這類遊戲在載入時卡住或當機，請開啟。如果遊戲開始卡住，請關閉。" },
+      "dxvk-shaderCompilationMethod": { "name": "在背景產生著色器", "hint": "預設和 async：著色器產生期間，需要它的物體暫不繪製，遊戲不必等待；物體可能會稍晚出現。關閉：與一般 DXVK 相同，遊戲等待每個著色器。dyasync：每組的第一個著色器立即產生。如果畫面有部分缺失，請關閉。" },
+      "dxvk-skipRedundantPipelineBinds": { "name": "略過重複繫結著色器", "hint": "已在使用的著色器在下一次繪製前不再重新設定，可節省少量處理器時間。如果畫面出現錯誤，請關閉。" },
+      "dxvk-frameRateMethod": { "name": "幀率限制的計時方式", "hint": "幀率限制如何計時：deviation 與舊版 DXVK 相同，把每幀的誤差帶到下一幀；reactive 在每幀之後等待一整幀；timeline 是 DXVK 自己的方式。僅在限制幀率時有影響。" },
+      "dxvk-frameRatePacing": { "name": "幀率限制的等待方式", "hint": "幀率限制如何等待：sleep 休眠並讓出處理器；sliced 分成短步休眠；spin 讓處理器一直忙等；precise 是 DXVK 自己的方式，休眠後以忙等收尾。僅在限制幀率時有影響。" },
       "fex-x87": { "name": "降低 x87 精確度", "hint": "舊式 x87 運算改用 64 位元而非 80 位元，快很多。鏡頭晃動、物理異常或物體消失時請關閉。" },
       "fex-smc": { "name": "自我修改程式碼檢查", "hint": "有保護、加殼、.NET、Mono 或 LuaJIT 的遊戲需要。MTrack 是一般模式；Full 非常慢。" },
       "fex-maxinst": { "name": "轉譯區塊大小", "hint": "一次轉譯多少條遊戲指令。越多在重負載場景越快；越少越省記憶體，卡頓也越短。" },
@@ -186,26 +165,6 @@
       "fex-hybrid": { "name": "隱藏混合核心", "hint": "遊戲會把所有核心視為相同。通常保持開啟。" },
       "fex-l1-increase": { "name": "L1 快取擴大門檻", "hint": "越低跳轉快取越容易擴大：較快，但更耗記憶體。僅在跳轉快取調整開啟時有效。" },
       "fex-l1-decrease": { "name": "L1 快取縮小門檻", "hint": "越高越容易歸還記憶體：更省，但未命中更多。僅在跳轉快取調整開啟時有效。" },
-      "box64-atomics": { "name": "快速原子操作", "hint": "程式碼較少，但遇到第一個未對齊的原子操作，遊戲就會當機。僅用於測試過的遊戲。" },
-      "box64-bigblock": { "name": "區塊大小", "hint": "越大越快。小區塊適合會改寫自身程式碼或執行緒很多的遊戲。" },
-      "box64-callret": { "name": "快速呼叫與返回", "hint": "加快函式呼叫。「受保護」較安全；「快速」可能返回到過時的程式碼。" },
-      "box64-safeflags": { "name": "呼叫前後的旗標", "hint": "「快速」較簡單，「安全」涵蓋少見情況。" },
-      "box64-strongmem": { "name": "嚴格記憶體順序", "hint": "多執行緒遊戲卡住或行為異常時請調高；較慢。" },
-      "box64-forward": { "name": "區塊建構範圍", "hint": "越大越快，但程式碼會佔用更多記憶體。" },
-      "box64-df": { "name": "延後計算旗標", "hint": "CPU 旗標只在需要時才計算。通常保持開啟。" },
-      "box64-div0": { "name": "除以零錯誤", "hint": "遊戲會像在 x86 上一樣收到除以零錯誤，並能自行處理。" },
-      "box64-fastnan": { "name": "快速 NaN", "hint": "較快；物理或數學出錯時改用「精確」。" },
-      "box64-fastround": { "name": "數值捨入", "hint": "「快速」最快，「精確」最準確。" },
-      "box64-nativeflags": { "name": "直接使用 ARM 旗標", "hint": "較快；只在找錯誤時才關閉。" },
-      "box64-x87double": { "name": "x87 精確度", "hint": "用雙精度取代快速模式；鏡頭或物理晃動時有幫助。" },
-      "box64-noarch": { "name": "區塊中繼資料", "hint": "越少越省記憶體，但可能讓有保護的遊戲無法正常運作。" },
-      "box64-pause": { "name": "迴圈中的等待", "hint": "執行緒之間如何互相等待；最佳模式取決於遊戲。" },
-      "box64-sep": { "name": "呼叫後的進入點", "hint": "越少，呼叫之後的程式碼越常重新轉譯。通常保持「全部」。" },
-      "box64-weakbarrier": { "name": "輕量屏障", "hint": "越輕越快，但在多執行緒遊戲中較不安全。" },
-      "box64-purge": { "name": "釋放程式碼記憶體", "hint": "程式碼記憶體用滿時，一段時間沒用到的程式碼會讓位給新程式碼。適用於越玩越慢的 32 位元遊戲。" },
-      "box64-purge-age": { "name": "釋放前的閒置時間", "hint": "程式碼要閒置多久才會被釋放。僅在釋放程式碼記憶體開啟時有效。" },
-      "sync": { "name": "執行緒同步", "hint": "Horizon：遊戲執行緒透過 Switch 核心互相等待。更快也更可靠。" },
-      "four-cores": { "name": "第四核心用於圖形", "hint": "繪製與著色器在第四個核心上執行，遊戲使用另外三個。" },
       "windows": { "name": "視窗輸出", "hint": "遊戲視窗顯示錯誤時，可改用備用的畫面緩衝區。" },
       "verbose": { "name": "詳細記錄", "hint": "Wine 的詳細記錄。會讓遊戲大幅變慢，僅用於找錯誤。" },
       "profile": { "name": "效能分析工具", "hint": "把遊戲花費時間的地方寫入記錄。會拖慢啟動。" }
@@ -551,20 +510,6 @@
     "moveRight": "游標向右"
   },
   "graphics": {
-    "direct3d": "Direct3D",
-    "wined3d": "WineD3D（相容性）",
-    "direct3dHints": {
-      "dxvk": "把 Direct3D 8–11 轉換成 Vulkan。最快的方式，幾乎適合所有遊戲。",
-      "dxvkVkd3d": "DXVK 加上 VKD3D，用於 DirectX 12 遊戲。只有這類遊戲需要，而且僅限 64 位元。",
-      "wine": "像一般 Wine 一樣透過 OpenGL 執行 Direct3D。較慢；遊戲用 DXVK 無法啟動或畫面錯亂時再選。"
-    },
-    "dxvkSource": "DXVK 組建",
-    "dxvkOfficial": "官方",
-    "dxvkSourceHints": {
-      "official": "Carafe 內附的 DXVK 組建。",
-      "gplasync": "Carafe 未內附 GPL Async：遊戲很可能會退回較慢的 WineD3D。請保持「官方」。",
-      "sarek": "Carafe 未內附 Sarek：遊戲很可能會退回較慢的 WineD3D。請保持「官方」。"
-    },
     "frameLimit": "影格率上限",
     "frameLimitHint": "不讓遊戲繪製得比這更快：畫面更平穩，發熱與耗電更少。Switch 螢幕為 60 Hz。適用於 Vulkan、DXVK 與 VKD3D。",
     "noLimit": "無上限",
@@ -597,17 +542,6 @@
   "advanced": {
     "title": "進階",
     "system": "系統",
-    "sync": "執行緒同步",
-    "syncHints": {
-      "horizon": "遊戲執行緒直接透過 Switch 核心互相等待。更快也更可靠；對啟動時卡住或黑畫面的遊戲有幫助。",
-      "standard": "與一般 Wine 相同，透過服務執行緒。遊戲在 Horizon 下運作異常時再選。"
-    },
-    "syncStandard": "標準",
-    "cpu": "CPU 模擬器",
-    "cpuHints": {
-      "fex": "主要的 x86 模擬器，適用 32 與 64 位元遊戲。",
-      "box64": "第二個模擬器，僅適用 32 位元遊戲。遊戲用 FEX 會當機或卡頓時可以試試。"
-    },
     "windows": "視窗輸出",
     "windowsAuto": "自動",
     "windowsFramebuffer": "畫面緩衝區",
@@ -617,8 +551,6 @@
       "compositor": "與「自動」相同。",
       "framebuffer": "視窗不經過合成器，直接複製到螢幕上。視窗顯示錯誤時的備用方式；Carafe 的載入畫面與游標可能無法運作。"
     },
-    "fourCores": "第四核心用於圖形",
-    "fourCoresHint": "繪製與著色器在第四個核心上執行，遊戲則獨享另外三個核心。通常建議保持開啟。",
     "debug": "除錯",
     "verbose": "詳細追蹤",
     "verboseHint": "將詳細的 Wine 記錄寫入獨立檔案。會讓遊戲大幅變慢，僅用於找錯誤。",

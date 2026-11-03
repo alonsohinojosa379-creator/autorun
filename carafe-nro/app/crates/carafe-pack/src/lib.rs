@@ -21,6 +21,7 @@ use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use carafe_core::BuildRecord;
 use carafe_core::cancel::CancelToken;
 use carafe_core::icon::IconJpeg;
+use carafe_core::install_script::{self, InstallScript};
 use carafe_core::npdm::AddressSpace;
 use carafe_core::package::{GamePackage, ICON_FILE, RECORD_FILE, ROMFS_ICON_FILE, package};
 use carafe_core::pfs0::{self, Pfs0Entry};
@@ -35,6 +36,7 @@ const RUNTIME_NPDM: &str = "exefs/main.npdm";
 const RUNTIME_ICON: &str = "control/icon_AmericanEnglish.dat";
 const RUNTIME_LOGO: &str = "logo";
 const RUNTIME_ROMFS: &str = "romfs";
+const RUNTIME_MONO: &str = "mono";
 const LOGO_FILES: [&str; 2] = ["NintendoLogo.png", "StartupMovie.gif"];
 const ROMFS_WRITE_PREFIX: &str = "Writing ";
 const OPEN_FAILED_PREFIX: &str = "Failed to open ";
@@ -74,6 +76,7 @@ impl HacBrewPacker {
         record: &BuildRecord,
         icon: Option<&IconJpeg>,
         package: &GamePackage,
+        dotnet: bool,
         target: &PackTarget,
         work: &Path,
         cancel: &CancelToken,
@@ -93,7 +96,7 @@ impl HacBrewPacker {
         let runtime = RuntimeArchive::open(&self.runtime)?;
         let game_folder = Path::new(&record.source.folder);
         let game = Tree::scan(game_folder)?;
-        check_paths(&romfs, &runtime, &game, package)?;
+        check_paths(&romfs, &runtime, &game, package, dotnet)?;
         check_space(work, target, runtime.unpacked_size() + game.total_bytes())?;
         create_dir(&exefs)?;
         write(&exefs.join("main"), &runtime.read(RUNTIME_MAIN)?)?;
@@ -105,9 +108,23 @@ impl HacBrewPacker {
             .map_err(|error| AdapterError::Tool(format!("{RUNTIME_NPDM}: {error}")))?;
         write(&exefs.join("main.npdm"), &npdm)?;
         let logo = copy_logo(&runtime, &input)?;
-        let runtime_files = runtime.extract(RUNTIME_ROMFS, &romfs, cancel, &mut |percent| {
+        let mut runtime_files = runtime.extract(RUNTIME_ROMFS, &romfs, cancel, &mut |percent| {
             report(progress, BuildStage::Runtime, percent, None);
         })?;
+        if dotnet {
+            let mono_files = runtime.extract(RUNTIME_MONO, &romfs, cancel, &mut |percent| {
+                report(progress, BuildStage::Runtime, percent, None);
+            })?;
+            runtime_files += mono_files;
+            report(
+                progress,
+                BuildStage::Runtime,
+                100,
+                Some(format!(
+                    "runtime: the game uses .NET, Wine Mono: {mono_files} files"
+                )),
+            );
+        }
         report(
             progress,
             BuildStage::Runtime,
@@ -297,8 +314,12 @@ impl Packer for HacBrewPacker {
         progress: &mut dyn FnMut(BuildProgress),
     ) -> Result<StoredGame, AdapterError> {
         cancel.check()?;
-        let mut package = package(record).map_err(|error| AdapterError::Tool(error.to_string()))?;
-        let apis = direct3d(Path::new(&record.source.folder), &record.source.executable);
+        let game_folder = Path::new(&record.source.folder);
+        let apis = inspect(game_folder, &record.source.executable, pe::direct3d_apis);
+        let dotnet = inspect(game_folder, &record.source.executable, pe::uses_dotnet);
+        let scripts = install_scripts(game_folder);
+        let mut package = package(record, &apis, &scripts)
+            .map_err(|error| AdapterError::Tool(error.to_string()))?;
         let menu = settings_menu::file(&apis, &menu_texts::lookup).map_err(|error| {
             AdapterError::Tool(format!("{}: {error}", settings_menu::MENU_FILE))
         })?;
@@ -312,7 +333,9 @@ impl Packer for HacBrewPacker {
         create_dir(&work)?;
         service::hide(&library.join(service::SERVICE_DIR));
         let lock = service::BuildLock::acquire(&work)?;
-        let result = self.build(record, icon, &package, target, &work, cancel, progress);
+        let result = self.build(
+            record, icon, &package, dotnet, target, &work, cancel, progress,
+        );
         drop(lock);
         let _ = remove_dir(&work);
         result
@@ -328,6 +351,7 @@ fn check_paths(
     runtime: &RuntimeArchive,
     game: &Tree,
     package: &GamePackage,
+    dotnet: bool,
 ) -> Result<(), AdapterError> {
     let game_paths: Vec<String> = game
         .paths()
@@ -336,6 +360,7 @@ fn check_paths(
         .collect();
     let entries = runtime
         .paths(RUNTIME_ROMFS)
+        .chain(runtime.paths(RUNTIME_MONO).filter(|_| dotnet))
         .chain([package.game_dir.as_str()])
         .chain(game_paths.iter().map(String::as_str))
         .chain(package.romfs_files.iter().map(|file| file.path.as_str()))
@@ -469,18 +494,49 @@ fn address_space(game_folder: &Path, executable: &str) -> Result<AddressSpace, A
         .map_err(|error| AdapterError::Tool(format!("{}: {error}", path.display())))
 }
 
-fn direct3d(game_folder: &Path, executable: &str) -> Vec<carafe_core::settings_catalog::Api> {
+pub(crate) fn inspect<T: Default>(
+    game_folder: &Path,
+    executable: &str,
+    look: impl FnOnce(&mut pe::ReadAt<'_>) -> Result<T, pe::PeError>,
+) -> T {
     let path = executable
         .split(['/', '\\'])
         .fold(game_folder.to_path_buf(), |path, part| path.join(part));
     let Ok(mut file) = File::open(&path) else {
-        return Vec::new();
+        return T::default();
     };
     let Ok(size) = file.metadata().map(|metadata| metadata.len()) else {
-        return Vec::new();
+        return T::default();
     };
     let mut read = |offset: u64, len: usize| read_at(&mut file, size, offset, len);
-    pe::direct3d_apis(&mut read).unwrap_or_default()
+    look(&mut read).unwrap_or_default()
+}
+
+pub(crate) fn install_scripts(game_folder: &Path) -> Vec<InstallScript> {
+    let Ok(entries) = fs::read_dir(game_folder) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| install_script::is_install_script(&entry.file_name().to_string_lossy()))
+        .filter(|entry| {
+            entry
+                .metadata()
+                .is_ok_and(|metadata| metadata.len() <= install_script::MAX_SCRIPT_BYTES)
+        })
+        .map(|entry| entry.path())
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .filter_map(|path| fs::read(path).ok())
+        .filter_map(|bytes| serde_json::from_slice(strip_bom(&bytes)).ok())
+        .collect()
+}
+
+fn strip_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
 }
 
 fn read_at(file: &mut File, size: u64, offset: u64, len: usize) -> Option<Vec<u8>> {
@@ -625,6 +681,38 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(result, Err(AdapterError::Cancelled));
         assert_eq!(left, (false, false));
+    }
+
+    #[test]
+    fn install_scripts_are_read_from_the_folder_root() {
+        let dir = std::env::temp_dir().join(format!("carafe-pack-gog-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("goggame-3.script")).unwrap();
+        let step = |name: &str| {
+            format!(
+                r#"{{"actions":[{{"install":{{"action":"setRegistry","arguments":{{"root":"HKLM",
+                    "subkey":"Software\\G","valueName":"{name}","valueData":"1"}}}}}}]}}"#
+            )
+        };
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend(step("b").into_bytes());
+        fs::write(dir.join("GOGGAME-2.script"), bom).unwrap();
+        fs::write(dir.join("goggame-1.script"), step("a")).unwrap();
+        fs::write(dir.join("goggame-4.script"), b"{not json").unwrap();
+        fs::write(dir.join("other.script"), step("c")).unwrap();
+        let scripts = install_scripts(&dir);
+        let missing = install_scripts(&dir.join("missing"));
+        fs::remove_dir_all(&dir).unwrap();
+        let names: Vec<String> = scripts
+            .iter()
+            .flat_map(|script| install_script::installed_entries(script, "C:\\Games\\G"))
+            .map(|entry| match entry {
+                carafe_core::registry::InstalledEntry::Value { name, .. } => name,
+                carafe_core::registry::InstalledEntry::Key { path, .. } => path,
+            })
+            .collect();
+        assert_eq!(names, vec!["b", "a"]);
+        assert!(missing.is_empty());
     }
 
     #[test]

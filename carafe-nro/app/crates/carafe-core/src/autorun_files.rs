@@ -1,12 +1,11 @@
-//! Converting settings into the `<exe>.keys.txt`, `<exe>.wine-nx.txt` and `<exe>.box64.txt` files for RomFS.
+//! Converting settings into the `<exe>.keys.txt` and `<exe>.wine-nx.txt` files for RomFS.
 
 use std::fmt::Write as _;
 
 use crate::settings::{
-    AutorunSettings, Binding, CpuEmulator, Direct3d, DxvkHud, DxvkSource, InputMode, LsfgFlow,
-    SyncMode, Upscaling, WindowOutput,
+    AutorunSettings, Binding, DxvkHud, InputMode, LsfgFlow, Upscaling, WindowOutput,
 };
-use crate::settings_catalog::{self, SettingFile, Storage};
+use crate::settings_catalog::{self, Api, SettingFile, Storage};
 
 /// Autorun settings files placed in RomFS next to the game's `.exe`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,51 +18,54 @@ pub struct AutorunFiles {
     pub program_name: String,
     /// Contents of the program settings file.
     pub program: String,
-    /// Name of the Box64 settings file: `<.exe name without extension>.box64.txt`.
-    pub box64_name: String,
-    /// Contents of the Box64 settings file; empty when every Box64 option has its default value.
-    pub box64: String,
 }
 
 impl AutorunFiles {
-    /// Creates the files for a game whose executable is `executable`.
+    /// Creates the files for a game whose executable is `executable` and which uses the Direct3D versions `apis`.
     ///
-    /// Every typed value and every FEX option is written explicitly, so the result does not depend on Autorun
-    /// defaults. DXVK options are written only when they differ from "Default", so DXVK's own profile for the game
-    /// stays in force; Box64 options only when they differ from their default.
+    /// `apis` decides the value of settings left at [`settings_catalog::AUTO`], and whether the game gets VKD3D
+    /// for Direct3D 12 next to DXVK.
+    ///
+    /// Every typed value and every FEX option of the catalog is written explicitly, so the result does not depend
+    /// on Autorun defaults; the speed-ups built into the runtime have no key here. The components are always the
+    /// same: Carafe's DXVK, FEX, Horizon synchronisation and core 3 for graphics workers. DXVK options are written
+    /// only when they differ from "Default", so DXVK's own profile for the game stays in force.
     #[must_use]
-    pub fn render(executable: &str, settings: &AutorunSettings) -> Self {
+    pub fn render(executable: &str, settings: &AutorunSettings, apis: &[Api]) -> Self {
         let stem = executable_stem(executable);
-        let mut program = render_program(settings);
+        let mut program = render_program(settings, apis);
         program.push_str(&render_options(
             settings,
             SettingFile::Program,
             "{key} = {text}",
+            apis,
         ));
         Self {
             keys_name: format!("{stem}.keys.txt"),
             keys: render_keys(settings),
             program_name: format!("{stem}.wine-nx.txt"),
             program,
-            box64_name: format!("{stem}.box64.txt"),
-            box64: render_options(settings, SettingFile::Box64, "{key}={text}"),
         }
     }
 }
 
-fn render_options(settings: &AutorunSettings, file: SettingFile, form: &str) -> String {
+fn render_options(
+    settings: &AutorunSettings,
+    file: SettingFile,
+    form: &str,
+    apis: &[Api],
+) -> String {
     let mut out = String::new();
     for setting in settings_catalog::catalog().settings() {
         if setting.storage != Storage::Option || setting.file != file {
             continue;
         }
         let index = settings.options.index(setting);
-        let skip_default =
-            file == SettingFile::Box64 || setting.values.iter().any(|v| v.text.is_none());
+        let skip_default = setting.values.iter().any(|v| v.text.is_none());
         if skip_default && index == setting.default {
             continue;
         }
-        if let Some(text) = setting.values[index].text.as_deref() {
+        if let Some(text) = setting.written_text(index, apis) {
             out.push_str(&form.replace("{key}", &setting.key).replace("{text}", text));
             out.push('\n');
         }
@@ -109,35 +111,20 @@ fn render_keys(settings: &AutorunSettings) -> String {
     out
 }
 
-fn render_program(settings: &AutorunSettings) -> String {
+fn render_program(settings: &AutorunSettings, apis: &[Api]) -> String {
     let graphics = &settings.graphics;
     let system = &settings.system;
     let mut out = String::new();
-    let sync = match system.sync {
-        SyncMode::Standard => "standard",
-        SyncMode::Horizon => "horizon",
-    };
-    line(&mut out, "sync", sync);
-    let cpu = match system.cpu {
-        CpuEmulator::Fex => "fex",
-        CpuEmulator::Box64 => "box64",
-    };
-    line(&mut out, "cpu", cpu);
-    line(&mut out, "four-cores", flag(system.four_cores));
+    line(&mut out, "sync", "horizon");
+    line(&mut out, "cpu", "fex");
+    line(&mut out, "four-cores", flag(true));
     match system.windows {
         WindowOutput::Auto => {}
         WindowOutput::Framebuffer => line(&mut out, "windows", "framebuffer"),
         WindowOutput::Compositor => line(&mut out, "windows", "compositor"),
     }
-    match graphics.direct3d {
-        Direct3d::Dxvk => {}
-        Direct3d::DxvkVkd3d => line(&mut out, "d3d", "dxvk+vkd3d"),
-        Direct3d::Wine => line(&mut out, "d3d", "wine"),
-    }
-    match graphics.dxvk_source {
-        DxvkSource::Official => {}
-        DxvkSource::Sarek => line(&mut out, "dxvk-source", "sarek"),
-        DxvkSource::Gplasync => line(&mut out, "dxvk-source", "gplasync"),
+    if apis.contains(&Api::D3d12) {
+        line(&mut out, "d3d", "dxvk+vkd3d");
     }
     let hud = match graphics.hud {
         DxvkHud::Off => "0",
@@ -210,7 +197,7 @@ mod tests {
 
     #[test]
     fn names_files_after_executable() {
-        let files = AutorunFiles::render("bin\\OpenTTD.EXE", &AutorunSettings::default());
+        let files = AutorunFiles::render("bin\\OpenTTD.EXE", &AutorunSettings::default(), &[]);
         assert_eq!(files.keys_name, "OpenTTD.keys.txt");
         assert_eq!(files.program_name, "OpenTTD.wine-nx.txt");
     }
@@ -224,7 +211,7 @@ mod tests {
             codes: vec![0x11, 0x43],
         };
         settings.input.keys[1].codes.clear();
-        let keys = AutorunFiles::render("game.exe", &settings).keys;
+        let keys = AutorunFiles::render("game.exe", &settings, &[]).keys;
         assert_eq!(value(&keys, "input-mode"), Some("2"));
         assert_eq!(value(&keys, "key.A"), Some("0x11+0x43"));
         assert_eq!(value(&keys, "key.B"), Some("none"));
@@ -232,72 +219,54 @@ mod tests {
     }
 
     #[test]
-    fn plain_dxvk_leaves_d3d_unset() {
-        let program = AutorunFiles::render("game.exe", &AutorunSettings::default()).program;
-        assert_eq!(value(&program, "d3d"), None);
-        let mut settings = AutorunSettings::default();
-        settings.graphics.direct3d = Direct3d::DxvkVkd3d;
-        let program = AutorunFiles::render("game.exe", &settings).program;
+    fn vkd3d_comes_only_with_direct3d_12() {
+        let settings = AutorunSettings::default();
+        for apis in [&[][..], &[Api::D3d9], &[Api::D3d11]] {
+            let program = AutorunFiles::render("game.exe", &settings, apis).program;
+            assert_eq!(value(&program, "d3d"), None, "{apis:?}");
+        }
+        let program =
+            AutorunFiles::render("game.exe", &settings, &[Api::D3d11, Api::D3d12]).program;
         assert_eq!(value(&program, "d3d"), Some("dxvk+vkd3d"));
+        assert_eq!(value(&program, "dxvk-source"), None);
+    }
+
+    #[test]
+    fn retired_choices_do_not_reach_the_runtime() {
+        let mut settings = AutorunSettings::default();
+        settings.graphics.retired_direct3d = Some("wine".to_owned());
+        settings.graphics.retired_dxvk_source = Some("sarek".to_owned());
+        settings.system.retired_cpu = Some("box64".to_owned());
+        settings.system.retired_sync = Some("standard".to_owned());
+        settings.system.retired_four_cores = Some(false);
+        let program = AutorunFiles::render("game.exe", &settings, &[Api::D3d9]).program;
+        assert_eq!(value(&program, "d3d"), None);
+        assert_eq!(value(&program, "dxvk-source"), None);
+        assert_eq!(value(&program, "cpu"), Some("fex"));
+        assert_eq!(value(&program, "sync"), Some("horizon"));
+        assert_eq!(value(&program, "four-cores"), Some("1"));
     }
 
     #[test]
     fn sharpness_carries_percent_sign() {
-        let program = AutorunFiles::render("game.exe", &AutorunSettings::default()).program;
+        let program = AutorunFiles::render("game.exe", &AutorunSettings::default(), &[]).program;
         assert_eq!(value(&program, "upscaling-sharpness"), Some("40%"));
     }
 
     fn program_with(change: impl Fn(&mut AutorunSettings)) -> String {
         let mut settings = AutorunSettings::default();
         change(&mut settings);
-        AutorunFiles::render("game.exe", &settings).program
+        AutorunFiles::render("game.exe", &settings, &[]).program
     }
 
     fn keys_with(change: impl Fn(&mut AutorunSettings)) -> String {
         let mut settings = AutorunSettings::default();
         change(&mut settings);
-        AutorunFiles::render("game.exe", &settings).keys
-    }
-
-    #[test]
-    fn every_direct3d_and_dxvk_value_reaches_its_line() {
-        let cases = [
-            (Direct3d::Dxvk, None),
-            (Direct3d::DxvkVkd3d, Some("dxvk+vkd3d")),
-            (Direct3d::Wine, Some("wine")),
-        ];
-        for (direct3d, expected) in cases {
-            let program = program_with(|s| s.graphics.direct3d = direct3d);
-            assert_eq!(value(&program, "d3d"), expected, "{direct3d:?}");
-        }
-        let sources = [
-            (DxvkSource::Official, None),
-            (DxvkSource::Sarek, Some("sarek")),
-            (DxvkSource::Gplasync, Some("gplasync")),
-        ];
-        for (source, expected) in sources {
-            let program = program_with(|s| s.graphics.dxvk_source = source);
-            assert_eq!(value(&program, "dxvk-source"), expected, "{source:?}");
-        }
+        AutorunFiles::render("game.exe", &settings, &[]).keys
     }
 
     #[test]
     fn every_system_value_reaches_its_line() {
-        for (cpu, expected) in [(CpuEmulator::Fex, "fex"), (CpuEmulator::Box64, "box64")] {
-            assert_eq!(
-                value(&program_with(|s| s.system.cpu = cpu), "cpu"),
-                Some(expected)
-            );
-        }
-        for (sync, expected) in [
-            (SyncMode::Standard, "standard"),
-            (SyncMode::Horizon, "horizon"),
-        ] {
-            assert_eq!(
-                value(&program_with(|s| s.system.sync = sync), "sync"),
-                Some(expected)
-            );
-        }
         let windows = [
             (WindowOutput::Auto, None),
             (WindowOutput::Framebuffer, Some("framebuffer")),
@@ -309,17 +278,11 @@ mod tests {
                 expected
             );
         }
-        for (on, expected) in [(true, "1"), (false, "0")] {
-            assert_eq!(
-                value(&program_with(|s| s.system.four_cores = on), "four-cores"),
-                Some(expected)
-            );
-        }
     }
 
     #[test]
     fn typed_catalog_defaults_match_the_default_settings() {
-        let files = AutorunFiles::render("game.exe", &AutorunSettings::default());
+        let files = AutorunFiles::render("game.exe", &AutorunSettings::default(), &[]);
         for setting in settings_catalog::catalog().settings() {
             if setting.storage != Storage::Typed {
                 continue;
@@ -327,7 +290,6 @@ mod tests {
             let text = match setting.file {
                 SettingFile::Program => &files.program,
                 SettingFile::Keys => &files.keys,
-                _ => continue,
             };
             let expected = setting.values[setting.default].text.as_deref();
             assert_eq!(value(text, &setting.key), expected, "{}", setting.id);
@@ -476,15 +438,59 @@ mod tests {
         let program = program_with(|_| {});
         assert_eq!(
             program.lines().filter(|l| l.starts_with("FEX_")).count(),
-            19
+            21
         );
         assert_eq!(value(&program, "FEX_TSOENABLED"), Some("0"));
+        assert_eq!(value(&program, "FEX_DISKCACHE"), None);
         assert_eq!(value(&program, "FEX_MAXINST"), Some("1000"));
         assert_eq!(value(&program, "FEX_SMCCHECKS"), Some("none"));
         assert_eq!(value(&program, "FEX_DISABLEL2CACHE"), Some("1"));
         assert_eq!(value(&program, "FEX_X87REDUCEDPRECISION"), Some("1"));
         let reliable = program_with(|s| s.options.set("fex-tso", Some("1")));
         assert_eq!(value(&reliable, "FEX_TSOENABLED"), Some("1"));
+    }
+
+    #[test]
+    fn built_in_speed_ups_are_left_to_the_runtime() {
+        let program = program_with(|_| {});
+        assert_eq!(value(&program, "FEX_X87CONVERSIONROUNDING"), None);
+        assert_eq!(value(&program, "FEX_X87FASTSTACK"), None);
+        assert_eq!(value(&program, "FEX_FLAGSWITHOUTFLAGM"), None);
+        assert_eq!(value(&program, "FEX_BRIDGERETURN"), None);
+        assert_eq!(value(&program, "FEX_JUMPTABLES"), None);
+        assert_eq!(value(&program, "FEX_COMPACTRETURNS"), None);
+        assert_eq!(value(&program, "FEX_SLIMRETURNPOINTS"), None);
+        assert_eq!(value(&program, "FEX_GDBSYMBOLS"), None);
+        assert!(!program.contains("d3d9.unchangedStateFastPath"));
+    }
+
+    #[test]
+    fn the_orchestrator_and_the_d3d9_workers_are_left_to_the_runtime() {
+        let program = program_with(|_| {});
+        for key in [
+            "orchestrator",
+            "d3d9.frontEndThread",
+            "d3d9.effectThread",
+            "d3d9.effectPassMerge",
+            "d3d9.managedBufferCopies",
+        ] {
+            assert_eq!(value(&program, key), None);
+        }
+    }
+
+    #[test]
+    fn single_precision_is_off_until_chosen() {
+        let settings = AutorunSettings::default();
+        for apis in [&[][..], &[Api::D3d8], &[Api::D3d9], &[Api::D3d11]] {
+            let program = AutorunFiles::render("game.exe", &settings, apis).program;
+            assert_eq!(
+                value(&program, "FEX_X87SINGLEPRECISION"),
+                Some("0"),
+                "{apis:?}"
+            );
+        }
+        let chosen = program_with(|s| s.options.set("fex-x87-single", Some("1")));
+        assert_eq!(value(&chosen, "FEX_X87SINGLEPRECISION"), Some("1"));
     }
 
     #[test]
@@ -505,22 +511,10 @@ mod tests {
     }
 
     #[test]
-    fn box64_file_holds_only_changed_options() {
-        let files = AutorunFiles::render("bin\\Game.exe", &AutorunSettings::default());
-        assert_eq!(files.box64_name, "Game.box64.txt");
-        assert_eq!(files.box64, "");
-        let mut settings = AutorunSettings::default();
-        settings.options.set("box64-strongmem", Some("3"));
-        settings.options.set("box64-forward", Some("128"));
-        let files = AutorunFiles::render("game.exe", &settings);
-        assert_eq!(files.box64, "BOX64_DYNAREC_STRONGMEM=3\n");
-    }
-
-    #[test]
-    fn horizon_sync_is_written() {
-        let mut settings = AutorunSettings::default();
-        settings.system.sync = SyncMode::Horizon;
-        let program = AutorunFiles::render("game.exe", &settings).program;
+    fn the_one_path_is_written_for_every_game() {
+        let program = AutorunFiles::render("game.exe", &AutorunSettings::default(), &[]).program;
         assert_eq!(value(&program, "sync"), Some("horizon"));
+        assert_eq!(value(&program, "cpu"), Some("fex"));
+        assert_eq!(value(&program, "four-cores"), Some("1"));
     }
 }

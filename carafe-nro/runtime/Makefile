@@ -14,14 +14,19 @@ SAVE_SIZE ?= 0x10000000
 SAVE_JOURNAL_SIZE ?= 0x4000000
 
 OVERLAY_OBJECTS := $(SWITCH)/CMakeFiles/wine-nx-runtime.dir$(CURDIR)/overlay
+ORCHESTRATOR_OBJECTS := $(SWITCH)/CMakeFiles/wine-nx-runtime.dir$(CURDIR)/orchestrator
 FEX_SRC := $(BUILD)/fex-src
 FEX_BUILD := $(BUILD)/fex-wow64
 FEX_PATCHES := $(sort $(wildcard $(CURDIR)/patches/fex/*.patch))
 DXVK_SRC := $(BUILD)/dxvk-src
 DXVK_BUILD := $(BUILD)/dxvk
 DXVK_PATCHES := $(sort $(wildcard $(CURDIR)/patches/dxvk/*.patch))
+MEDIA_SRC := $(BUILD)/ffmpeg-source
+MONO_VERSION := 11.3.0
+MONO_ARCHIVE := $(BUILD)/wine-mono-$(MONO_VERSION)-arm64.tar.xz
+MONO_URL := https://github.com/wine-mono/wine-mono/releases/download/wine-mono-$(MONO_VERSION)/wine-mono-$(MONO_VERSION)-arm64.tar.xz
 
-.PHONY: all fetch check-image headers wine fex dxvk loader layout clean
+.PHONY: all fetch check-image headers orchestrator-test wine fex dxvk loader layout clean
 
 all: layout
 
@@ -50,17 +55,31 @@ $(PE)/Makefile: | check-image
 headers: $(PE)/Makefile
 	$(MAKE) -C $(PE) -j$(JOBS) include/all
 
-$(SWITCH)/build.ninja: | headers
+$(MEDIA_SRC)/configure: $(CURDIR)/media/configure.in
+	mkdir -p $(MEDIA_SRC)
+	sed 's|@FFMPEG@|$(WINE)/vendor/ffmpeg|' $< > $@
+	cp $(WINE)/vendor/ffmpeg/COPYING.LGPLv2.1 $(MEDIA_SRC)/
+
+$(SWITCH)/build.ninja: | headers $(MEDIA_SRC)/configure
 	cmake -S $(WINE) -B $(SWITCH) -G Ninja \
 		-DCMAKE_TOOLCHAIN_FILE=$(WINE)/cmake/switch-devkitA64.cmake \
+		-DWINE_NX_FFMPEG_SOURCE=$(MEDIA_SRC) \
 		-DWINE_NX_PE_BUILD_DIR=$(PE) -DWINE_NX_AMD64=ON -DWINE_NX_FEX=ON \
 		-DWINE_NX_BOX64_INTERPRETER=ON -DWINE_NX_BOX64_DYNAREC=ON \
 		-DWINE_NX_USB_STORAGE=ON -DWINE_NX_BOOT_BUNDLE= -DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_PROJECT_INCLUDE=$(CURDIR)/overlay/carafe-overlay.cmake \
 		"-DCARAFE_OVERLAY_DEFINITIONS=CARAFE_SAVE_SIZE=$(SAVE_SIZE);CARAFE_SAVE_JOURNAL_SIZE=$(SAVE_JOURNAL_SIZE)"
 
-wine: headers $(SWITCH)/build.ninja
-	rm -rf $(OVERLAY_OBJECTS)
+orchestrator-test:
+	mkdir -p $(BUILD)
+	cc -std=c11 -O2 -Wall -Wextra -Werror -o $(BUILD)/orchestrator-test \
+		$(CURDIR)/orchestrator/test/orchestrator_test.c $(CURDIR)/orchestrator/orchestrator_policy.c
+	$(BUILD)/orchestrator-test
+
+wine: headers orchestrator-test $(MEDIA_SRC)/configure $(SWITCH)/build.ninja
+	grep -qx 'WINE_NX_FFMPEG_SOURCE:PATH=$(MEDIA_SRC)' $(SWITCH)/CMakeCache.txt || \
+		cmake -S $(WINE) -B $(SWITCH) -DWINE_NX_FFMPEG_SOURCE=$(MEDIA_SRC)
+	rm -rf $(OVERLAY_OBJECTS) $(ORCHESTRATOR_OBJECTS)
 	cmake --build $(SWITCH) --target wine-nx-runtime-nro -j $(JOBS)
 	rm -rf $(SWITCH)/stage
 	python3 $(WINE)/tools/package-amd64.py --build $(SWITCH) --fex --vulkan --dxvk --vkd3d \
@@ -75,7 +94,12 @@ dxvk: fetch
 loader: fetch
 	$(MAKE) -B -C loader
 
-layout: wine fex dxvk loader
+$(MONO_ARCHIVE):
+	mkdir -p $(BUILD)
+	curl -fL --retry 3 -o $@.part $(MONO_URL)
+	mv $@.part $@
+
+layout: wine fex dxvk loader $(MONO_ARCHIVE)
 	rm -rf $(OUT) $(NPDM)
 	mkdir -p $(OUT)/exefs $(OUT)/control $(OUT)/logo $(OUT)/symbols $(OUT)/romfs/switch \
 		$(OUT)/romfs/carafe/loading $(OUT)/romfs/carafe/fonts $(NPDM)
@@ -94,12 +118,15 @@ layout: wine fex dxvk loader
 	python3 $(CURDIR)/fex/use-dll.py $(OUT)/romfs drive_c/windows/system32 libwow64fex.dll \
 		$(FEX_BUILD)/Bin/libwow64fex.dll
 	python3 $(CURDIR)/dxvk/use-dxvk.py $(OUT)/romfs $(DXVK_BUILD)
+	python3 $(CURDIR)/winrt/add-winrt-classes.py $(OUT)/romfs $(AUTORUN)
+	python3 $(CURDIR)/dshow/add-directshow-filters.py $(OUT)/romfs
 	cp -r $(SWITCH)/stage/switch/. $(OUT)/romfs/switch/
 	cp $(SWITCH)/wine-nx-runtime.elf $(OUT)/symbols/
 	cp $(ROOT)/assets/switch/NintendoLogo.png $(ROOT)/assets/switch/StartupMovie.gif \
 		$(OUT)/romfs/carafe/loading/
 	cp $(CURDIR)/overlay/fonts/*.ttf $(OUT)/romfs/carafe/fonts/
 	cp $(CURDIR)/overlay/fonts/OFL.txt $(OUT)/romfs/switch/wine/licenses/MPLUS1p-OFL-1.1.txt
+	python3 $(CURDIR)/mono/use-mono.py $(OUT)/mono $(MONO_ARCHIVE) $(WINE)
 	@echo "runtime: $$(find $(OUT)/romfs -type f | wc -l) files in romfs, $$(du -sh $(OUT) | cut -f1) in $(OUT)"
 
 clean:

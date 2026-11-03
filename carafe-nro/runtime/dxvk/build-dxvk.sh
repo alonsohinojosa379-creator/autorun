@@ -4,8 +4,7 @@ autorun="$1"
 src="$2"
 build="$3"
 shift 3
-revision="$(sed -n "s/^REVISION = '\([0-9a-f]*\)'$/\1/p" "$autorun/horizon-dlls/tools/dxvk_payload.py")"
-[ -n "$revision" ] || { echo "No DXVK revision in Autorun's dxvk_payload.py" >&2; exit 1; }
+revision=b1a1c99ab52b687cf950d62c88bc2fa316b41663
 toolchain="${WINE_NX_LLVM_MINGW:-/opt/llvm-mingw}/bin"
 
 if [ ! -d "$src/.git" ]; then
@@ -24,6 +23,7 @@ git -C "$src" submodule update --init --recursive --depth=1
 wanted="$(cat "$@" | sha256sum | cut -d' ' -f1)"
 if [ "$(cat "$src/.git/carafe-applied" 2>/dev/null || true)" != "$wanted" ]; then
     git -C "$src" checkout -q --force HEAD -- src
+    git -C "$src" clean -fdq -- src
     for patch in "$@"; do
         git -C "$src" apply "$patch"
         echo "DXVK: applied $(basename "$patch")"
@@ -47,12 +47,15 @@ configure()
     if [ ! -f "$dir/build.ninja" ]; then
         meson setup "$dir" "$src" --cross-file "$dir/cross.txt" --buildtype=release --strip \
             --wrap-mode=nodownload "$@" >/dev/null
+    else
+        meson configure "$dir" "$@" >/dev/null
     fi
 }
 
-configure i386 i686 x86 -Denable_d3d9=true -Denable_d3d8=false -Denable_d3d10=false -Denable_d3d11=false \
-    -Denable_dxgi=false
+configure i386 i686 x86 -Denable_d3d8=true -Denable_d3d9=true -Denable_d3d10=true -Denable_d3d11=true \
+    -Denable_dxgi=true
 configure amd64 x86_64 x86_64 -Denable_dxgi=true -Denable_d3d8=true -Denable_d3d9=true -Denable_d3d10=true \
     -Denable_d3d11=true
-ninja -C "$build/i386" -j "${JOBS:-2}" src/d3d9/d3d9.dll
+ninja -C "$build/i386" -j "${JOBS:-2}" src/d3d8/d3d8.dll src/d3d9/d3d9.dll src/d3d10/d3d10core.dll \
+    src/d3d11/d3d11.dll src/dxgi/dxgi.dll
 ninja -C "$build/amd64" -j "${JOBS:-2}"

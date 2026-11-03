@@ -405,10 +405,7 @@ mod tests {
             .filter_map(|line| line.strip_prefix("section\t"))
             .map(|rest| rest.split('\t').next().unwrap())
             .collect();
-        assert_eq!(
-            sections,
-            ["controls", "graphics", "directx", "processor", "system"]
-        );
+        assert_eq!(sections, ["controls", "graphics", "system", "experimental"]);
     }
 
     #[test]
@@ -424,7 +421,7 @@ mod tests {
                 "FEX_TSOENABLED",
                 "restart",
                 "0",
-                "show:cpu=0",
+                "-",
                 "-"
             ]
         );
@@ -462,7 +459,7 @@ mod tests {
     fn groups_end_and_pages_open_inside_them() {
         let menu = render(&[], &texts).unwrap();
         let group = fields(&menu, "group", "dxvk");
-        assert_eq!(group[2], "show:d3d=0,1");
+        assert_eq!(group[2], "-");
         let lines: Vec<&str> = menu.lines().collect();
         let start = lines
             .iter()
@@ -477,19 +474,19 @@ mod tests {
             .iter()
             .filter(|line| line.starts_with("page\t"))
             .count();
-        assert_eq!(pages, 8);
+        assert_eq!(pages, 9);
         let settings = lines[start..end]
             .iter()
             .filter(|line| line.starts_with("setting\t"))
             .count();
-        assert_eq!(settings, 51);
+        assert_eq!(settings, 55);
         assert_eq!(
             menu.lines()
                 .filter(|line| line.starts_with("group\t"))
                 .count(),
-            5
+            2
         );
-        assert_eq!(menu.lines().filter(|line| *line == "end").count(), 5);
+        assert_eq!(menu.lines().filter(|line| *line == "end").count(), 2);
     }
 
     #[test]

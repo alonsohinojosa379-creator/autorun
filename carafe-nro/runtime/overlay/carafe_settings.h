@@ -167,6 +167,7 @@ typedef struct {
 extern const char* const carafe_source_names[CARAFE_SOURCES];
 
 CarafeLanguage carafeLanguage(void);
+const char* carafeWindowsLocale(void);
 int carafePluralForm(int count);
 const char* carafeText(const char* const texts[CARAFE_TEXTS]);
 CarafeCatalog* carafeCatalogLoad(void);
@@ -201,5 +202,8 @@ void carafeFailuresClear(void);
 bool carafeChangesExist(void);
 void carafeSettingsTick(void);
 bool carafeGameArgv(char* out, size_t size);
+bool carafeOptionsSummary(char* out, size_t size);
+bool carafeMeasuring(void);
+bool carafeOrchestrating(void);
 
 #endif

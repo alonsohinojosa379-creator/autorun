@@ -18,10 +18,11 @@ section	graphics	Графика	Graphics	图形	…
 setting	fps	program	frame-limit	now	0	-	-	Ограничение кадров	Frame limit	帧率限制	…	<hint ru>	<hint en>	<hint zh-Hans>	…
 value	-	Без ограничения	No limit	不限制	…
 value	30	30	30	30	…
-group	dxvk	show:d3d=0,1	Опции DXVK	DXVK options	DXVK 选项	…
+group	dxvk	-	Опции DXVK	DXVK options	DXVK 选项	…
 page	memory	Память	Memory	内存	…
-setting	dxvk-budget	program	dxvk.maxMemoryBudget	restart	0	-	-	…
-value	-	Авто	Auto	自动	…
+setting	dxvk-maxMemoryBudget	program	dxvk.maxMemoryBudget	restart	0	-	-	…
+value	-	По умолчанию	Default	默认	…
+value	0	Авто	Auto	自动	…
 value	512	512 МиБ	512 MiB	512 MiB	…
 end
 preset	balanced	Баланс	Balanced	平衡	…	<hint ru>	<hint en>	<hint zh-Hans>	…
@@ -36,11 +37,12 @@ pad	1	B	B	B	…
   runtime whose list differs shows no menu. It keeps only the console's language and English of each text.
 - `api <name>` — a Direct3D the game's executable imports: `d3d8`, `d3d9`, `d3d10`, `d3d11`, `d3d12`. No `api`
   line means the app does not know, and every option is shown.
-- `section <id> <name ×15>` — a tab of the menu. The ids are `controls`, `graphics`, `directx`, `processor`,
-  `system`, in this order. The menu draws `controls` itself (the console map, from `key` and `pad`); its `setting`
+- `section <id> <name ×15>` — a tab of the menu. The ids are `controls`, `graphics`, `system`, `experimental`, in
+  this order; `system` holds the DXVK and FEX groups and the FEX presets. The menu draws `controls` itself (the console map, from `key` and `pad`); its `setting`
   lines are the row above the map.
 - `setting <id> <file> <key> <apply> <default> <when> <api> <name ×15> <hint ×15>` — a row:
-  - `<file>` — `program` (`<exe>.wine-nx.txt`), `keys` (`<exe>.keys.txt`) or `box64` (`<exe>.box64.txt`);
+  - `<file>` — `program` (`<exe>.wine-nx.txt`) or `keys` (`<exe>.keys.txt`); the menu still reads `box64`
+    (`<exe>.box64.txt`) from packages made before decision 43;
   - `<key>` — the key in that file;
   - `<apply>` — `now` (the menu applies it while the game runs) or `restart`;
   - `<default>` — the index of the value the setting has when its key is missing from the file;
@@ -102,6 +104,9 @@ option	English	65006e000000
 - `set <root> <path> <name> <type> <hex>` — `<root>` is `HKCU` or `HKLM`, `<type>` the Windows type number, `<hex>` the
   value's bytes as the registry stores them: strings in UTF-16LE with their terminating zero, numbers little-endian.
 - `delete <root> <path> <name>` and `deletekey <root> <path>` — remove a value, or a key with everything under it.
+- `restore <root> <path> <name> <type> <hex>` and `restorekey <root> <path>` — a value or an empty key the game's
+  installer writes ([decision 56](decisions/0056-registry-values-from-gog-install-scripts.md)): written like `set`, and
+  again at any start that finds it missing.
 - `row <name> <hint>`, then `field <root> <path> <name> <type>` for each value the row writes, then
   `option <label> <hex>…` with one `<hex>` per field.
 
@@ -110,4 +115,7 @@ when `carafe/registry-applied` in save data does not hold the hash of this file,
 `carafe/registry-pending.txt` from save data — the changes made in the menu, in the same `set`/`delete`/`deletekey` lines
 under the header `carafe-registry-pending	1` — and removes it. A trial run first keeps the values those changes replace
 in `sdmc:/switch/carafe/<program id>/registry-rollback.txt`; "Bring back" on the error screen makes them the pending
-changes. "Restore recommended" removes the pending changes and `registry-applied`.
+changes. Deletions among those changes go into `carafe/registry-removed.txt` (header `carafe-registry-removed	1`,
+`delete`/`deletekey` lines); a later `set` of the same value takes it off. Last, every `restore` value and `restorekey`
+key that is missing and not on that list is written. "Restore recommended" removes the pending changes,
+`registry-applied` and `registry-removed.txt`.

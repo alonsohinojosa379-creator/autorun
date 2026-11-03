@@ -17,11 +17,12 @@ use carafe_core::BuildRecord;
 use carafe_core::cancel::CancelToken;
 use carafe_core::icon::IconJpeg;
 use carafe_core::package::{GamePackage, ICON_FILE, RECORD_FILE, package};
+use carafe_core::pe;
 use carafe_core::pfs0::{self, Pfs0Entry};
 use carafe_core::ports::{AdapterError, BuildProgress, BuildStage, PackTarget, Packer, StoredGame};
 
 use crate::copy::Tree;
-use crate::{create_dir, io_error, remove_dir, report, service, write};
+use crate::{create_dir, inspect, install_scripts, io_error, remove_dir, report, service, write};
 
 /// Extension of the index file in the library.
 pub const INDEX_EXTENSION: &str = "carafe";
@@ -194,7 +195,10 @@ impl Packer for NroPacker {
         progress: &mut dyn FnMut(BuildProgress),
     ) -> Result<StoredGame, AdapterError> {
         cancel.check()?;
-        let package = package(record).map_err(|error| AdapterError::Tool(error.to_string()))?;
+        let game_folder = Path::new(&record.source.folder);
+        let apis = inspect(game_folder, &record.source.executable, pe::direct3d_apis);
+        let scripts = install_scripts(game_folder);
+        let package = package(record, &apis, &scripts).map_err(|error| AdapterError::Tool(error.to_string()))?;
         let library = Path::new(&target.library_dir);
         let work = service::build_dir(library, &record.title_id.to_string());
         if service::is_busy(&work) {

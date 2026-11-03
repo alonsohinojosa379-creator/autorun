@@ -13,15 +13,26 @@ What's planned and what's done, without dates. Open items are in priority order;
 - [ ] `bug` The + of the menu combination reaches the game: NFSU skips its intro
 - [ ] `research` FEX: many threads ending at once wait on its compile locks for tens of seconds
 - [ ] `research` FEX: an exception inside block compiling loops in ntdll's unwinder and holds the compile lock
-- [ ] `research` Faster games at the stock CPU clock: FEX tuned for the A57, x87, DXVK calls
+- [ ] **`research` Faster games at the stock CPU clock: FEX tuned for the A57, x87, DXVK calls**
+- [ ] **`research` Orchestrator: one part of the runtime that makes translated games use every resource of the Switch**
+- [ ] **`feature` One path for every game: Carafe's DXVK, FEX and D3DX, no choice of components**
+- [ ] `research` Games limited by the Switch's GPU: less GPU work in DXVK, upscaling
+- [ ] `research` Keep translated code between runs and prepare it at the first start
 - [ ] `feature` Offer the lock-wait fix to Autorun
 - [ ] `feature` Warn in the build wizard when the game folder has mods or fixes (proxy DLLs such as `dinput8.dll`, `.asi`)
+- [ ] `feature` A game missing a DLL names it on the console, and the build wizard lets the user add it
+- [ ] `feature` Message boxes answered with the controller's buttons, not only by touch
+- [ ] `game` Dishonored: stays on the loading screen while GOG Galaxy polls a socket
+- [ ] `game` Megabonk: reads the controller through Windows.Gaming.Input, which sees no pad
+- [ ] `game` Rig and Roll: Direct3D 7 through DirectDraw gets no OpenGL context
+- [ ] `game` Indiana Jones and the Emperor's Tomb: "Press Enter" waits for the keyboard
+- [ ] `research` A 64-bit program that draws only with GDI never hides the loading screen
 - [ ] `research` Saves: confirm whether they can still be lost on HOME and sleep, and in games that keep a file open the whole session
 - [ ] `bug` Mouse wheel mapped to a button does nothing in the game
 - [ ] `research` Dead Space: rare crash while loading a level when the runtime cannot place game memory
+- [ ] `research` NFSU2: rare crash at the start of a race in the game's own sound code, two threads racing
 - [ ] `game` OpenTTD: rare start-up hang is worked around, but its root cause is still unknown
 - [ ] `game` Heroes of Might and Magic IV: rare crash in the Bink video player (`binkw32.dll`) during the intro
-- [ ] `bug` With verbose traces a 32-bit game does not start: the address space search at start-up logs each of ~3000 tries
 - [ ] `feature` A choice to map controller buttons by position instead of by their labels
 - [ ] `feature` Back up and restore game saves over USB
 - [ ] `research` Smaller save data on the console: measure what games really write
@@ -41,6 +52,28 @@ What's planned and what's done, without dates. Open items are in priority order;
 <details>
 <summary>Done</summary>
 
+- [x] `bug` The cursor stays on the program's screen: a click no longer lands on the window frame over the black bars
+- [x] `bug` Games on DirectInput 7 and older read the mouse and keyboard
+- [x] `feature` Videos played through DirectShow and Windows Media (ASF, AVI, MPEG) are decoded with FFmpeg
+- [x] `bug` A game no longer hangs when a thread of DirectShow reads its messages while the game waits for it
+- [x] `feature` Window hooks built in: MFC games start
+- [x] `bug` Texts of programs without Unicode show in the console's language
+- [x] `bug` A dialog shown at start-up keeps its own size, in the middle of the screen
+- [x] `feature` DXVK-Sarek's settings on a page of their own
+- [x] `feature` GOG games get the registry values of their install script, written again when missing
+- [x] `bug` Message boxes and dialogs show their text, icon and buttons
+- [x] `bug` The loading screen steps aside when a program shows a dialog before its first picture
+- [x] `feature` Direct3D 8 games run through DXVK
+- [x] `feature` 32-bit Direct3D 10 and 11 games run through DXVK
+- [x] `feature` Games that use .NET get Wine Mono
+- [x] `bug` Games find the Windows Runtime classes Wine has
+- [x] `feature` Experimental: window hooks, waking suspended threads, single-precision x87
+- [x] `feature` Logs name the first exceptions, DLLs without their Unix part and the first controller press
+- [x] `bug` No hitches while shaders build: DXVK builds them in the background, as DXVK-Sarek does
+- [x] `bug` DXVK settings now reach 32-bit games
+- [x] `bug` A game that makes a probe Direct3D device on its first start no longer stays on the loading screen
+- [x] `bug` Verbose traces no longer make the start take minutes
+- [x] `feature` Faster x87 math, CPU flags and repeated D3D9 states built into the runtime
 - [x] `feature` Game settings on the console: a menu over the game and on the error screen — v0.4.0
 - [x] `feature` Game registry: entries from a .reg file in the app, the whole registry in the console menu — v0.4.0
 - [x] `feature` The app and the console screens in every Switch system language — v0.4.0
